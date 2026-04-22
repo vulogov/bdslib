@@ -98,6 +98,17 @@ impl VectorEngine {
             .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))
     }
 
+    /// Remove the vector stored under `id`.
+    ///
+    /// Returns `Ok(())` silently if no record exists for `id`.
+    pub fn delete_vector(&self, id: &str) -> Result<()> {
+        match self.store.lock().remove(id) {
+            Ok(()) => Ok(()),
+            Err(e) if e.to_string().to_lowercase().contains("not found") => Ok(()),
+            Err(e) => Err(err_msg(format!("Failed to remove vector {id:?}: {e}"))),
+        }
+    }
+
     // ── searches ──────────────────────────────────────────────────────────────
 
     /// Return the `limit` nearest neighbours to `query_vector`, ordered by

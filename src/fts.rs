@@ -123,6 +123,37 @@ impl FTSEngine {
         Ok(())
     }
 
+    /// Index `text` under a caller-supplied `id`, replacing any existing entry for that id.
+    ///
+    /// Unlike [`add_document`], which generates a fresh UUIDv7, this method stores the
+    /// document under the UUID you provide. If a document with the same `id` is already
+    /// in the index it is deleted and re-inserted atomically within a single commit.
+    ///
+    /// [`add_document`]: FTSEngine::add_document
+    pub fn add_document_with_id(&self, id: Uuid, text: &str) -> Result<()> {
+        let term = Term::from_field_text(self.id_field, &id.to_string());
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id_field, id.to_string());
+        doc.add_text(self.body_field, text);
+
+        {
+            let mut writer = self.writer.lock();
+            writer.delete_term(term);
+            writer
+                .add_document(doc)
+                .map_err(|e| err_msg(format!("Failed to stage document {id}: {e}")))?;
+            writer
+                .commit()
+                .map_err(|e| err_msg(format!("Failed to commit add_document_with_id: {e}")))?;
+        }
+
+        self.reader
+            .reload()
+            .map_err(|e| err_msg(format!("Failed to reload reader after add_document_with_id: {e}")))?;
+
+        Ok(())
+    }
+
     /// Search the index and return up to `limit` matching UUIDv7s, ranked by relevance.
     ///
     /// `query` uses Tantivy's query syntax (e.g. `"hello world"`, `hello AND world`).

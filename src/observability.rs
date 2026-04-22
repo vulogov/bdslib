@@ -336,6 +336,27 @@ impl ObservabilityStorage {
         parse_uuid_column(rows)
     }
 
+    /// Return `true` if the record for `id` is classified as primary.
+    ///
+    /// Returns `false` for unknown IDs and for secondary records.
+    pub fn is_primary(&self, id: Uuid) -> Result<bool> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT is_primary FROM telemetry WHERE id = '{id}'"
+        ))?;
+        match rows.into_iter().next() {
+            None => Ok(false),
+            Some(row) => {
+                let val = row
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| err_msg("telemetry row missing is_primary"))?
+                    .cast_int()
+                    .map_err(|e| err_msg(e.to_string()))?;
+                Ok(val != 0)
+            }
+        }
+    }
+
     // ── deduplication ─────────────────────────────────────────────────────────
 
     /// Return the timestamps at which duplicate submissions were detected for
