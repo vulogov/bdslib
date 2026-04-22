@@ -1,9 +1,10 @@
 # common module
 
-The `common` module provides shared utilities used across all bdslib engines. It has four sub-modules: `error`, `math`, `timerange`, and `uuid`.
+The `common` module provides shared utilities used across all bdslib engines. It has five sub-modules: `error`, `jsonfingerprint`, `math`, `timerange`, and `uuid`.
 
 ```rust
 use bdslib::common::error::{Result, Error, err_msg};
+use bdslib::common::jsonfingerprint::json_fingerprint;
 use bdslib::common::math::{cosine_similarity, dot_product, l2_norm, normalize, euclidean_distance, squared_euclidean};
 use bdslib::common::timerange::{TimeRange, minute_range, hour_range, day_range};
 use bdslib::common::uuid::{generate_v7, generate_v7_at, timestamp_from_v7};
@@ -40,6 +41,49 @@ use bdslib::common::error::err_msg;
 
 return Err(err_msg("something went wrong"));
 return Err(err_msg(format!("value out of range: {val}")));
+```
+
+---
+
+## common::jsonfingerprint
+
+Converts any JSON value into a flat, human-readable string for use as embedding input or full-text search content. Used internally by `VectorEngine::store_document`, `VectorEngine::search_json`, and `FTSEngine` JSON indexing.
+
+### `json_fingerprint`
+
+```rust
+pub fn json_fingerprint(json: &JsonValue) -> String
+```
+
+Recursively walks the JSON tree and emits `path: value` pairs for every leaf:
+
+```
+{ "title": "Rust", "meta": { "year": 2015, "tags": ["systems", "safe"] } }
+→
+"title: Rust meta.year: 2015 meta.tags[0]: systems meta.tags[1]: safe"
+```
+
+| JSON type | Output |
+|---|---|
+| Object | Recurse with dot-separated path prefix |
+| Array | Recurse with `[i]` index appended to the path |
+| String | `path: value` |
+| Number / Bool | `path: value` |
+| Null | Skipped (no semantic content) |
+| Top-level primitive | Emitted as-is without a path prefix |
+
+The function is also re-exported from `bdslib::vectorengine::json_fingerprint` for callers that import it alongside `VectorEngine`.
+
+```rust
+use bdslib::common::jsonfingerprint::json_fingerprint;
+use serde_json::json;
+
+let fp = json_fingerprint(&json!({
+    "title": "The Rust Programming Language",
+    "tags": ["systems", "memory-safety"],
+    "year": 2019,
+}));
+// "tags[0]: systems tags[1]: memory-safety title: The Rust Programming Language year: 2019"
 ```
 
 ---
