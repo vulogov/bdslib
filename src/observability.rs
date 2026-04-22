@@ -425,6 +425,11 @@ impl ObservabilityStorage {
         parse_uuid_column(rows)
     }
 
+    /// Flush the DuckDB WAL to disk (CHECKPOINT).
+    pub fn sync(&self) -> Result<()> {
+        self.engine.sync()
+    }
+
     // ── internal ──────────────────────────────────────────────────────────────
 
     /// Compare `embedding` against all stored primary embeddings.

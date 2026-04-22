@@ -40,8 +40,14 @@ impl FTSEngine {
             let dir = Path::new(path);
             std::fs::create_dir_all(dir)
                 .map_err(|e| err_msg(format!("Cannot create index directory: {e}")))?;
-            Index::create_in_dir(dir, schema)
-                .map_err(|e| err_msg(format!("Cannot open index at {path}: {e}")))?
+            // Open the existing index if one is present; create otherwise.
+            if dir.join("meta.json").exists() {
+                Index::open_in_dir(dir)
+                    .map_err(|e| err_msg(format!("Cannot open index at {path}: {e}")))?
+            } else {
+                Index::create_in_dir(dir, schema)
+                    .map_err(|e| err_msg(format!("Cannot create index at {path}: {e}")))?
+            }
         };
 
         let writer: IndexWriter<TantivyDocument> = index

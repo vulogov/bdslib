@@ -135,6 +135,18 @@ impl Shard {
         self.observability.get_by_key(key)
     }
 
+    /// Flush all three engines to disk.
+    ///
+    /// Calls `ObservabilityStorage::sync` (DuckDB CHECKPOINT),
+    /// `FTSEngine::sync` (Tantivy commit + reload), and
+    /// `VectorEngine::sync` (HNSW save) in that order.
+    pub fn sync(&self) -> Result<()> {
+        self.observability.sync()?;
+        self.fts.sync()?;
+        self.vector.sync()?;
+        Ok(())
+    }
+
     // ── passthrough accessors ─────────────────────────────────────────────────
 
     /// Borrow the underlying `ObservabilityStorage` for direct access to

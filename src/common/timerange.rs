@@ -63,3 +63,28 @@ pub fn hour_range(time: SystemTime) -> Result<TimeRange> {
 pub fn day_range(time: SystemTime) -> Result<TimeRange> {
     Ok(TimeRange::new(floor_to(time, 86_400)?, 86_400))
 }
+
+/// Align `timestamp` down to the nearest `duration` boundary and return
+/// the half-open interval `[start, end)` of length `duration` that contains it.
+///
+/// Boundaries are computed relative to the Unix epoch, so all intervals of the
+/// same duration are non-overlapping and contiguous.
+///
+/// Returns `Err` if `timestamp` predates the Unix epoch or `duration` is zero.
+pub fn align_to_duration(
+    timestamp: SystemTime,
+    duration: Duration,
+) -> Result<(SystemTime, SystemTime)> {
+    if duration.is_zero() {
+        return Err(err_msg("duration must be non-zero"));
+    }
+    let secs = timestamp
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| err_msg(format!("timestamp predates Unix epoch: {e}")))?
+        .as_secs();
+    let dur_secs = duration.as_secs().max(1);
+    let start_secs = (secs / dur_secs) * dur_secs;
+    let start = UNIX_EPOCH + Duration::from_secs(start_secs);
+    let end = start + duration;
+    Ok((start, end))
+}

@@ -739,6 +739,7 @@ dependencies = [
  "fxhash",
  "grok",
  "hound",
+ "humantime",
  "hyphenation",
  "image 0.24.9",
  "interp",
