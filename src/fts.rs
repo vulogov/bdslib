@@ -1,0 +1,159 @@
+use easy_error::{err_msg, Error as EasyError};
+use parking_lot::Mutex;
+use std::path::Path;
+use tantivy::collector::TopDocs;
+use tantivy::query::QueryParser;
+use tantivy::schema::{Field, OwnedValue, Schema, STORED, STRING, TEXT};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
+use uuid::Uuid;
+
+type FTSResult<T> = std::result::Result<T, EasyError>;
+
+const WRITER_HEAP_BYTES: usize = 50_000_000;
+
+/// Thread-safe full-text search engine backed by Tantivy.
+///
+/// Every document is assigned a UUIDv7 at insertion time. All three
+/// operations (`add_document`, `drop_document`, `search`) are immediately
+/// consistent: a commit + reader reload is issued after every write.
+pub struct FTSEngine {
+    index: Index,
+    writer: Mutex<IndexWriter<TantivyDocument>>,
+    reader: IndexReader,
+    id_field: Field,
+    body_field: Field,
+}
+
+impl FTSEngine {
+    /// Create or open an FTS index.
+    ///
+    /// Pass `":memory:"` for a RAM-only index (lost on drop).
+    /// Any other value is treated as a filesystem directory path;
+    /// it is created if it does not exist.
+    pub fn new(path: &str) -> FTSResult<Self> {
+        let mut builder = Schema::builder();
+        let id_field = builder.add_text_field("id", STRING | STORED);
+        let body_field = builder.add_text_field("body", TEXT | STORED);
+        let schema = builder.build();
+
+        let index = if path == ":memory:" {
+            Index::create_in_ram(schema)
+        } else {
+            let dir = Path::new(path);
+            std::fs::create_dir_all(dir)
+                .map_err(|e| err_msg(format!("Cannot create index directory: {e}")))?;
+            Index::create_in_dir(dir, schema)
+                .map_err(|e| err_msg(format!("Cannot open index at {path}: {e}")))?
+        };
+
+        let writer: IndexWriter<TantivyDocument> = index
+            .writer(WRITER_HEAP_BYTES)
+            .map_err(|e| err_msg(format!("Cannot create index writer: {e}")))?;
+
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|e| err_msg(format!("Cannot create index reader: {e}")))?;
+
+        Ok(Self {
+            index,
+            writer: Mutex::new(writer),
+            reader,
+            id_field,
+            body_field,
+        })
+    }
+
+    /// Index `text` and return its assigned UUIDv7.
+    pub fn add_document(&self, text: &str) -> FTSResult<Uuid> {
+        let id = Uuid::now_v7();
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id_field, id.to_string());
+        doc.add_text(self.body_field, text);
+
+        {
+            let mut writer = self.writer.lock();
+            writer
+                .add_document(doc)
+                .map_err(|e| err_msg(format!("Failed to stage document: {e}")))?;
+            writer
+                .commit()
+                .map_err(|e| err_msg(format!("Failed to commit add: {e}")))?;
+        }
+
+        self.reader
+            .reload()
+            .map_err(|e| err_msg(format!("Failed to reload reader after add: {e}")))?;
+
+        Ok(id)
+    }
+
+    /// Remove the document with the given UUIDv7 from the index.
+    ///
+    /// Succeeds silently if the UUID does not exist.
+    pub fn drop_document(&self, id: Uuid) -> FTSResult<()> {
+        let term = Term::from_field_text(self.id_field, &id.to_string());
+
+        {
+            let mut writer = self.writer.lock();
+            writer.delete_term(term);
+            writer
+                .commit()
+                .map_err(|e| err_msg(format!("Failed to commit delete: {e}")))?;
+        }
+
+        self.reader
+            .reload()
+            .map_err(|e| err_msg(format!("Failed to reload reader after delete: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Flush all pending changes to the on-disk index directory and reload the reader.
+    ///
+    /// For in-memory indexes this is a no-op in terms of persistence but still safe to call.
+    /// Mirrors the `StorageEngine::sync` / DuckDB CHECKPOINT pattern.
+    pub fn sync(&self) -> FTSResult<()> {
+        self.writer
+            .lock()
+            .commit()
+            .map_err(|e| err_msg(format!("Sync commit failed: {e}")))?;
+        self.reader
+            .reload()
+            .map_err(|e| err_msg(format!("Failed to reload reader after sync: {e}")))?;
+        Ok(())
+    }
+
+    /// Search the index and return up to `limit` matching UUIDv7s, ranked by relevance.
+    ///
+    /// `query` uses Tantivy's query syntax (e.g. `"hello world"`, `hello AND world`).
+    pub fn search(&self, query: &str, limit: usize) -> FTSResult<Vec<Uuid>> {
+        let searcher = self.reader.searcher();
+        let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
+        let parsed = parser
+            .parse_query(query)
+            .map_err(|e| err_msg(format!("Invalid query \"{query}\": {e}")))?;
+
+        let hits = searcher
+            .search(&parsed, &TopDocs::with_limit(limit))
+            .map_err(|e| err_msg(format!("Search failed: {e}")))?;
+
+        let mut results = Vec::with_capacity(hits.len());
+        for (_score, addr) in hits {
+            let doc: TantivyDocument = searcher
+                .doc(addr)
+                .map_err(|e| err_msg(format!("Failed to retrieve document: {e}")))?;
+
+            if let Some(raw) = doc.get_first(self.id_field) {
+                if let OwnedValue::Str(id_str) = OwnedValue::from(raw) {
+                    if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                        results.push(uuid);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+}
