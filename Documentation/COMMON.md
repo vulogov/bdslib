@@ -1,10 +1,12 @@
 # common module
 
-The `common` module provides shared utilities used across all bdslib engines. It has two sub-modules: `error` and `math`.
+The `common` module provides shared utilities used across all bdslib engines. It has four sub-modules: `error`, `math`, `timerange`, and `uuid`.
 
 ```rust
 use bdslib::common::error::{Result, Error, err_msg};
 use bdslib::common::math::{cosine_similarity, dot_product, l2_norm, normalize, euclidean_distance, squared_euclidean};
+use bdslib::common::timerange::{TimeRange, minute_range, hour_range, day_range};
+use bdslib::common::uuid::{generate_v7, generate_v7_at, timestamp_from_v7};
 ```
 
 ---
@@ -47,8 +49,6 @@ return Err(err_msg(format!("value out of range: {val}")));
 Pure vector arithmetic functions. All inputs are `&[f32]`; all fallible functions return `bdslib::common::error::Result<T>`.
 
 None of these functions allocate unless explicitly stated (i.e., `normalize`).
-
----
 
 ### `dot_product`
 
@@ -113,8 +113,6 @@ Returns `Err` on dimension mismatch, empty input, or a zero-norm vector (undefin
 | `-1.0` | Opposite direction |
 
 ```rust
-use bdslib::common::math::cosine_similarity;
-
 let sim = cosine_similarity(&e1, &e2)?;
 ```
 
@@ -154,23 +152,184 @@ let d2 = squared_euclidean(&[1.0, 2.0], &[4.0, 6.0])?; // 25.0
 
 ---
 
-## Error handling
+## common::timerange
 
-All fallible functions in `common::math` return `bdslib::common::error::Result<T>` and use `?` cleanly:
+Computes half-open `[start, end)` time intervals aligned to minute, hour, or UTC day boundaries. All functions take a [`SystemTime`](https://doc.rust-lang.org/std/time/struct.SystemTime.html) and return `Result<TimeRange>`.
+
+### `TimeRange`
 
 ```rust
-use bdslib::common::math::{cosine_similarity, normalize};
-use bdslib::common::error::Result;
+pub struct TimeRange {
+    pub start: SystemTime,
+    pub end: SystemTime,
+}
+```
 
-fn nearest(query: &[f32], corpus: &[&[f32]]) -> Result<usize> {
-    let q = normalize(query)?;
-    let mut best = (usize::MAX, f32::NEG_INFINITY);
-    for (i, doc) in corpus.iter().enumerate() {
-        let sim = cosine_similarity(&q, doc)?;
-        if sim > best.1 {
-            best = (i, sim);
-        }
-    }
-    Ok(best.0)
+A half-open interval `[start, end)`. Both fields are plain `SystemTime` values; `end - start` equals the interval duration exactly.
+
+---
+
+### `minute_range`
+
+```rust
+pub fn minute_range(time: SystemTime, n: u64) -> Result<TimeRange>
+```
+
+Returns the `n`-minute interval that contains `time`. The interval is floored to the nearest multiple of `n` minutes since the Unix epoch, so boundaries are stable regardless of when the function is called.
+
+`n` must be a divisor of 60 to ensure boundaries align to the hour:
+
+| Valid values of `n` |
+|---|
+| 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60 |
+
+Returns `Err` if `n` is zero, not a divisor of 60, or `time` predates the Unix epoch.
+
+```rust
+use bdslib::common::timerange::minute_range;
+
+// 14:07:42 UTC falls in the [14:05:00, 14:10:00) window
+let r = minute_range(time, 5)?;
+println!("start: {:?}, end: {:?}", r.start, r.end);
+```
+
+Passing `n = 60` produces the same result as `hour_range`.
+
+---
+
+### `hour_range`
+
+```rust
+pub fn hour_range(time: SystemTime) -> Result<TimeRange>
+```
+
+Returns the one-hour UTC interval that contains `time`. The interval starts at the top of the hour (`HH:00:00`) and ends at the top of the next hour.
+
+Returns `Err` if `time` predates the Unix epoch.
+
+```rust
+use bdslib::common::timerange::hour_range;
+
+let r = hour_range(time)?;
+// r.end - r.start == 3600 seconds
+```
+
+---
+
+### `day_range`
+
+```rust
+pub fn day_range(time: SystemTime) -> Result<TimeRange>
+```
+
+Returns the UTC calendar day that contains `time`. The interval starts at `00:00:00 UTC` and ends 86 400 seconds later at the start of the next day.
+
+Returns `Err` if `time` predates the Unix epoch.
+
+```rust
+use bdslib::common::timerange::day_range;
+
+let r = day_range(time)?;
+// r.end - r.start == 86400 seconds
+```
+
+---
+
+### Interval properties
+
+All three functions share the same guarantees:
+
+- **Containment** — `time` always satisfies `r.start <= time < r.end`.
+- **Alignment** — `r.start` is always a whole multiple of the interval duration since the Unix epoch.
+- **Contiguity** — passing `r.end` as `time` to the same function returns the immediately following interval (`next.start == r.end`).
+- **Nesting** — a minute range is always contained within its hour range, which is always contained within its day range.
+
+---
+
+## common::uuid
+
+UUIDv7 generation and timestamp extraction. UUIDv7 identifiers are 128-bit, time-ordered, and globally unique — later calls always produce greater values, making them suitable as sortable primary keys.
+
+### `generate_v7`
+
+```rust
+pub fn generate_v7() -> Uuid
+```
+
+Generates a UUIDv7 using the current system time. Never fails.
+
+```rust
+use bdslib::common::uuid::generate_v7;
+
+let id = generate_v7();
+```
+
+---
+
+### `generate_v7_at`
+
+```rust
+pub fn generate_v7_at(time: SystemTime) -> Uuid
+```
+
+Generates a UUIDv7 with its timestamp set to `time`. Useful for back-filling records or creating deterministic identifiers in tests.
+
+If `time` predates the Unix epoch, the epoch itself is used as the timestamp (no panic, no error).
+
+```rust
+use bdslib::common::uuid::generate_v7_at;
+use std::time::{Duration, UNIX_EPOCH};
+
+let historical = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+let id = generate_v7_at(historical);
+```
+
+UUIDs produced from time-ordered inputs sort in the same order:
+
+```rust
+let id_old = generate_v7_at(t1); // t1 < t2
+let id_new = generate_v7_at(t2);
+assert!(id_old < id_new);
+```
+
+---
+
+### `timestamp_from_v7`
+
+```rust
+pub fn timestamp_from_v7(id: Uuid) -> Option<SystemTime>
+```
+
+Extracts the embedded timestamp from a UUIDv7. Returns `None` if `id` is not a version-7 UUID or its timestamp cannot be represented as a `SystemTime`.
+
+UUIDv7 stores timestamps with millisecond precision, so the recovered `SystemTime` may differ from the original by up to 1 ms.
+
+```rust
+use bdslib::common::uuid::{generate_v7, timestamp_from_v7};
+
+let id = generate_v7();
+if let Some(ts) = timestamp_from_v7(id) {
+    println!("created at: {ts:?}");
+}
+```
+
+---
+
+## Error handling
+
+All fallible functions across `common` sub-modules return `bdslib::common::error::Result<T>` and compose cleanly with `?`:
+
+```rust
+use bdslib::common::error::Result;
+use bdslib::common::math::{cosine_similarity, normalize};
+use bdslib::common::timerange::day_range;
+use bdslib::common::uuid::generate_v7;
+use std::time::SystemTime;
+
+fn tag_and_score(query: &[f32], doc: &[f32]) -> Result<(uuid::Uuid, SystemTime, f32)> {
+    let id  = generate_v7();
+    let day = day_range(SystemTime::now())?;
+    let sim = cosine_similarity(&normalize(query)?, &normalize(doc)?)?;
+    Ok((id, day.start, sim))
 }
 ```

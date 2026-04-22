@@ -1,0 +1,51 @@
+use crate::common::error::{err_msg, Result};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// A half-open time interval `[start, end)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeRange {
+    pub start: SystemTime,
+    pub end: SystemTime,
+}
+
+impl TimeRange {
+    fn new(start: SystemTime, duration_secs: u64) -> Self {
+        Self {
+            start,
+            end: start + Duration::from_secs(duration_secs),
+        }
+    }
+}
+
+fn floor_to(time: SystemTime, interval_secs: u64) -> Result<SystemTime> {
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| err_msg(format!("timestamp predates Unix epoch: {e}")))?
+        .as_secs();
+    Ok(UNIX_EPOCH + Duration::from_secs((secs / interval_secs) * interval_secs))
+}
+
+/// Return the `[start, end)` interval of `n` whole minutes that contains `time`.
+///
+/// `n` must be a divisor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60) so
+/// that boundaries align to the hour. Returns `Err` for `n == 0` or a
+/// non-divisor, and for timestamps that predate the Unix epoch.
+pub fn minute_range(time: SystemTime, n: u64) -> Result<TimeRange> {
+    if n == 0 || 60 % n != 0 {
+        return Err(err_msg(format!(
+            "n={n} is not a divisor of 60; valid values: 1,2,3,4,5,6,10,12,15,20,30,60"
+        )));
+    }
+    let interval = n * 60;
+    Ok(TimeRange::new(floor_to(time, interval)?, interval))
+}
+
+/// Return the `[start, end)` hour interval that contains `time`.
+pub fn hour_range(time: SystemTime) -> Result<TimeRange> {
+    Ok(TimeRange::new(floor_to(time, 3_600)?, 3_600))
+}
+
+/// Return the `[start, end)` UTC day interval that contains `time`.
+pub fn day_range(time: SystemTime) -> Result<TimeRange> {
+    Ok(TimeRange::new(floor_to(time, 86_400)?, 86_400))
+}
