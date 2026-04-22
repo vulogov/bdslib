@@ -1,11 +1,13 @@
 extern crate log;
 
 pub mod common;
+pub mod datastorage;
 pub mod embedding;
 pub mod fts;
 pub mod shardsinfo;
 pub mod storageengine;
 pub mod vectorengine;
+pub use datastorage::{BlobStorage, JsonStorage, JsonStorageConfig};
 pub use embedding::EmbeddingEngine;
 pub use fts::FTSEngine;
 pub use shardsinfo::ShardInfoEngine;
