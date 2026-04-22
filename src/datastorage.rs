@@ -1,9 +1,12 @@
 use crate::common::error::{err_msg, Result};
+use crate::common::hex::to_hex;
+use crate::common::jsonfingerprint::extract_key;
+use crate::common::sql::sql_escape;
+use crate::common::timerange::now_unix_secs;
 use crate::common::uuid::generate_v7;
 use crate::StorageEngine;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 // ── schema ────────────────────────────────────────────────────────────────────
@@ -31,40 +34,6 @@ const JSON_INIT_SQL: &str = "
     CREATE INDEX IF NOT EXISTS idx_json_docs_created_at ON json_docs (created_at);
     CREATE INDEX IF NOT EXISTS idx_json_docs_updated_at ON json_docs (updated_at);
 ";
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn now_unix_secs() -> Result<i64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .map_err(|e| err_msg(format!("system clock predates Unix epoch: {e}")))
-}
-
-fn sql_escape(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-fn to_hex(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Extract a scalar value from `doc` by following the dot-notation `path`.
-///
-/// Returns `None` if any path segment is missing or the resolved value is an
-/// object or array (non-scalar).
-fn extract_key(doc: &JsonValue, path: &str) -> Option<String> {
-    let mut cur = doc;
-    for part in path.split('.') {
-        cur = cur.get(part)?;
-    }
-    match cur {
-        JsonValue::String(s) => Some(s.clone()),
-        JsonValue::Number(n) => Some(n.to_string()),
-        JsonValue::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
 
 // ── BlobStorage ───────────────────────────────────────────────────────────────
 

@@ -72,3 +72,25 @@ fn collect_leaves(value: &JsonValue, path: &str, out: &mut Vec<String>) {
         JsonValue::Null => {} // no semantic content
     }
 }
+
+/// Extract a scalar value from `doc` by following the dot-notation `path`.
+///
+/// Each `.`-separated segment is used as an object key. Returns `None` if any
+/// segment is missing or the resolved value is an object or array (non-scalar).
+///
+/// ```text
+/// extract_key(&json!({"meta": {"id": "x"}}), "meta.id")  →  Some("x")
+/// extract_key(&json!({"meta": {}}), "meta.id")            →  None
+/// ```
+pub fn extract_key(doc: &JsonValue, path: &str) -> Option<String> {
+    let mut cur = doc;
+    for part in path.split('.') {
+        cur = cur.get(part)?;
+    }
+    match cur {
+        JsonValue::String(s) => Some(s.clone()),
+        JsonValue::Number(n) => Some(n.to_string()),
+        JsonValue::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}

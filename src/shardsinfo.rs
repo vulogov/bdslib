@@ -1,4 +1,6 @@
 use crate::common::error::{err_msg, Result};
+use crate::common::sql::sql_escape;
+use crate::common::timerange::to_unix_secs;
 use crate::common::uuid::generate_v7;
 use crate::StorageEngine;
 use rust_dynamic::value::Value as DynamicValue;
@@ -103,16 +105,6 @@ impl ShardInfoEngine {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-fn to_unix_secs(t: SystemTime) -> Result<i64> {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .map_err(|e| err_msg(format!("timestamp predates Unix epoch: {e}")))
-}
-
-fn sql_escape(s: &str) -> String {
-    s.replace('\'', "''")
-}
 
 fn row_to_shard_info(row: Vec<DynamicValue>) -> Result<ShardInfo> {
     let shard_id_str = row[0].cast_string().map_err(|e| err_msg(e.to_string()))?;

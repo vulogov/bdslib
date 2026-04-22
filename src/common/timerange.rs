@@ -1,6 +1,20 @@
 use crate::common::error::{err_msg, Result};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Convert `t` to whole Unix seconds elapsed since the epoch.
+///
+/// Returns `Err` if `t` predates the Unix epoch.
+pub fn to_unix_secs(t: SystemTime) -> Result<i64> {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .map_err(|e| err_msg(format!("timestamp predates Unix epoch: {e}")))
+}
+
+/// Return the current time as whole Unix seconds.
+pub fn now_unix_secs() -> Result<i64> {
+    to_unix_secs(SystemTime::now())
+}
+
 /// A half-open time interval `[start, end)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeRange {
