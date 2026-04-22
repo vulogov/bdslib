@@ -32,7 +32,7 @@ const TYPE_SCHEMA_SQL: &str = "
 #[test]
 fn test_full_lifecycle() {
     let tmp = TempDir::new().unwrap();
-    let engine = StorageEngine::new(tmp.path().join("test.db"), INIT_SQL).expect("engine init failed");
+    let engine = StorageEngine::new(tmp.path().join("test.db"), INIT_SQL, 4).expect("engine init failed");
 
     engine
         .execute("INSERT INTO test_data VALUES (2, 'Second', 2.5, 'more')")
@@ -57,7 +57,7 @@ fn test_full_lifecycle() {
 
 #[test]
 fn test_select_all_multi_column() {
-    let engine = StorageEngine::new(":memory:", INIT_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", INIT_SQL, 4).unwrap();
     let rows = engine
         .select_all("SELECT id, name, score FROM test_data WHERE id = 1")
         .unwrap();
@@ -72,7 +72,7 @@ fn test_select_all_multi_column() {
 
 #[test]
 fn test_select_all_empty() {
-    let engine = StorageEngine::new(":memory:", INIT_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", INIT_SQL, 4).unwrap();
     let rows = engine
         .select_all("SELECT * FROM test_data WHERE id = 999")
         .unwrap();
@@ -81,7 +81,7 @@ fn test_select_all_empty() {
 
 #[test]
 fn test_select_foreach_empty() {
-    let engine = StorageEngine::new(":memory:", INIT_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", INIT_SQL, 4).unwrap();
     let mut called = false;
     engine
         .select_foreach("SELECT * FROM test_data WHERE id = 999", |_row| {
@@ -96,12 +96,12 @@ fn test_select_foreach_empty() {
 
 #[test]
 fn test_init_invalid_sql() {
-    assert!(StorageEngine::new(":memory:", "THIS IS NOT VALID SQL;").is_err());
+    assert!(StorageEngine::new(":memory:", "THIS IS NOT VALID SQL;", 4).is_err());
 }
 
 #[test]
 fn test_select_foreach_callback_error_stops_iteration() {
-    let engine = StorageEngine::new(":memory:", INIT_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", INIT_SQL, 4).unwrap();
     engine
         .execute("INSERT INTO test_data VALUES (2, 'B', 2.0, NULL)")
         .unwrap();
@@ -120,7 +120,7 @@ fn test_select_foreach_callback_error_stops_iteration() {
 #[test]
 fn test_sync_does_not_error() {
     let tmp = TempDir::new().unwrap();
-    let engine = StorageEngine::new(tmp.path().join("test.db"), INIT_SQL).unwrap();
+    let engine = StorageEngine::new(tmp.path().join("test.db"), INIT_SQL, 4).unwrap();
     engine
         .execute("INSERT INTO test_data VALUES (2, 'B', 2.0, NULL)")
         .unwrap();
@@ -135,49 +135,49 @@ fn test_sync_does_not_error() {
 
 #[test]
 fn test_type_boolean() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT b FROM types").unwrap();
     assert_eq!(rows[0][0].cast_bool().unwrap(), true);
 }
 
 #[test]
 fn test_type_integer() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT i FROM types").unwrap();
     assert_eq!(rows[0][0].cast_int().unwrap(), 42);
 }
 
 #[test]
 fn test_type_bigint() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT bi FROM types").unwrap();
     assert_eq!(rows[0][0].cast_int().unwrap(), 9_000_000_000);
 }
 
 #[test]
 fn test_type_float() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT f FROM types").unwrap();
     assert!((rows[0][0].cast_float().unwrap() - 1.5).abs() < 1e-6);
 }
 
 #[test]
 fn test_type_double() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT d FROM types").unwrap();
     assert!((rows[0][0].cast_float().unwrap() - 2.718_281_828).abs() < 1e-9);
 }
 
 #[test]
 fn test_type_text() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT t FROM types").unwrap();
     assert_eq!(rows[0][0].cast_string().unwrap(), "hello");
 }
 
 #[test]
 fn test_type_blob() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT bl FROM types").unwrap();
     assert_eq!(rows[0][0].type_name(), "Binary");
     assert!(!rows[0][0].cast_bin().unwrap().is_empty());
@@ -185,7 +185,7 @@ fn test_type_blob() {
 
 #[test]
 fn test_type_null_maps_to_nodata() {
-    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL).unwrap();
+    let engine = StorageEngine::new(":memory:", TYPE_SCHEMA_SQL, 4).unwrap();
     let rows = engine.select_all("SELECT n FROM types").unwrap();
     assert_eq!(rows[0][0].type_name(), "NODATA");
 }
@@ -196,7 +196,7 @@ fn test_type_null_maps_to_nodata() {
 fn test_concurrent_access() {
     let tmp = TempDir::new().unwrap();
     let engine =
-        Arc::new(StorageEngine::new(tmp.path().join("test.db"), INIT_SQL).expect("engine init failed"));
+        Arc::new(StorageEngine::new(tmp.path().join("test.db"), INIT_SQL, 4).expect("engine init failed"));
 
     (0..100).into_par_iter().for_each(|i| {
         let e = engine.clone();

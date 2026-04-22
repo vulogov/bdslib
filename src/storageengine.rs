@@ -11,12 +11,12 @@ pub struct StorageEngine {
 }
 
 impl StorageEngine {
-    pub fn new<P: AsRef<Path>>(path: P, init_sql: &'static str) -> EngineResult<Self> {
+    pub fn new<P: AsRef<Path>>(path: P, init_sql: &'static str, pool_size: u32) -> EngineResult<Self> {
         let manager = DuckdbConnectionManager::file(path)
             .map_err(|e| EasyError::new("Failed to create connection manager", e))?;
 
         let pool = Pool::builder()
-            .max_size(16) // Adjust based on your CPU cores/concurrency needs
+            .max_size(pool_size)
             .build(manager)
             .map_err(|e| EasyError::new("Failed to initialize connection pool", e))?;
 
