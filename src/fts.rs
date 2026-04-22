@@ -1,4 +1,4 @@
-use easy_error::{err_msg, Error as EasyError};
+use crate::common::error::{err_msg, Result};
 use parking_lot::Mutex;
 use std::path::Path;
 use tantivy::collector::TopDocs;
@@ -6,8 +6,6 @@ use tantivy::query::QueryParser;
 use tantivy::schema::{Field, OwnedValue, Schema, STORED, STRING, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 use uuid::Uuid;
-
-type FTSResult<T> = std::result::Result<T, EasyError>;
 
 const WRITER_HEAP_BYTES: usize = 50_000_000;
 
@@ -30,7 +28,7 @@ impl FTSEngine {
     /// Pass `":memory:"` for a RAM-only index (lost on drop).
     /// Any other value is treated as a filesystem directory path;
     /// it is created if it does not exist.
-    pub fn new(path: &str) -> FTSResult<Self> {
+    pub fn new(path: &str) -> Result<Self> {
         let mut builder = Schema::builder();
         let id_field = builder.add_text_field("id", STRING | STORED);
         let body_field = builder.add_text_field("body", TEXT | STORED);
@@ -66,7 +64,7 @@ impl FTSEngine {
     }
 
     /// Index `text` and return its assigned UUIDv7.
-    pub fn add_document(&self, text: &str) -> FTSResult<Uuid> {
+    pub fn add_document(&self, text: &str) -> Result<Uuid> {
         let id = Uuid::now_v7();
         let mut doc = TantivyDocument::default();
         doc.add_text(self.id_field, id.to_string());
@@ -92,7 +90,7 @@ impl FTSEngine {
     /// Remove the document with the given UUIDv7 from the index.
     ///
     /// Succeeds silently if the UUID does not exist.
-    pub fn drop_document(&self, id: Uuid) -> FTSResult<()> {
+    pub fn drop_document(&self, id: Uuid) -> Result<()> {
         let term = Term::from_field_text(self.id_field, &id.to_string());
 
         {
@@ -114,7 +112,7 @@ impl FTSEngine {
     ///
     /// For in-memory indexes this is a no-op in terms of persistence but still safe to call.
     /// Mirrors the `StorageEngine::sync` / DuckDB CHECKPOINT pattern.
-    pub fn sync(&self) -> FTSResult<()> {
+    pub fn sync(&self) -> Result<()> {
         self.writer
             .lock()
             .commit()
@@ -128,7 +126,7 @@ impl FTSEngine {
     /// Search the index and return up to `limit` matching UUIDv7s, ranked by relevance.
     ///
     /// `query` uses Tantivy's query syntax (e.g. `"hello world"`, `hello AND world`).
-    pub fn search(&self, query: &str, limit: usize) -> FTSResult<Vec<Uuid>> {
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Uuid>> {
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
         let parsed = parser

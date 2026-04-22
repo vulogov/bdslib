@@ -1,17 +1,15 @@
+use crate::common::error::{Error as EasyError, Result};
 use duckdb::{DuckdbConnectionManager, Error as DuckError, Row};
-use easy_error::Error as EasyError;
 use r2d2::Pool;
 use rust_dynamic::value::Value as DynamicValue;
 use std::path::Path;
-
-type EngineResult<T> = std::result::Result<T, EasyError>;
 
 pub struct StorageEngine {
     pool: Pool<DuckdbConnectionManager>,
 }
 
 impl StorageEngine {
-    pub fn new<P: AsRef<Path>>(path: P, init_sql: &'static str, pool_size: u32) -> EngineResult<Self> {
+    pub fn new<P: AsRef<Path>>(path: P, init_sql: &'static str, pool_size: u32) -> Result<Self> {
         let manager = DuckdbConnectionManager::file(path)
             .map_err(|e| EasyError::new("Failed to create connection manager", e))?;
 
@@ -71,7 +69,7 @@ impl StorageEngine {
         Ok(values)
     }
 
-    pub fn select_all(&self, sql: &str) -> EngineResult<Vec<Vec<DynamicValue>>> {
+    pub fn select_all(&self, sql: &str) -> Result<Vec<Vec<DynamicValue>>> {
         let conn = self
             .pool
             .get()
@@ -93,9 +91,9 @@ impl StorageEngine {
         Ok(results)
     }
 
-    pub fn select_foreach<F>(&self, sql: &str, mut f: F) -> EngineResult<()>
+    pub fn select_foreach<F>(&self, sql: &str, mut f: F) -> Result<()>
     where
-        F: FnMut(Vec<DynamicValue>) -> EngineResult<()>,
+        F: FnMut(Vec<DynamicValue>) -> Result<()>,
     {
         let conn = self
             .pool
@@ -121,7 +119,7 @@ impl StorageEngine {
         Ok(())
     }
 
-    pub fn execute(&self, sql: &str) -> EngineResult<()> {
+    pub fn execute(&self, sql: &str) -> Result<()> {
         let conn = self
             .pool
             .get()
@@ -132,7 +130,7 @@ impl StorageEngine {
         Ok(())
     }
 
-    pub fn sync(&self) -> EngineResult<()> {
+    pub fn sync(&self) -> Result<()> {
         self.execute("CHECKPOINT;")
     }
 }

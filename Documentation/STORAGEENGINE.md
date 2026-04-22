@@ -2,10 +2,12 @@
 
 `StorageEngine` is the primary public type in **bdslib**. It provides a thread-safe SQL interface over DuckDB, backed by a connection pool, with all query results returned as `rust_dynamic::value::Value`.
 
+All methods return `bdslib::common::error::Result<T>` — an alias for `Result<T, easy_error::Error>` defined in the shared [`common::error`](COMMON.md) module.
+
 ## Construction
 
 ```rust
-StorageEngine::new(path: P, init_sql: &'static str, pool_size: u32) -> Result<StorageEngine, easy_error::Error>
+StorageEngine::new(path: P, init_sql: &'static str, pool_size: u32) -> Result<StorageEngine>
 where P: AsRef<Path>
 ```
 
@@ -34,7 +36,7 @@ let engine = StorageEngine::new(":memory:", "CREATE TABLE kv (k TEXT, v TEXT);",
 ### `select_all`
 
 ```rust
-fn select_all(&self, sql: &str) -> Result<Vec<Vec<Value>>, easy_error::Error>
+fn select_all(&self, sql: &str) -> Result<Vec<Vec<Value>>>
 ```
 
 Executes `sql` and collects every row into a `Vec`. Each row is a `Vec<Value>` whose elements correspond to the columns in projection order.
@@ -56,15 +58,15 @@ for row in rows {
 ### `select_foreach`
 
 ```rust
-fn select_foreach<F>(&self, sql: &str, f: F) -> Result<(), easy_error::Error>
-where F: FnMut(Vec<Value>) -> Result<(), easy_error::Error>
+fn select_foreach<F>(&self, sql: &str, f: F) -> Result<()>
+where F: FnMut(Vec<Value>) -> Result<()>
 ```
 
 Executes `sql` and calls `f` once per row in streaming fashion, without accumulating the full result set. Iteration stops immediately if `f` returns `Err`, and that error is propagated as the return value.
 
 ```rust
 engine.select_foreach("SELECT payload FROM events ORDER BY ts", |row| {
-    process(row[0].cast_bin()?)?;
+    process(row[0].cast_bin().unwrap());
     Ok(())
 })?;
 ```
@@ -74,7 +76,7 @@ engine.select_foreach("SELECT payload FROM events ORDER BY ts", |row| {
 ### `execute`
 
 ```rust
-fn execute(&self, sql: &str) -> Result<(), easy_error::Error>
+fn execute(&self, sql: &str) -> Result<()>
 ```
 
 Executes a DML statement (`INSERT`, `UPDATE`, `DELETE`) or any other SQL that does not return rows. The number of affected rows is not returned.
@@ -89,7 +91,7 @@ engine.execute("DELETE FROM events WHERE id < 100")?;
 ### `sync`
 
 ```rust
-fn sync(&self) -> Result<(), easy_error::Error>
+fn sync(&self) -> Result<()>
 ```
 
 Issues a DuckDB `CHECKPOINT`, flushing the write-ahead log to the main database file. Only meaningful for file-backed databases; safe to call on in-memory databases (no-op effect).
@@ -151,13 +153,13 @@ DuckDB serialises concurrent writes internally; concurrent reads scale across po
 
 ## Error handling
 
-All methods return `Result<T, easy_error::Error>`. Errors carry a human-readable context message and the underlying cause:
+All methods return `bdslib::common::error::Result<T>`. Errors carry a human-readable context message and the underlying cause:
 
 ```rust
 match engine.select_all("SELECT * FROM nonexistent") {
     Ok(rows) => { /* ... */ }
-    Err(e) => eprintln!("query failed: {}", e),
+    Err(e) => eprintln!("query failed: {e}"),
 }
 ```
 
-Use the `?` operator to propagate errors in functions that return a compatible `Result`.
+Use `?` to propagate errors in functions that return a compatible `Result`. See [`common::error`](COMMON.md) for the shared error type.
