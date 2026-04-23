@@ -88,6 +88,34 @@ impl ShardInfoEngine {
         rows.into_iter().map(row_to_shard_info).collect()
     }
 
+    /// Return all registered shards ordered by `start_time` ascending.
+    pub fn list_all(&self) -> Result<Vec<ShardInfo>> {
+        let rows = self.engine.select_all(
+            "SELECT shard_id, path, start_ts, end_ts FROM shards ORDER BY start_ts ASC",
+        )?;
+        rows.into_iter().map(row_to_shard_info).collect()
+    }
+
+    /// Return all shards whose interval overlaps the half-open window `[start, end)`.
+    ///
+    /// A shard overlaps the window when `shard.end_ts > start AND shard.start_ts < end`.
+    /// Results are ordered by `start_time` ascending.
+    pub fn shards_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<ShardInfo>> {
+        let start_ts = to_unix_secs(start)?;
+        let end_ts = to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT shard_id, path, start_ts, end_ts \
+             FROM shards \
+             WHERE end_ts > {start_ts} AND start_ts < {end_ts} \
+             ORDER BY start_ts ASC"
+        ))?;
+        rows.into_iter().map(row_to_shard_info).collect()
+    }
+
     /// Return `true` if at least one shard covers `timestamp`.
     pub fn shard_exists_at(&self, timestamp: SystemTime) -> Result<bool> {
         let ts = to_unix_secs(timestamp)?;
