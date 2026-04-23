@@ -490,6 +490,48 @@ impl ObservabilityStorage {
         parse_uuid_column(rows)
     }
 
+    /// Return the `(min_ts, max_ts)` of all records in this shard.
+    ///
+    /// Both values are Unix seconds (`i64`). Returns `(None, None)` when the
+    /// shard contains no records.
+    pub fn timestamp_range(&self) -> Result<(Option<i64>, Option<i64>)> {
+        let rows = self
+            .engine
+            .select_all("SELECT MIN(ts), MAX(ts) FROM telemetry")?;
+        if let Some(mut cols) = rows.into_iter().next() {
+            let min = cols.drain(0..1).next().and_then(|v| v.cast_int().ok());
+            let max = cols.into_iter().next().and_then(|v| v.cast_int().ok());
+            Ok((min, max))
+        } else {
+            Ok((None, None))
+        }
+    }
+
+    /// Count all records in this shard.
+    pub fn count_all(&self) -> Result<u64> {
+        self.count_rows("SELECT COUNT(*) FROM telemetry")
+    }
+
+    /// Count records whose event timestamp falls in `[start, end)`.
+    pub fn count_in_range(&self, start: SystemTime, end: SystemTime) -> Result<u64> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        self.count_rows(&format!(
+            "SELECT COUNT(*) FROM telemetry WHERE ts >= {s} AND ts < {e}"
+        ))
+    }
+
+    fn count_rows(&self, sql: &str) -> Result<u64> {
+        let rows = self.engine.select_all(sql)?;
+        let n = rows
+            .into_iter()
+            .next()
+            .and_then(|mut cols| cols.drain(0..1).next())
+            .and_then(|v| v.cast_int().ok())
+            .unwrap_or(0);
+        Ok(n as u64)
+    }
+
     /// Flush the DuckDB WAL to disk (CHECKPOINT).
     pub fn sync(&self) -> Result<()> {
         self.engine.sync()

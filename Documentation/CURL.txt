@@ -1,0 +1,6 @@
+# Get the timeline
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/timeline","params":[]}' |jq .
+# Get the number of records
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/count","params":{}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/count","params":{"duration":"1h"}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/count","params":{"start_ts":1776978000,"end_ts":1776985000}}' |jq .
