@@ -60,3 +60,26 @@ pub fn get_db() -> Result<&'static ShardsManager> {
     DB.get()
         .ok_or_else(|| err_msg("global DB is not initialized; call init_db() first"))
 }
+
+/// Read the `dbpath` field from the hjson config without initialising the DB.
+///
+/// Useful for pre-flight operations such as wiping and recreating the store.
+pub fn dbpath_from_config(config_path: Option<&str>) -> Result<String> {
+    let path: String = match config_path {
+        Some(p) => p.to_string(),
+        None => std::env::var("BDS_CONFIG").map_err(|_| {
+            err_msg(
+                "no config path supplied and BDS_CONFIG environment variable is not set",
+            )
+        })?,
+    };
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| err_msg(format!("cannot read config {path:?}: {e}")))?;
+    let val: serde_hjson::Value = serde_hjson::from_str(&raw)
+        .map_err(|e| err_msg(format!("hjson parse error: {e}")))?;
+    val.as_object()
+        .and_then(|obj| obj.get("dbpath"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| err_msg("missing required field 'dbpath' in config"))
+}

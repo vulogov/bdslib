@@ -146,6 +146,26 @@ const LAST_NAMES: &[&str] = &[
     "Harris", "Martin", "Garcia", "Martinez", "Robinson", "Clark",
 ];
 
+// ── Log format selector ───────────────────────────────────────────────────────
+
+/// Selects which log-entry variant [`Generator::log_entries`] produces.
+///
+/// Pass to [`Generator::with_log_format`] before calling `log_entries` or
+/// `mixed`.  Defaults to [`LogFormat::Random`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Pick a format at random for each document (default).
+    Random,
+    /// RFC-3164 syslog style.
+    Syslog,
+    /// Apache Combined Log Format.
+    Http,
+    /// Nginx access log format.
+    HttpNginx,
+    /// Python exception traceback.
+    Traceback,
+}
+
 // ── Generator ─────────────────────────────────────────────────────────────────
 
 /// Produces random JSON documents suitable for ingestion into `ShardsManager`.
@@ -178,6 +198,10 @@ const LAST_NAMES: &[&str] = &[
 pub struct Generator {
     /// When `Some`, overrides the `duration` argument in all method calls.
     time_override: Option<(u64, u64)>,
+    /// When `Some`, telemetry documents are locked to this metric key.
+    key_filter: Option<String>,
+    /// Controls which log-entry variant is produced.
+    log_format: LogFormat,
 }
 
 impl Default for Generator {
@@ -190,14 +214,28 @@ impl Generator {
     /// Create a generator that derives its time window from the `duration`
     /// argument passed to each method.
     pub fn new() -> Self {
-        Generator { time_override: None }
+        Generator { time_override: None, key_filter: None, log_format: LogFormat::Random }
     }
 
     /// Create a generator with a fixed `[start, end]` timestamp range
     /// (Unix seconds).  This overrides the `duration` argument in every
     /// method call.
     pub fn with_time_range(start: u64, end: u64) -> Self {
-        Generator { time_override: Some((start, end)) }
+        Generator { time_override: Some((start, end)), key_filter: None, log_format: LogFormat::Random }
+    }
+
+    /// Restrict telemetry generation to a specific metric key (e.g. `"cpu.usage"`).
+    ///
+    /// If the key is not in the built-in catalogue a random metric is used instead.
+    pub fn with_key(mut self, key: impl Into<String>) -> Self {
+        self.key_filter = Some(key.into());
+        self
+    }
+
+    /// Restrict log-entry generation to a specific format.
+    pub fn with_log_format(mut self, fmt: LogFormat) -> Self {
+        self.log_format = fmt;
+        self
     }
 
     /// Generate `n` random metric-style telemetry documents spread over
@@ -310,7 +348,10 @@ impl Generator {
     }
 
     fn random_telemetry<R: Rng>(&self, rng: &mut R, tr: (u64, u64)) -> JsonValue {
-        let m      = &METRICS[rng.gen_range(0..METRICS.len())];
+        let m = self.key_filter
+            .as_deref()
+            .and_then(|k| METRICS.iter().find(|m| m.key == k))
+            .unwrap_or(&METRICS[rng.gen_range(0..METRICS.len())]);
         let host   = pick(rng, HOSTS);
         let region = pick(rng, REGIONS);
         let env    = pick(rng, ENVS);
@@ -326,11 +367,17 @@ impl Generator {
     }
 
     fn random_log_entry<R: Rng>(&self, rng: &mut R, tr: (u64, u64)) -> JsonValue {
-        match rng.gen_range(0u8..4) {
-            0 => self.gen_syslog(rng, tr),
-            1 => self.gen_http_access(rng, tr, None),
-            2 => self.gen_http_access(rng, tr, Some("nginx")),
-            _ => self.gen_python_traceback(rng, tr),
+        match self.log_format {
+            LogFormat::Syslog    => self.gen_syslog(rng, tr),
+            LogFormat::Http      => self.gen_http_access(rng, tr, None),
+            LogFormat::HttpNginx => self.gen_http_access(rng, tr, Some("nginx")),
+            LogFormat::Traceback => self.gen_python_traceback(rng, tr),
+            LogFormat::Random    => match rng.gen_range(0u8..4) {
+                0 => self.gen_syslog(rng, tr),
+                1 => self.gen_http_access(rng, tr, None),
+                2 => self.gen_http_access(rng, tr, Some("nginx")),
+                _ => self.gen_python_traceback(rng, tr),
+            },
         }
     }
 

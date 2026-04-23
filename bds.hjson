@@ -1,0 +1,29 @@
+{
+  // ── Storage ──────────────────────────────────────────────────────────────────
+
+  // Root directory where all time-partitioned shards are stored.
+  // Each shard is a subdirectory named after its aligned start timestamp.
+  // Required.
+  dbpath: "./db"
+
+  // Width of each time shard, in humantime notation.
+  // Every document is routed to the shard whose interval contains its timestamp.
+  // Common values: "1h"  "6h"  "1day"  "7days"
+  // Required.
+  shard_duration: "1h"
+
+  // ── DuckDB connection pool ────────────────────────────────────────────────────
+
+  // Maximum number of concurrent DuckDB connections per shard.
+  // Raise for high-concurrency ingest workloads; lower to reduce memory usage.
+  // Default: 4
+  pool_size: 4
+
+  // ── Deduplication ─────────────────────────────────────────────────────────────
+
+  // Cosine-similarity threshold for classifying an incoming document as a
+  // secondary (near-duplicate) of an existing primary.
+  // Range: 0.0 (no dedup) … 1.0 (exact match only).
+  // Default: 0.85
+  similarity_threshold: 0.85
+}

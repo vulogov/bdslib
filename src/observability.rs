@@ -370,6 +370,71 @@ impl ObservabilityStorage {
             "SELECT timestamps FROM dedup_tracking WHERE key = '{}'",
             sql_escape(key)
         ))?;
+        self.parse_timestamps_rows(rows)
+    }
+
+    /// Return the deduplication timestamps for the exact-match entry that owns
+    /// the same `(key, data_text)` as the primary record identified by `id`.
+    ///
+    /// Returns an empty `Vec` when no exact-match duplicates have been seen for
+    /// that record, or when `id` does not exist in this shard.
+    pub fn get_duplicate_timestamps_by_id(&self, id: Uuid) -> Result<Vec<SystemTime>> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT d.timestamps \
+             FROM dedup_tracking d \
+             JOIN telemetry t ON t.key = d.key AND t.data_text = d.data_text \
+             WHERE t.id = '{id}'"
+        ))?;
+        self.parse_timestamps_rows(rows)
+    }
+
+    /// Return all deduplication entries in this shard as
+    /// `(primary_uuid, key, timestamps)` triples, ordered by the primary
+    /// record's event timestamp ascending.
+    ///
+    /// Only primaries that have at least one exact-match duplicate appear here.
+    pub fn list_all_dedup_entries(&self) -> Result<Vec<(Uuid, String, Vec<SystemTime>)>> {
+        let rows = self.engine.select_all(
+            "SELECT t.id, t.key, d.timestamps \
+             FROM dedup_tracking d \
+             JOIN telemetry t ON t.key = d.key AND t.data_text = d.data_text \
+             WHERE t.is_primary = 1 \
+             ORDER BY t.ts ASC",
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let mut it = row.into_iter();
+            let id_str = it
+                .next()
+                .ok_or_else(|| err_msg("dedup row missing id"))?
+                .cast_string()
+                .map_err(|e| err_msg(e.to_string()))?;
+            let id = Uuid::parse_str(&id_str)
+                .map_err(|e| err_msg(format!("dedup row bad uuid: {e}")))?;
+            let key = it
+                .next()
+                .ok_or_else(|| err_msg("dedup row missing key"))?
+                .cast_string()
+                .map_err(|e| err_msg(e.to_string()))?;
+            let ts_json = it
+                .next()
+                .ok_or_else(|| err_msg("dedup row missing timestamps"))?
+                .cast_string()
+                .map_err(|e| err_msg(e.to_string()))?;
+            let timestamps: Vec<i64> = serde_json::from_str(&ts_json)
+                .map_err(|e| err_msg(format!("timestamps JSON parse failed: {e}")))?;
+            let times: Vec<SystemTime> = timestamps
+                .into_iter()
+                .map(|ts| UNIX_EPOCH + Duration::from_secs(ts as u64))
+                .collect();
+            out.push((id, key, times));
+        }
+        Ok(out)
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn parse_timestamps_rows(&self, rows: Vec<Vec<DynamicValue>>) -> Result<Vec<SystemTime>> {
         let mut out = Vec::new();
         for row in rows {
             let ts_json = row

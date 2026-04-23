@@ -1,0 +1,11 @@
+{
+  "schema_version": 3,
+  "dimension": 384,
+  "record_count": 15,
+  "next_idx": 39,
+  "config": {
+    "distance": "Cosine",
+    "hnsw_m": 16,
+    "hnsw_ef_construction": 200
+  }
+}
