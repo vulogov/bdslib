@@ -1,4 +1,5 @@
 pub mod error;
+pub mod generator;
 pub mod hex;
 pub mod jsonfingerprint;
 pub mod logparser;
