@@ -4,7 +4,7 @@ use crate::common::jsonfingerprint::json_fingerprint;
 use crate::common::math::cosine_similarity;
 use crate::common::sql::sql_escape;
 use crate::common::timerange::to_unix_secs;
-use crate::common::uuid::generate_v7;
+use crate::common::uuid::{generate_v7_at};
 use crate::EmbeddingEngine;
 use crate::StorageEngine;
 use rust_dynamic::value::Value as DynamicValue;
@@ -182,7 +182,7 @@ impl ObservabilityStorage {
         let id = if let Some(s) = doc.get("id").and_then(|v| v.as_str()) {
             Uuid::parse_str(s).map_err(|e| err_msg(format!("invalid 'id' field: {e}")))?
         } else {
-            generate_v7()
+            generate_v7_at(UNIX_EPOCH + Duration::from_secs(ts as u64))
         };
 
         let data_text = data_to_text(&data);

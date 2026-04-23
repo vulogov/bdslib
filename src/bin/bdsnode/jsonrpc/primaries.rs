@@ -3,7 +3,7 @@ use jsonrpsee::RpcModule;
 
 pub fn register(module: &mut RpcModule<()>) {
     module
-        .register_async_method("v2/count", |params, _ctx, _| async move {
+        .register_async_method("v2/primaries", |params, _ctx, _| async move {
             let p: TimeWindowParams = params.parse().unwrap_or_default();
             let window = p.resolve()?;
 
@@ -17,18 +17,20 @@ pub fn register(module: &mut RpcModule<()>) {
                 }
                 .map_err(|e| rpc_err(-32002, e))?;
 
-                let mut total: u64 = 0;
+                let mut ids: Vec<String> = Vec::new();
                 for si in shard_infos {
-                    let obs = cache.shard(si.start_time).map_err(|e| rpc_err(-32003, e))?;
-                    let n = match &window {
-                        TimeWindow::All => obs.observability().count_all(),
-                        TimeWindow::Range(s, e) => obs.observability().count_in_range(*s, *e),
+                    let shard = cache.shard(si.start_time).map_err(|e| rpc_err(-32003, e))?;
+                    let obs = shard.observability();
+                    let uuids = match &window {
+                        TimeWindow::All => obs.list_primaries(),
+                        TimeWindow::Range(s, e) => obs.list_primaries_in_range(*s, *e),
                     }
                     .map_err(|e| rpc_err(-32004, e))?;
-                    total += n;
+
+                    ids.extend(uuids.into_iter().map(|u| u.to_string()));
                 }
 
-                Ok::<serde_json::Value, jsonrpsee::types::ErrorObject>(serde_json::json!({ "count": total }))
+                Ok::<serde_json::Value, jsonrpsee::types::ErrorObject>(serde_json::json!({ "ids": ids }))
             })
             .await
             .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?
