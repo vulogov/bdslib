@@ -1,7 +1,9 @@
 pub mod error;
 pub mod hex;
 pub mod jsonfingerprint;
+pub mod logparser;
 pub mod math;
 pub mod sql;
+pub mod time;
 pub mod timerange;
 pub mod uuid;
