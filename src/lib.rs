@@ -2,6 +2,7 @@ extern crate log;
 
 pub mod common;
 pub mod datastorage;
+pub mod globals;
 pub mod embedding;
 pub mod fts;
 pub mod observability;
@@ -18,6 +19,7 @@ pub use observability::{ObservabilityStorage, ObservabilityStorageConfig};
 pub use shard::Shard;
 pub use shardscache::ShardsCache;
 pub use shardsinfo::ShardInfoEngine;
+pub use globals::{get_db, init_db, sync_db};
 pub use shardsmanager::ShardsManager;
 pub use storageengine::StorageEngine;
 pub use vectorengine::VectorEngine;
