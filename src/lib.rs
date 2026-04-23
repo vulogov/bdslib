@@ -1,6 +1,8 @@
 extern crate log;
 
+pub mod analysis;
 pub mod common;
+pub mod vm;
 pub mod datastorage;
 pub mod globals;
 pub mod embedding;
@@ -23,3 +25,5 @@ pub use globals::{get_db, init_db, sync_db};
 pub use shardsmanager::ShardsManager;
 pub use storageengine::StorageEngine;
 pub use vectorengine::VectorEngine;
+pub use analysis::{SamplePoint, TelemetryTrend};
+pub use vm::init_adam;
