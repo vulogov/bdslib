@@ -394,13 +394,33 @@ impl ObservabilityStorage {
     ///
     /// Only primaries that have at least one exact-match duplicate appear here.
     pub fn list_all_dedup_entries(&self) -> Result<Vec<(Uuid, String, Vec<SystemTime>)>> {
-        let rows = self.engine.select_all(
+        let sql = "SELECT t.id, t.key, d.timestamps \
+                   FROM dedup_tracking d \
+                   JOIN telemetry t ON t.key = d.key AND t.data_text = d.data_text \
+                   WHERE t.is_primary = 1 \
+                   ORDER BY t.ts ASC";
+        self.parse_dedup_rows(sql)
+    }
+
+    pub fn list_dedup_entries_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<(Uuid, String, Vec<SystemTime>)>> {
+        let s = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let e = end.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let sql = format!(
             "SELECT t.id, t.key, d.timestamps \
              FROM dedup_tracking d \
              JOIN telemetry t ON t.key = d.key AND t.data_text = d.data_text \
-             WHERE t.is_primary = 1 \
-             ORDER BY t.ts ASC",
-        )?;
+             WHERE t.is_primary = 1 AND t.ts >= {s} AND t.ts < {e} \
+             ORDER BY t.ts ASC"
+        );
+        self.parse_dedup_rows(&sql)
+    }
+
+    fn parse_dedup_rows(&self, sql: &str) -> Result<Vec<(Uuid, String, Vec<SystemTime>)>> {
+        let rows = self.engine.select_all(sql)?;
         let mut out = Vec::new();
         for row in rows {
             let mut it = row.into_iter();
@@ -543,6 +563,40 @@ impl ObservabilityStorage {
             .and_then(|v| v.cast_int().ok())
             .unwrap_or(0);
         Ok(n as u64)
+    }
+
+    /// Return the distinct keys of all primary records in this shard.
+    pub fn list_primary_keys_all(&self) -> Result<Vec<String>> {
+        let rows = self.engine.select_all(
+            "SELECT DISTINCT key FROM telemetry WHERE is_primary = 1 ORDER BY key ASC",
+        )?;
+        self.parse_key_rows(rows)
+    }
+
+    /// Return the distinct keys of primary records whose event timestamp
+    /// falls in `[start, end)`.
+    pub fn list_primary_keys_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<String>> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT DISTINCT key FROM telemetry \
+             WHERE is_primary = 1 AND ts >= {s} AND ts < {e} ORDER BY key ASC"
+        ))?;
+        self.parse_key_rows(rows)
+    }
+
+    fn parse_key_rows(&self, rows: Vec<Vec<DynamicValue>>) -> Result<Vec<String>> {
+        rows.into_iter()
+            .filter_map(|mut cols| cols.drain(0..1).next())
+            .map(|v| {
+                v.cast_string()
+                    .map_err(|e| crate::common::error::err_msg(e.to_string()))
+            })
+            .collect()
     }
 
     /// Flush the DuckDB WAL to disk (CHECKPOINT).

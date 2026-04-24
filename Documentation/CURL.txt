@@ -12,3 +12,11 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 # Secondaries
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/secondaries","params":{"primary_id":"019dbca3-179c-7e72-bb86-000cd452e2d8"}}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/secondary","params":{"secondary_id":"019dbca3-1daf-7160-b81a-f1652ed62d34"}}' |jq .
+# Keys
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/keys","params":{}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/keys","params":{"duration":"1h"}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/keys","params":{"start_ts":1776978000,"end_ts":1776985000}}' |jq .
+# Duplicates
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/duplicates","params":{},"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/duplicates","params":{"duration":"1h"}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/duplicates","params":{"start_ts":1776978000,"end_ts":1776985000}}' |jq .

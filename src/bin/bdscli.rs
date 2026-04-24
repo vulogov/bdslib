@@ -59,6 +59,12 @@ enum Command {
 
     /// Generate synthetic documents and print them as JSON (or ingest into DB).
     Generate {
+        /// Fraction of generated documents to re-emit as exact duplicates
+        /// (same key and data, different timestamp).  Range: 0.0–1.0.
+        /// E.g. 0.2 adds 20 duplicate records for every 100 generated.
+        #[arg(long, default_value_t = 0.0)]
+        duplicate: f64,
+
         #[command(subcommand)]
         mode: GenerateMode,
     },
@@ -337,8 +343,8 @@ fn run(cli: Cli) -> Result<(), easy_error::Error> {
                 }
             }
         }
-        Command::Generate { mode } => {
-            cmd_generate(cli.config.as_deref(), mode)
+        Command::Generate { duplicate, mode } => {
+            cmd_generate(cli.config.as_deref(), duplicate, mode)
         }
         Command::Search { mode } => {
             setup_db(cli.config.as_deref())?;
@@ -494,8 +500,51 @@ fn print_doc(doc: &serde_json::Value) {
 
 // ── generate ──────────────────────────────────────────────────────────────────
 
-fn cmd_generate(config: Option<&str>, mode: GenerateMode) -> Result<(), easy_error::Error> {
+/// Return the duration string from any GenerateMode without consuming it.
+fn mode_duration(mode: &GenerateMode) -> &str {
     match mode {
+        GenerateMode::Log       { duration, .. } => duration,
+        GenerateMode::Telemetry { duration, .. } => duration,
+        GenerateMode::Mixed     { duration, .. } => duration,
+        GenerateMode::Templated { duration, .. } => duration,
+    }
+}
+
+/// Append `(docs.len() * pct).round()` duplicate records to `docs`.
+/// Each duplicate copies the `key` and `data` of a randomly chosen source
+/// document and receives a new timestamp within `[now - duration_secs, now]`.
+fn inject_duplicates(docs: &mut Vec<serde_json::Value>, pct: f64, duration_secs: u64) {
+    if pct <= 0.0 || docs.is_empty() {
+        return;
+    }
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let dup_count = ((docs.len() as f64) * pct.min(1.0)).round() as usize;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let n_src = docs.len();
+    for _ in 0..dup_count {
+        let mut dup = docs[rng.gen_range(0..n_src)].clone();
+        let ts = now_secs.saturating_sub(rng.gen_range(0..=duration_secs));
+        if let Some(obj) = dup.as_object_mut() {
+            obj.insert("timestamp".to_string(), serde_json::json!(ts));
+        }
+        docs.push(dup);
+    }
+}
+
+fn cmd_generate(config: Option<&str>, duplicate: f64, mode: GenerateMode) -> Result<(), easy_error::Error> {
+    if !(0.0..=1.0).contains(&duplicate) {
+        return Err(easy_error::err_msg("--duplicate must be between 0.0 and 1.0"));
+    }
+
+    let duration_secs = humantime::parse_duration(mode_duration(&mode))
+        .map(|d| d.as_secs())
+        .unwrap_or(3600);
+
+    let (mut docs, ingest) = match mode {
         GenerateMode::Log { duration, count, format, ingest } => {
             let fmt = match format {
                 LogFormatArg::Random    => LogFormat::Random,
@@ -505,24 +554,28 @@ fn cmd_generate(config: Option<&str>, mode: GenerateMode) -> Result<(), easy_err
                 LogFormatArg::Traceback => LogFormat::Traceback,
             };
             let docs = bdslib::Generator::new().with_log_format(fmt).log_entries(&duration, count);
-            emit_or_ingest(config, docs, ingest)
+            (docs, ingest)
         }
         GenerateMode::Telemetry { duration, count, key, ingest } => {
             let mut g = bdslib::Generator::new();
             if let Some(k) = key { g = g.with_key(k); }
             let docs = g.telemetry(&duration, count);
-            emit_or_ingest(config, docs, ingest)
+            (docs, ingest)
         }
         GenerateMode::Mixed { duration, count, ratio, ingest } => {
             let docs = bdslib::Generator::new().mixed(&duration, count, ratio);
-            emit_or_ingest(config, docs, ingest)
+            (docs, ingest)
         }
         GenerateMode::Templated { duration, count, template, template_file, ingest } => {
             let tmpl = resolve_template(template, template_file)?;
             let docs = bdslib::Generator::new().templated(&duration, &tmpl, count);
-            emit_or_ingest(config, docs, ingest)
+            (docs, ingest)
         }
-    }
+    };
+
+    inject_duplicates(&mut docs, duplicate, duration_secs);
+
+    emit_or_ingest(config, docs, ingest)
 }
 
 fn resolve_template(
