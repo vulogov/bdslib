@@ -8,7 +8,7 @@ Each document is pushed individually so the consumer can interleave them with do
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `docs` | array of objects | yes | The JSON telemetry documents to ingest. Each must contain a `"timestamp"` field (Unix seconds). |
+| `docs` | array of objects | yes | The JSON telemetry documents to ingest. Each must contain `"timestamp"` (Unix seconds), `"key"` (string), and `"data"` (any JSON value). An optional `"id"` (UUID v7) may be supplied; one is generated if absent. All other fields are stored as metadata. |
 
 ## Response
 

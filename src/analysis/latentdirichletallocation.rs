@@ -104,6 +104,38 @@ impl TopicSummary {
         let end_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         Self::query(key, start_secs, end_secs, config)
     }
+
+    /// Run LDA over every distinct primary key found in the lookback window
+    /// `[now − duration, now)`, returning one [`TopicSummary`] per key.
+    ///
+    /// Keys are collected from all shards that overlap the window, deduplicated,
+    /// and processed in alphabetical order. The same `config` is used for every
+    /// key. Requires [`init_db`](crate::init_db) to have been called.
+    pub fn query_all_keys(duration: &str, config: LdaConfig) -> Result<Vec<Self>> {
+        let dur = humantime::parse_duration(duration)
+            .map_err(|e| err_msg(format!("invalid duration '{duration}': {e}")))?;
+        let now = SystemTime::now();
+        let start = now.checked_sub(dur).unwrap_or(UNIX_EPOCH);
+        let start_secs = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let end_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        let db = get_db()?;
+        let start_ts = UNIX_EPOCH + Duration::from_secs(start_secs);
+        let end_ts = UNIX_EPOCH + Duration::from_secs(end_secs);
+
+        let mut all_keys = std::collections::BTreeSet::new();
+        for info in db.cache().info().shards_in_range(start_ts, end_ts)? {
+            let shard = db.cache().shard(info.start_time)?;
+            let keys = shard.observability().list_primary_keys_in_range(start_ts, end_ts)?;
+            all_keys.extend(keys);
+        }
+
+        let mut summaries = Vec::with_capacity(all_keys.len());
+        for key in all_keys {
+            summaries.push(Self::query(&key, start_secs, end_secs, config.clone())?);
+        }
+        Ok(summaries)
+    }
 }
 
 // ── core ──────────────────────────────────────────────────────────────────────

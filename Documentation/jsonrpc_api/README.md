@@ -87,6 +87,8 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/keys`](v2_keys.md) | Unique sorted list of primary record keys within a duration window |
 | [`v2/keys.get`](v2_keys_get.md) | Primary record IDs and secondary ID lists for keys matching a shell-glob pattern within a duration window |
 | [`v2/primaries`](v2_primaries.md) | UUIDs of all primary records, optionally filtered by time window |
+| [`v2/primaries.explore`](v2_primaries_explore.md) | Keys with more than one primary record in a duration window, with counts and UUIDs |
+| [`v2/primaries.explore.telemetry`](v2_primaries_explore_telemetry.md) | Keys with more than one numeric-data primary in a duration window — suitable for `v2/trends` |
 | [`v2/primary`](v2_primary.md) | Full document for a single primary record by UUID |
 | [`v2/secondaries`](v2_secondaries.md) | UUIDs of secondary records associated with a primary |
 | [`v2/secondary`](v2_secondary.md) | Full document for a single secondary record by UUID |
@@ -96,5 +98,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/fulltext.recent`](v2_fulltext_recent.md) | Full-text search returning IDs, timestamps, and scores sorted by most recent first |
 | [`v2/search`](v2_search.md) | Semantic vector search returning primary IDs, timestamps, and similarity scores sorted by score |
 | [`v2/search.get`](v2_search_get.md) | Semantic vector search returning complete primary documents sorted by timestamp |
-| [`v2/topics`](v2_topics.md) | LDA topic modelling over a key's telemetry corpus within a lookback window, returning a keyword summary |
+| [`v2/trends`](v2_trends.md) | Statistical trend summary for a single key: min, max, mean, median, std-dev, anomalies, and breakouts |
+| [`v2/topics`](v2_topics.md) | LDA topic modelling over a single key's telemetry corpus within a lookback window, returning a keyword summary |
+| [`v2/topics.all`](v2_topics_all.md) | LDA topic modelling over every distinct key in the window, returning one keyword summary per key |
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |

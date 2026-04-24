@@ -53,6 +53,16 @@ curl -s -X POST http://127.0.0.1:9000 \
 }
 ```
 
+## Error responses
+
+| Code | Condition |
+|---|---|
+| `-32001` | `ShardsManager` singleton not initialised |
+| `-32002` | Shard index query failed |
+| `-32003` | Shard open failed |
+| `-32004` | Record count query failed |
+| `-32600` | Invalid `duration` string |
+
 ## Notes
 
 - When a time window is specified, only shards that overlap the window are queried.

@@ -8,7 +8,7 @@ The call returns as soon as the document is accepted by the channel — persiste
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `doc` | object | yes | The JSON telemetry document to ingest. Must contain a `"timestamp"` field (Unix seconds) so the shard router can place it in the correct shard. |
+| `doc` | object | yes | The JSON telemetry document to ingest. Must contain `"timestamp"` (Unix seconds), `"key"` (string), and `"data"` (any JSON value). An optional `"id"` field (UUID v7 string) may be supplied; one is generated if absent. All other fields are stored as metadata. |
 
 ## Response
 

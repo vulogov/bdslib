@@ -69,6 +69,16 @@ curl -s -X POST http://127.0.0.1:9000 \
   -d '{"jsonrpc":"2.0","method":"v2/shards","params":{"start_ts":1745000000,"end_ts":1745086399},"id":1}' | jq
 ```
 
+## Error responses
+
+| Code | Condition |
+|---|---|
+| `-32001` | `ShardsManager` singleton not initialised |
+| `-32002` | Shard index query failed |
+| `-32003` | Shard open failed |
+| `-32004` | Record count query failed |
+| `-32600` | Invalid `duration` string |
+
 ## Notes
 
 - Shard boundaries (`start_ts` / `end_ts`) are fixed at shard creation time and represent the full capacity of the shard, not the actual event range within it. Use [`v2/timeline`](v2_timeline.md) to get the real event span.

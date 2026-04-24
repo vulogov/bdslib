@@ -12,13 +12,14 @@ The response includes the stored JSON document plus two computed fields: the cou
 
 ## Response
 
-The response is the original stored JSON document with two additional fields injected:
+The response is the original stored JSON document with two additional fields injected. Every document always contains `id`, `timestamp`, `key`, and `data`; any extra metadata fields stored alongside the document are also present.
 
 ```json
 {
+  "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+  "timestamp": 1745042000,
   "key": "server.cpu",
-  "ts": 1745042000,
-  "data_text": "{\"host\":\"web-01\",\"value\":87.3}",
+  "data": {"host": "web-01", "value": 87.3},
   "secondaries_count": 3,
   "duplications": [1745042010, 1745042020]
 }
@@ -26,8 +27,12 @@ The response is the original stored JSON document with two additional fields inj
 
 | Field | Type | Description |
 |---|---|---|
-| *(stored fields)* | any | All fields from the original stored document |
-| `secondaries_count` | integer | Number of secondary records linked to this primary |
+| `id` | string | UUID v7 of this primary record. |
+| `timestamp` | integer | Event time as Unix seconds. |
+| `key` | string | Signal identifier / metric name. |
+| `data` | any | Measured value as stored. |
+| *(metadata fields)* | any | Any additional fields present in the original ingested document. |
+| `secondaries_count` | integer | Number of secondary records linked to this primary. |
 | `duplications` | array of integers | Unix seconds of each exact-match duplicate of this record (same key + data, different timestamp). Empty array if no duplicates exist. |
 
 ## Example
@@ -47,9 +52,10 @@ curl -s -X POST http://127.0.0.1:9000 \
 {
   "jsonrpc": "2.0",
   "result": {
+    "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+    "timestamp": 1745042000,
     "key": "server.cpu",
-    "ts": 1745042000,
-    "data_text": "{\"host\":\"web-01\",\"value\":87.3}",
+    "data": {"host": "web-01", "value": 87.3},
     "secondaries_count": 3,
     "duplications": [1745042010, 1745042020]
   },

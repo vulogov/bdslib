@@ -19,17 +19,17 @@ This method uses the same Tantivy BM25 index as [`v2/fulltext`](v2_fulltext.md) 
   "results": [
     {
       "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
-      "key": "host.disk",
       "timestamp": 1745042000,
+      "key": "host.disk",
       "data": { "host": "db-02", "mount": "/var", "used_pct": 91.4 },
-      "metadata": { "source": "agent-v2" },
+      "source": "agent-v2",
       "secondaries": [
         {
           "id": "018f1a2b-aaaa-7e5f-bbbb-ccccddddeeee",
-          "key": "host.disk",
           "timestamp": 1745042060,
+          "key": "host.disk",
           "data": { "host": "db-02", "mount": "/var", "used_pct": 92.1 },
-          "metadata": { "source": "agent-v2" }
+          "source": "agent-v2"
         }
       ]
     }
@@ -41,11 +41,11 @@ This method uses the same Tantivy BM25 index as [`v2/fulltext`](v2_fulltext.md) 
 |---|---|---|
 | `results` | array | Ordered list of matching primary documents, in Tantivy relevance order within each shard (shards iterated oldest-first). Empty array when no documents match. |
 | `results[].id` | string | UUID v7 of the primary record. |
-| `results[].key` | string | Dotted metric or log key (e.g. `host.disk`, `syslog`). |
 | `results[].timestamp` | integer | Event time as Unix seconds. |
-| `results[].data` | object | Original payload stored with the record. |
-| `results[].metadata` | object | Arbitrary metadata stored alongside the payload. |
-| `results[].secondaries` | array | Full documents of all secondary records linked to this primary. Empty array if none exist. |
+| `results[].key` | string | Dotted metric or log key (e.g. `host.disk`, `syslog`). |
+| `results[].data` | any | Original payload stored with the record. |
+| *(metadata fields)* | any | Any extra fields from the original ingested document appear inline at the top level (not nested under a `"metadata"` key). |
+| `results[].secondaries` | array | Full documents of all secondary records linked to this primary. Each secondary has the same shape as a primary entry (without `secondaries`). Empty array if none exist. |
 
 ## Example
 
@@ -72,10 +72,10 @@ curl -s -X POST http://127.0.0.1:9000 \
     "results": [
       {
         "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
-        "key": "host.disk",
         "timestamp": 1745042000,
+        "key": "host.disk",
         "data": { "host": "db-02", "mount": "/var", "used_pct": 91.4 },
-        "metadata": { "source": "agent-v2" },
+        "source": "agent-v2",
         "secondaries": []
       }
     ]

@@ -835,6 +835,70 @@ impl ObservabilityStorage {
         self.parse_key_rows(rows)
     }
 
+    /// Return `(id, key, data)` for all primary records whose event timestamp
+    /// falls in `[start, end)`, ordered by `ts` ascending.
+    pub fn list_primaries_with_data_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<(Uuid, String, JsonValue)>> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, key, data FROM telemetry \
+             WHERE is_primary = 1 AND ts >= {s} AND ts < {e} ORDER BY ts ASC"
+        ))?;
+        rows.into_iter()
+            .map(|mut row| {
+                if row.len() < 3 {
+                    return Err(err_msg("row missing id, key, or data column"));
+                }
+                let data_val = row.remove(2);
+                let key_val = row.remove(1);
+                let id_val = row.remove(0);
+                let id = parse_uuid_value(id_val, "id column")?;
+                let key = key_val
+                    .cast_string()
+                    .map_err(|e| err_msg(format!("key cast error: {e}")))?;
+                let data_s = data_val
+                    .cast_string()
+                    .map_err(|e| err_msg(format!("data cast error: {e}")))?;
+                let data: JsonValue = serde_json::from_str(&data_s)
+                    .map_err(|e| err_msg(format!("data JSON parse error: {e}")))?;
+                Ok((id, key, data))
+            })
+            .collect()
+    }
+
+    /// Return `(id, key)` for all primary records whose event timestamp falls in
+    /// `[start, end)`, ordered by `ts` ascending.
+    pub fn list_primaries_with_keys_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<(Uuid, String)>> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, key FROM telemetry \
+             WHERE is_primary = 1 AND ts >= {s} AND ts < {e} ORDER BY ts ASC"
+        ))?;
+        rows.into_iter()
+            .map(|mut row| {
+                if row.len() < 2 {
+                    return Err(err_msg("row missing id or key column"));
+                }
+                let key_val = row.remove(1);
+                let id_val = row.remove(0);
+                let id = parse_uuid_value(id_val, "id column")?;
+                let key = key_val
+                    .cast_string()
+                    .map_err(|e| err_msg(format!("key cast error: {e}")))?;
+                Ok((id, key))
+            })
+            .collect()
+    }
+
     /// Return `(id, ts)` for all primary records whose key matches `pattern`
     /// (DuckDB shell-glob syntax: `*`, `?`, `[abc]`), ordered by `ts` ascending.
     pub fn list_primaries_by_key_pattern_all(

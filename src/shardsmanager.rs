@@ -383,6 +383,77 @@ impl ShardsManager {
         Ok(results)
     }
 
+    /// Return keys that have more than one primary record within
+    /// `[now − duration, now + 1s)`, together with their record count and IDs.
+    ///
+    /// Results are sorted alphabetically by key.  Keys with exactly one primary
+    /// are excluded.
+    pub fn primaries_explore(
+        &self,
+        duration: &str,
+    ) -> Result<Vec<(String, usize, Vec<Uuid>)>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut key_map: std::collections::HashMap<String, Vec<Uuid>> =
+            std::collections::HashMap::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            for (id, key) in shard
+                .observability()
+                .list_primaries_with_keys_in_range(start, end)?
+            {
+                key_map.entry(key).or_default().push(id);
+            }
+        }
+        let mut result: Vec<(String, usize, Vec<Uuid>)> = key_map
+            .into_iter()
+            .filter(|(_, ids)| ids.len() > 1)
+            .map(|(key, ids)| {
+                let count = ids.len();
+                (key, count, ids)
+            })
+            .collect();
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(result)
+    }
+
+    /// Return keys with more than one primary record that carries numeric data
+    /// within `[now − duration, now + 1s)`, together with their record count
+    /// and IDs.
+    ///
+    /// A record is considered numeric when `data` is a JSON number **or**
+    /// `data.value` is a JSON number (the same extraction rule used by
+    /// [`TelemetryTrend`](crate::TelemetryTrend)).  Results are sorted
+    /// alphabetically by key.
+    pub fn primaries_explore_telemetry(
+        &self,
+        duration: &str,
+    ) -> Result<Vec<(String, usize, Vec<Uuid>)>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut key_map: std::collections::HashMap<String, Vec<Uuid>> =
+            std::collections::HashMap::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            for (id, key, data) in shard
+                .observability()
+                .list_primaries_with_data_in_range(start, end)?
+            {
+                if data.as_f64().is_some() || data["value"].as_f64().is_some() {
+                    key_map.entry(key).or_default().push(id);
+                }
+            }
+        }
+        let mut result: Vec<(String, usize, Vec<Uuid>)> = key_map
+            .into_iter()
+            .filter(|(_, ids)| ids.len() > 1)
+            .map(|(key, ids)| {
+                let count = ids.len();
+                (key, count, ids)
+            })
+            .collect();
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(result)
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].

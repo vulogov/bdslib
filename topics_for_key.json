@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "end": 1777068304,
+    "key": "ConnectionError",
+    "keywords": "call, client, config, conn, connect, connectionerror, db, dispatch, division, exception, file, frames, function, host, line, message, most, not, port, py, raw, recent, resp, response, source, traceback, type, views, zero",
+    "n_docs": 3,
+    "n_topics": 3,
+    "start": 1777066504
+  }
+}

@@ -56,6 +56,16 @@ curl -s -X POST http://127.0.0.1:9000 \
 }
 ```
 
+## Error responses
+
+| Code | Condition |
+|---|---|
+| `-32001` | `ShardsManager` singleton not initialised |
+| `-32002` | Shard index query failed |
+| `-32003` | Shard open failed |
+| `-32004` | Primary listing query failed |
+| `-32600` | Invalid `duration` string |
+
 ## Notes
 
 - Records are returned in the order they appear across shards; no global sort is applied.

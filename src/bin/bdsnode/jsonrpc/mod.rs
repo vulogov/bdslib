@@ -10,11 +10,15 @@ mod keys;
 mod keys_get;
 mod params;
 mod primaries;
+mod primaries_explore;
+mod primaries_explore_telemetry;
 mod primary;
 mod search;
 mod search_get;
 mod secondaries;
 mod topics;
+mod topics_all;
+mod trends;
 mod secondary;
 mod shards;
 mod timeline;
@@ -33,6 +37,8 @@ pub fn build_module() -> RpcModule<()> {
     duplicates::register(&mut module);
     shards::register(&mut module);
     primaries::register(&mut module);
+    primaries_explore::register(&mut module);
+    primaries_explore_telemetry::register(&mut module);
     primary::register(&mut module);
     secondaries::register(&mut module);
     secondary::register(&mut module);
@@ -42,5 +48,7 @@ pub fn build_module() -> RpcModule<()> {
     search::register(&mut module);
     search_get::register(&mut module);
     topics::register(&mut module);
+    topics_all::register(&mut module);
+    trends::register(&mut module);
     module
 }
