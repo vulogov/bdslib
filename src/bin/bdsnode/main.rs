@@ -47,6 +47,10 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise pipe registry")?;
 
+    let cleanup_cfg = server::bundcleanup::Config::from_config(cli.config.as_deref())
+        .context("failed to read BUND cleanup config")?;
+    let cleanup_handle = server::bundcleanup::start(cleanup_cfg);
+
     let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
     {
@@ -72,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
     log::info!("shutting down…");
     handle.stop()?;
     handle.stopped().await;
+
+    cleanup_handle.stop().await;
+    server::bundcleanup::vm_close();
 
     // Drain the ingest channel and join the batch thread before checkpointing
     // so that no queued records are lost.

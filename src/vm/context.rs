@@ -5,7 +5,6 @@ use parking_lot::{ArcRwLockWriteGuard, Mutex, RawRwLock, RwLock};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use std::thread;
 
 // ── internal storage ─────────────────────────────────────────────────────────
 
@@ -46,12 +45,7 @@ pub fn init(config_path: Option<&str>) -> Result<(), Error> {
     };
     // A concurrent call may have won the race; that is fine — we just discard
     // our freshly-built ctx and let the winner's stay.
-    if BUNDS.set(Mutex::new(ctx)).is_ok() {
-        thread::Builder::new()
-            .name("bds-vm-evict".to_string())
-            .spawn(eviction_loop)
-            .map_err(|e| err_msg(format!("failed to spawn VM eviction thread: {e}")))?;
-    }
+    let _ = BUNDS.set(Mutex::new(ctx));
     Ok(())
 }
 
@@ -138,29 +132,43 @@ pub fn remove(name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-// ── background eviction ───────────────────────────────────────────────────────
+// ── eviction / shutdown API ───────────────────────────────────────────────────
 
-fn eviction_loop() {
-    loop {
-        // Check every half-TTL so eviction latency is at most one full TTL.
-        let sleep_dur = BUNDS
-            .get()
-            .map(|c| c.lock().ttl / 2)
-            .unwrap_or(Duration::from_secs(60));
-
-        thread::sleep(sleep_dur);
-
-        if let Some(ctx) = BUNDS.get() {
-            let mut guard = ctx.lock();
-            let ttl = guard.ttl;
-            let before = guard.entries.len();
-            guard
-                .entries
-                .retain(|_, entry| entry.last_accessed.elapsed() <= ttl);
-            let evicted = before - guard.entries.len();
-            if evicted > 0 {
-                log::debug!("[context] evicted {evicted} idle BUND instance(s)");
-            }
+/// Remove all BUND VM entries whose idle time exceeds the configured TTL.
+///
+/// Returns the names of every VM that was evicted so the caller can log them.
+/// Called periodically by `bdsnode`'s bundcleanup thread.
+pub fn evict_stale() -> Vec<String> {
+    let Some(ctx) = BUNDS.get() else { return Vec::new() };
+    let mut guard = ctx.lock();
+    let ttl = guard.ttl;
+    let mut evicted = Vec::new();
+    guard.entries.retain(|name, entry| {
+        if entry.last_accessed.elapsed() > ttl {
+            evicted.push(name.clone());
+            false
+        } else {
+            true
         }
-    }
+    });
+    evicted
+}
+
+/// Remove and return the names of every BUND VM currently in the registry.
+///
+/// Called once during server shutdown so callers can log each terminated VM.
+pub fn close_all() -> Vec<String> {
+    let Some(ctx) = BUNDS.get() else { return Vec::new() };
+    let mut guard = ctx.lock();
+    let names: Vec<String> = guard.entries.keys().cloned().collect();
+    guard.entries.clear();
+    names
+}
+
+/// Return the configured time-to-idle duration, or 300 s if not yet initialised.
+pub fn ttl() -> Duration {
+    BUNDS
+        .get()
+        .map(|c| c.lock().ttl)
+        .unwrap_or(Duration::from_secs(300))
 }
