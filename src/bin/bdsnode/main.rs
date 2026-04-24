@@ -37,11 +37,13 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise pipe registry")?;
 
-    if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
+    let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
     {
-        server::add::start(cfg);
-    }
+        Some(server::add::start(cfg))
+    } else {
+        None
+    };
 
     let addr = format!("{}:{}", cli.host, cli.port);
 
@@ -60,6 +62,12 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("shutting down…");
     handle.stop()?;
     handle.stopped().await;
+
+    // Drain the ingest channel and join the batch thread before checkpointing
+    // so that no queued records are lost.
+    if let Some(h) = add_handle {
+        h.stop();
+    }
 
     bdslib::sync_db().map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())

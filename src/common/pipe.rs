@@ -72,6 +72,14 @@ pub fn recv_timeout(name: &str, timeout: Duration) -> Result<Option<Value>> {
     }
 }
 
+/// Borrow the raw [`Receiver`] for `name`.
+///
+/// Intended for callers that need to use `crossbeam::select!` across
+/// multiple channels simultaneously (e.g. combining data and shutdown signals).
+pub fn receiver(name: &str) -> Result<&'static Receiver<Value>> {
+    Ok(&get(name)?.receiver)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

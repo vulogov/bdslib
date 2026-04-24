@@ -1,3 +1,5 @@
+mod add;
+mod add_batch;
 mod count;
 mod duplicates;
 mod keys;
@@ -13,6 +15,8 @@ use jsonrpsee::RpcModule;
 
 pub fn build_module() -> RpcModule<()> {
     let mut module = RpcModule::new(());
+    add::register(&mut module);
+    add_batch::register(&mut module);
     timeline::register(&mut module);
     count::register(&mut module);
     keys::register(&mut module);

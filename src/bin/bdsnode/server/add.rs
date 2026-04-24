@@ -1,8 +1,7 @@
+use crossbeam::channel::{bounded, Receiver, Sender};
 use std::time::Duration;
 
 /// Configuration for the batch-ingestion thread.
-///
-/// Read from the hjson config file using the same keys as before:
 ///
 /// | Key               | Type    | Default | Description |
 /// |-------------------|---------|---------|-------------|
@@ -16,9 +15,7 @@ pub struct Config {
 impl Config {
     /// Parse settings from the hjson config file.
     ///
-    /// Returns `Ok(None)` only when no config path is available (neither
-    /// `config_path` nor `BDS_CONFIG`).  Both fields default gracefully, so
-    /// `Some` is returned whenever a config file can be located.
+    /// Returns `Ok(None)` only when no config path is available.
     pub fn from_config(config_path: Option<&str>) -> anyhow::Result<Option<Self>> {
         let path = match config_path {
             Some(p) => p.to_string(),
@@ -54,48 +51,93 @@ impl Config {
     }
 }
 
-/// Spawn the batch-ingestion thread.
+/// Handle returned by [`start`].
 ///
-/// Drains the `"ingest"` crossbeam channel, accumulates records into batches,
-/// and calls [`ShardsManager::add_batch`] when either `batch_size` records are
-/// queued or `timeout_ms` milliseconds pass with no new records.
-///
-/// Runs as a plain OS thread (not a tokio task) since DuckDB operations are
-/// blocking and this thread spends most of its time in `recv_timeout`.
-pub fn start(cfg: Config) -> std::thread::JoinHandle<()> {
-    let timeout = Duration::from_millis(cfg.timeout_ms);
-    std::thread::Builder::new()
-        .name("bds-add".to_string())
-        .spawn(move || run(cfg.batch_size, timeout))
-        .expect("failed to spawn bds-add thread")
+/// Call [`Handle::stop`] on server shutdown to drain remaining records from
+/// the `"ingest"` channel and join the thread before calling `sync_db`.
+pub struct Handle {
+    shutdown_tx: Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
-fn run(batch_size: usize, timeout: Duration) {
+impl Handle {
+    /// Signal the thread to drain the `"ingest"` channel and exit, then block
+    /// until it finishes.
+    pub fn stop(mut self) {
+        let _ = self.shutdown_tx.send(());
+        if let Some(t) = self.thread.take() {
+            if let Err(e) = t.join() {
+                eprintln!("[add] thread panicked on shutdown: {e:?}");
+            }
+        }
+    }
+}
+
+/// Spawn the batch-ingestion thread and return a [`Handle`] for graceful shutdown.
+///
+/// The thread drains the `"ingest"` crossbeam channel, accumulates records into
+/// batches, and calls [`ShardsManager::add_batch`] when either `batch_size`
+/// records are queued or `timeout_ms` milliseconds pass with no new records.
+///
+/// On [`Handle::stop`]: any records still in the channel are flushed before
+/// the thread exits, ensuring no data is lost on server shutdown.
+pub fn start(cfg: Config) -> Handle {
+    let (shutdown_tx, shutdown_rx) = bounded(1);
+    let timeout = Duration::from_millis(cfg.timeout_ms);
+    let thread = std::thread::Builder::new()
+        .name("bds-add".to_string())
+        .spawn(move || run(cfg.batch_size, timeout, shutdown_rx))
+        .expect("failed to spawn bds-add thread");
+    Handle { shutdown_tx, thread: Some(thread) }
+}
+
+fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
     eprintln!(
         "[add] started (batch_size={batch_size}, timeout={}ms)",
         timeout.as_millis()
     );
+
+    let ingest_rx = match bdslib::pipe::receiver("ingest") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[add] cannot access ingest channel: {e}");
+            return;
+        }
+    };
+
     let mut batch: Vec<serde_json::Value> = Vec::with_capacity(batch_size);
 
     loop {
-        match bdslib::pipe::recv_timeout("ingest", timeout) {
-            Ok(Some(doc)) => {
-                batch.push(doc);
-                if batch.len() >= batch_size {
-                    flush(&mut batch);
+        crossbeam::select! {
+            recv(ingest_rx) -> msg => {
+                match msg {
+                    Ok(doc) => {
+                        batch.push(doc);
+                        if batch.len() >= batch_size {
+                            flush(&mut batch);
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
-            Ok(None) => {
+            recv(shutdown_rx) -> _ => {
+                // Drain every record still sitting in the channel before exiting.
+                while let Ok(doc) = ingest_rx.try_recv() {
+                    batch.push(doc);
+                    if batch.len() >= batch_size {
+                        flush(&mut batch);
+                    }
+                }
                 if !batch.is_empty() {
                     flush(&mut batch);
                 }
-            }
-            Err(e) => {
-                eprintln!("[add] channel error: {e}; thread exiting");
-                if !batch.is_empty() {
-                    flush(&mut batch);
-                }
+                eprintln!("[add] shutdown complete");
                 break;
+            }
+            default(timeout) => {
+                if !batch.is_empty() {
+                    flush(&mut batch);
+                }
             }
         }
     }
