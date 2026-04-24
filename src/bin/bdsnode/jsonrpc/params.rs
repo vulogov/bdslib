@@ -2,6 +2,17 @@ use jsonrpsee::types::ErrorObject;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+/// Fetch exact-match duplication timestamps for `id` from `obs` and convert
+/// them to a sorted list of Unix seconds.  Returns an empty vec on any error
+/// so callers never need to propagate this as a fatal failure.
+pub fn duplication_timestamps(obs: &bdslib::ObservabilityStorage, id: Uuid) -> Vec<u64> {
+    obs.get_duplicate_timestamps_by_id(id)
+        .unwrap_or_default()
+        .iter()
+        .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+        .collect()
+}
+
 pub fn rpc_err(code: i32, msg: impl std::fmt::Display) -> ErrorObject<'static> {
     ErrorObject::owned(code, msg.to_string(), None::<()>)
 }

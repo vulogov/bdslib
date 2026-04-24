@@ -1,4 +1,4 @@
-use super::params::{find_shard_for_uuid, rpc_err};
+use super::params::{duplication_timestamps, find_shard_for_uuid, rpc_err};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use uuid::Uuid;
@@ -28,9 +28,11 @@ pub fn register(module: &mut RpcModule<()>) {
 
                 let secondaries_count =
                     obs.list_secondaries(uuid).map(|v| v.len()).unwrap_or(0);
+                let duplications = duplication_timestamps(obs, uuid);
 
                 if let Some(obj) = doc.as_object_mut() {
                     obj.insert("secondaries_count".to_string(), serde_json::json!(secondaries_count));
+                    obj.insert("duplications".to_string(), serde_json::json!(duplications));
                 }
 
                 Ok::<serde_json::Value, ErrorObject>(doc)

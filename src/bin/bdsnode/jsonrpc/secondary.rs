@@ -1,4 +1,4 @@
-use super::params::{find_shard_for_uuid, rpc_err};
+use super::params::{duplication_timestamps, find_shard_for_uuid, rpc_err};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use uuid::Uuid;
@@ -31,8 +31,11 @@ pub fn register(module: &mut RpcModule<()>) {
                     .map_err(|e| rpc_err(-32005, e))?
                     .ok_or_else(|| rpc_err(-32404, format!("no primary found for secondary {}", p.secondary_id)))?;
 
+                let duplications = duplication_timestamps(obs, uuid);
+
                 if let Some(obj) = doc.as_object_mut() {
                     obj.insert("primary_id".to_string(), serde_json::json!(primary_id.to_string()));
+                    obj.insert("duplications".to_string(), serde_json::json!(duplications));
                 }
 
                 Ok::<serde_json::Value, ErrorObject>(doc)
