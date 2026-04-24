@@ -240,6 +240,11 @@ impl ShardsCache {
         &self.info
     }
 
+    /// Return the configured shard width.
+    pub fn shard_duration(&self) -> Duration {
+        self.shard_duration
+    }
+
     /// Return the number of shards currently in the in-memory cache.
     pub fn cached_count(&self) -> usize {
         self.cache.lock().len()

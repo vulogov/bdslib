@@ -130,6 +130,25 @@ impl StorageEngine {
         Ok(())
     }
 
+    /// Execute multiple SQL statements inside a single `BEGIN … COMMIT` transaction.
+    ///
+    /// All statements are sent to one connection in one round-trip, eliminating
+    /// the per-statement pool-checkout + WAL-flush overhead. No-op when
+    /// `statements` is empty.
+    pub fn execute_many(&self, statements: &[String]) -> Result<()> {
+        if statements.is_empty() {
+            return Ok(());
+        }
+        let conn = self
+            .pool
+            .get()
+            .map_err(|e| EasyError::new("Pool checkout failed for execute_many", e))?;
+        let sql = format!("BEGIN;\n{};\nCOMMIT;", statements.join(";\n"));
+        conn.execute_batch(&sql)
+            .map_err(|e| EasyError::new("Batch transaction failed", e))?;
+        Ok(())
+    }
+
     pub fn sync(&self) -> Result<()> {
         self.execute("CHECKPOINT;")
     }

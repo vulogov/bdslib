@@ -99,12 +99,43 @@ impl Shard {
     /// [`search_vector`]: Shard::search_vector
     pub fn add(&self, doc: JsonValue) -> Result<Uuid> {
         let fingerprint = json_fingerprint(&doc);
-        let id = self.observability.add(doc.clone())?;
-        if self.observability.is_primary(id)? {
+        let (id, is_primary, opt_emb) = self.observability.add(doc.clone())?;
+        if is_primary {
             self.fts.add_document_with_id(id, &fingerprint)?;
-            self.vector.store_document(&id.to_string(), doc)?;
+            // Reuse the embedding already computed by observability — no second embed.
+            self.vector
+                .store_vector(&id.to_string(), opt_emb.unwrap(), Some(doc))?;
         }
         Ok(id)
+    }
+
+    /// Store a batch of telemetry events with a single embedding pass, a single
+    /// FTS commit, and a single DuckDB write transaction for all primaries.
+    ///
+    /// Documents classified as duplicates or secondaries are written to
+    /// `ObservabilityStorage` but are not staged for FTS/vector indexing.
+    /// Returns UUIDs in the same order as the input documents.
+    pub fn add_batch(&self, docs: Vec<JsonValue>) -> Result<Vec<Uuid>> {
+        let fingerprints: Vec<String> = docs.iter().map(|d| json_fingerprint(d)).collect();
+
+        // observability.add_batch handles batch embedding + single transaction.
+        let results = self.observability.add_batch(&docs)?;
+
+        let mut ids = Vec::with_capacity(results.len());
+        let mut fts_batch: Vec<(Uuid, String)> = Vec::new();
+
+        for (i, (id, is_primary, opt_emb)) in results.into_iter().enumerate() {
+            ids.push(id);
+            if is_primary {
+                fts_batch.push((id, fingerprints[i].clone()));
+                // Reuse embedding from observability — no re-embed.
+                self.vector
+                    .store_vector(&id.to_string(), opt_emb.unwrap(), Some(docs[i].clone()))?;
+            }
+        }
+
+        self.fts.add_documents_batch(&fts_batch)?;
+        Ok(ids)
     }
 
     /// Delete a record from `ObservabilityStorage` and, if it was a primary,

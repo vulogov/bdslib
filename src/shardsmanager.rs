@@ -122,9 +122,68 @@ impl ShardsManager {
 
     /// Add a batch of JSON documents, routing each to its timestamp-appropriate shard.
     ///
+    /// Documents are grouped by shard interval before processing so that each
+    /// unique shard is opened exactly once and receives a single batched FTS
+    /// commit for all its primaries, rather than one commit per document.
+    /// This reduces mutex contention on `ShardsCache` and dramatically cuts
+    /// Tantivy write amplification for large batches.
+    ///
+    /// The `ShardsCache` lock is never held during document processing — it is
+    /// acquired briefly to look up or create each shard, then released before
+    /// any I/O or embedding work begins.
+    ///
     /// Returns UUIDs in the same order as the input documents.
     pub fn add_batch(&self, docs: Vec<JsonValue>) -> Result<Vec<Uuid>> {
-        docs.into_iter().map(|doc| self.add(doc)).collect()
+        if docs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let shard_dur = self.cache.shard_duration();
+
+        // Tag each document with its original index and aligned shard-start time.
+        struct Tagged {
+            orig_idx: usize,
+            shard_start: SystemTime,
+            doc: JsonValue,
+        }
+        let mut tagged: Vec<Tagged> = Vec::with_capacity(docs.len());
+        for (orig_idx, doc) in docs.into_iter().enumerate() {
+            let ts = extract_timestamp(&doc)?;
+            let (shard_start, _) =
+                crate::common::timerange::align_to_duration(ts, shard_dur)?;
+            tagged.push(Tagged { orig_idx, shard_start, doc });
+        }
+
+        // Sort so all docs for the same shard are contiguous.
+        tagged.sort_by_key(|t| t.shard_start);
+
+        let mut result_ids = vec![Uuid::nil(); tagged.len()];
+        let mut group_start = 0;
+
+        while group_start < tagged.len() {
+            let current_start = tagged[group_start].shard_start;
+
+            // Find the end of this shard's group.
+            let group_end = tagged[group_start..]
+                .partition_point(|t| t.shard_start == current_start)
+                + group_start;
+
+            // Open the shard once; lock is released before any document work.
+            let shard = self.cache.shard(current_start)?;
+
+            let group = &tagged[group_start..group_end];
+            let shard_docs: Vec<JsonValue> =
+                group.iter().map(|t| t.doc.clone()).collect();
+            let shard_ids = shard.add_batch(shard_docs)?;
+
+            for (t, id) in group.iter().zip(shard_ids) {
+                result_ids[t.orig_idx] = id;
+            }
+
+            group_start = group_end;
+        }
+
+        Ok(result_ids)
     }
 
     /// Delete the record with `id` from whichever catalog-registered shard contains it.
@@ -212,6 +271,64 @@ impl ShardsManager {
             results.extend(shard.search_fts_with_ts(query, limit)?);
         }
         results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    /// Semantic vector search returning `(primary_id, unix_ts, score)` triples
+    /// across all catalog-registered shards that overlap
+    /// `[now − duration, now + 1s)`.
+    ///
+    /// Results are merged from all shards, sorted by score descending, then
+    /// truncated to `limit`. No document bodies are returned.
+    pub fn vectorsearch(
+        &self,
+        duration: &str,
+        query: &JsonValue,
+        limit: usize,
+    ) -> Result<Vec<(Uuid, i64, f32)>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut results: Vec<(Uuid, i64, f32)> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            for doc in shard.search_vector(query, limit)? {
+                let id_str = doc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let id = Uuid::parse_str(id_str)
+                    .map_err(|e| err_msg(format!("invalid UUID in vector result: {e}")))?;
+                let ts = doc.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+                let score = doc.get("_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                results.push((id, ts, score));
+            }
+        }
+        results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    /// Semantic vector search returning full primary documents sorted by
+    /// timestamp descending across all catalog-registered shards that overlap
+    /// `[now − duration, now + 1s)`.
+    ///
+    /// Results from all shards are merged, sorted by `timestamp` descending,
+    /// then truncated to `limit`. Each document includes a `"_score"` field
+    /// and an embedded `"secondaries"` array.
+    pub fn vectorsearch_recent(
+        &self,
+        duration: &str,
+        query: &JsonValue,
+        limit: usize,
+    ) -> Result<Vec<JsonValue>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut results: Vec<JsonValue> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            results.extend(shard.search_vector(query, limit)?);
+        }
+        results.sort_by(|a, b| {
+            let ta = a.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+            let tb = b.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+            tb.cmp(&ta)
+        });
         results.truncate(limit);
         Ok(results)
     }

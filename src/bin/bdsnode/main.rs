@@ -23,6 +23,13 @@ struct Cli {
     /// Log verbosity (0=env default, 1=info, 2=debug, 3=trace).
     #[arg(short = 'd', long, default_value_t = 0)]
     debug: u32,
+
+    /// Wipe the existing data store and start fresh before opening.
+    ///
+    /// Reads `dbpath` from the config file, removes the directory tree, then
+    /// proceeds with normal initialisation. Use with care — all data is lost.
+    #[arg(long, default_value_t = false)]
+    new: bool,
 }
 
 #[tokio::main]
@@ -30,6 +37,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     bdslib::setloglevel::setloglevel(cli.debug);
+
+    if cli.new {
+        let dbpath = bdslib::dbpath_from_config(cli.config.as_deref())
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("failed to read dbpath from config for --new")?;
+        if std::path::Path::new(&dbpath).exists() {
+            std::fs::remove_dir_all(&dbpath)
+                .with_context(|| format!("--new: failed to remove {dbpath}"))?;
+            log::info!("--new: removed existing data store at {dbpath}");
+        } else {
+            log::info!("--new: {dbpath} does not exist, nothing to remove");
+        }
+    }
 
     bdslib::init_db(cli.config.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))

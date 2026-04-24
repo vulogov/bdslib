@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     let mut stored_id = None;
     for &offset in &offsets {
         let ts = base_ts + offset;
-        let id = store1.add(tel("cpu.usage", json!(82), ts))?;
+        let (id, _, _) = store1.add(tel("cpu.usage", json!(82), ts))?;
         if stored_id.is_none() {
             stored_id = Some(id);
             println!("  [{}]  stored  -> {id}", systime_label(ts));
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     }
 
     // A different data value for the same key is a new record, not a duplicate.
-    let id_spike = store1.add(tel("cpu.usage", json!(97), base_ts + 240))?;
+    let (id_spike, _, _) = store1.add(tel("cpu.usage", json!(97), base_ts + 240))?;
     println!(
         "\nSubmitting 'cpu.usage' = 97 (different value) -> {id_spike}"
     );
@@ -112,7 +112,7 @@ fn main() -> Result<()> {
 
     println!("Storing one record per data type (threshold=1.1 → all primaries):\n");
     for (key, data, label) in mixed_events {
-        let id = store2.add(tel(key, data.clone(), base_ts))?;
+        let (id, _, _) = store2.add(tel(key, data.clone(), base_ts))?;
         println!("  {label:<22}  key={key:<14}  data={data:<35}  -> {id}");
     }
 
@@ -145,7 +145,7 @@ fn main() -> Result<()> {
     let path3 = dir3.path().join("meta.db");
     let store3 = ObservabilityStorage::new(path3.to_str().unwrap(), 4, embedding.clone())?;
 
-    let id_meta = store3.add(tel_meta("mem.rss", json!(1_073_741_824u64), base_ts, "worker-03"))?;
+    let (id_meta, _, _) = store3.add(tel_meta("mem.rss", json!(1_073_741_824u64), base_ts, "worker-03"))?;
     let retrieved = store3.get_by_id(id_meta)?.unwrap();
     println!("Submitted: timestamp, key, data  +  host, env extra fields");
     println!("Retrieved document:");
@@ -182,7 +182,7 @@ fn main() -> Result<()> {
     println!("Batch A — semantically related error strings (key=\"net.error\"):\n");
     let mut error_ids = Vec::new();
     for (msg, offset) in error_texts {
-        let id = store4.add(tel("net.error", json!(msg), base_ts + offset))?;
+        let (id, _, _) = store4.add(tel("net.error", json!(msg), base_ts + offset))?;
         error_ids.push((id, *msg));
         println!("  \"{msg}\"  -> {id}");
     }
@@ -197,7 +197,7 @@ fn main() -> Result<()> {
 
     let mut distinct_ids = Vec::new();
     for (key, data, offset) in distinct {
-        let id = store4.add(tel(key, data.clone(), base_ts + offset))?;
+        let (id, _, _) = store4.add(tel(key, data.clone(), base_ts + offset))?;
         distinct_ids.push(id);
         println!("  key={key:<14}  data={:<8}  -> {id}", data.to_string());
     }
@@ -277,9 +277,9 @@ fn main() -> Result<()> {
     let path6 = dir6.path().join("delete.db");
     let store6 = ObservabilityStorage::new(path6.to_str().unwrap(), 4, embedding.clone())?;
 
-    let id_a = store6.add(tel("x", json!("alpha"),   base_ts))?;
-    let _id_b = store6.add(tel("x", json!("beta"),    base_ts + 1))?;
-    let id_c = store6.add(tel("y", json!("gamma"),    base_ts + 2))?;
+    let (id_a, _, _) = store6.add(tel("x", json!("alpha"),   base_ts))?;
+    let (_id_b, _, _) = store6.add(tel("x", json!("beta"),    base_ts + 1))?;
+    let (id_c, _, _) = store6.add(tel("y", json!("gamma"),    base_ts + 2))?;
 
     println!("Stored 3 records under keys 'x' (2 records) and 'y' (1 record).");
 

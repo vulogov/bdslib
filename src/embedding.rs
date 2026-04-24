@@ -59,6 +59,24 @@ impl EmbeddingEngine {
             .ok_or_else(|| err_msg("Model returned no embedding"))
     }
 
+    /// Embed multiple strings in a single ONNX inference pass.
+    ///
+    /// Significantly faster than calling [`embed`] N times because the
+    /// underlying model processes the whole batch in one matrix operation.
+    /// Returns one vector per input in the same order. Returns an empty `Vec`
+    /// when `texts` is empty.
+    ///
+    /// [`embed`]: EmbeddingEngine::embed
+    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        self.inner
+            .lock()
+            .embed(texts.to_vec(), None)
+            .map_err(|e| err_msg(format!("Batch embedding failed: {e}")))
+    }
+
     /// Compute the cosine similarity between two strings.
     ///
     /// The two embeddings are generated concurrently in Rayon worker threads.

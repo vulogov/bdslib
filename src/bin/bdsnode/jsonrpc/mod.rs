@@ -10,6 +10,8 @@ mod keys;
 mod params;
 mod primaries;
 mod primary;
+mod search;
+mod search_get;
 mod secondaries;
 mod secondary;
 mod shards;
@@ -34,5 +36,7 @@ pub fn build_module() -> RpcModule<()> {
     fulltext::register(&mut module);
     fulltext_get::register(&mut module);
     fulltext_recent::register(&mut module);
+    search::register(&mut module);
+    search_get::register(&mut module);
     module
 }

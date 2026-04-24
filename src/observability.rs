@@ -7,8 +7,10 @@ use crate::common::timerange::to_unix_secs;
 use crate::common::uuid::{generate_v7_at};
 use crate::EmbeddingEngine;
 use crate::StorageEngine;
+use parking_lot::Mutex;
 use rust_dynamic::value::Value as DynamicValue;
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -114,6 +116,9 @@ pub struct ObservabilityStorage {
     engine: Arc<StorageEngine>,
     embedding: Arc<EmbeddingEngine>,
     config: Arc<ObservabilityStorageConfig>,
+    // Lazy-loaded in-memory mirror of `primary_embeddings`.
+    // None = not yet populated from DB; Some(_) = ready for in-memory classify.
+    primary_cache: Arc<Mutex<Option<Vec<(Uuid, Vec<f32>)>>>>,
 }
 
 impl ObservabilityStorage {
@@ -137,12 +142,17 @@ impl ObservabilityStorage {
             engine: Arc::new(engine),
             embedding: Arc::new(embedding),
             config: Arc::new(config),
+            primary_cache: Arc::new(Mutex::new(None)),
         })
     }
 
     // ── writes ────────────────────────────────────────────────────────────────
 
-    /// Store a telemetry record and return its UUID.
+    /// Store a telemetry record and return its UUID together with its primary flag.
+    ///
+    /// Returns `(uuid, is_primary)`. For exact-match duplicates `is_primary` is
+    /// always `false` — the record is already indexed; the caller should not
+    /// re-index it.
     ///
     /// ## Mandatory fields
     ///
@@ -161,7 +171,11 @@ impl ObservabilityStorage {
     ///   again.
     /// - Otherwise the record is embedded, classified as primary or secondary,
     ///   and inserted.
-    pub fn add(&self, doc: JsonValue) -> Result<Uuid> {
+    /// Store a telemetry record and return `(uuid, is_primary, embedding)`.
+    ///
+    /// `embedding` is `Some(vec)` only for new primary records; the caller can
+    /// use it directly for vector indexing without re-embedding the same text.
+    pub fn add(&self, doc: JsonValue) -> Result<(Uuid, bool, Option<Vec<f32>>)> {
         // ── validate and extract mandatory fields ─────────────────────────────
         let ts_val = doc
             .get("timestamp")
@@ -199,13 +213,14 @@ impl ObservabilityStorage {
         if let Some(row) = existing.into_iter().next() {
             let existing_id = parse_uuid_field(row, 0, "telemetry.id")?;
             self.record_duplicate(&key, &data_text, ts)?;
-            return Ok(existing_id);
+            // Duplicate: already indexed — caller must not re-index.
+            return Ok((existing_id, false, None));
         }
 
         // ── embed data and classify primary / secondary ────────────────────────
         let embed_input = format!("key: {key} {data_text}");
         let embedding = self.embedding.embed(&embed_input)?;
-        let (is_primary, similar_primary) = self.classify(&embedding)?;
+        let (is_primary, similar_primary) = self.classify(&embedding, id)?;
 
         // ── store telemetry record ─────────────────────────────────────────────
         let data_s = serde_json::to_string(&data)
@@ -228,14 +243,201 @@ impl ObservabilityStorage {
             self.engine.execute(&format!(
                 "INSERT INTO primary_embeddings VALUES ('{id}', from_hex('{hex}'))"
             ))?;
+            Ok((id, true, Some(embedding)))
         } else {
             let primary_id = similar_primary.unwrap();
             self.engine.execute(&format!(
                 "INSERT INTO primary_secondary VALUES ('{primary_id}', '{id}', {ts})"
             ))?;
+            Ok((id, false, None))
+        }
+    }
+
+    /// Store a batch of telemetry records with a single embedding pass and a
+    /// single write transaction, dramatically reducing per-record overhead.
+    ///
+    /// Returns one `(uuid, is_primary, embedding)` triple per input document in
+    /// the same order. `embedding` is `Some` only for new primary records.
+    pub fn add_batch(&self, docs: &[JsonValue]) -> Result<Vec<(Uuid, bool, Option<Vec<f32>>)>> {
+        if docs.is_empty() {
+            return Ok(vec![]);
         }
 
-        Ok(id)
+        // ── phase 1: validate, dedup-check, collect new docs ──────────────────
+        enum State {
+            Duplicate(Uuid),
+            New(usize), // index into `new_docs`
+        }
+
+        struct NewDoc {
+            id: Uuid,
+            ts: i64,
+            key: String,
+            data: JsonValue,
+            data_text: String,
+            metadata: JsonValue,
+        }
+
+        let mut states: Vec<State> = Vec::with_capacity(docs.len());
+        let mut new_docs: Vec<NewDoc> = Vec::new();
+        // Track (key, data_text) seen in this batch for intra-batch dedup.
+        let mut batch_seen: HashMap<(String, String), Uuid> = HashMap::new();
+
+        for doc in docs.iter() {
+            let ts_val = doc
+                .get("timestamp")
+                .ok_or_else(|| err_msg("missing mandatory field 'timestamp'"))?;
+            let ts = parse_timestamp(ts_val)?;
+
+            let key = doc
+                .get("key")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| err_msg("missing or non-string mandatory field 'key'"))?
+                .to_string();
+
+            let data = doc
+                .get("data")
+                .ok_or_else(|| err_msg("missing mandatory field 'data'"))?
+                .clone();
+
+            let id = if let Some(s) = doc.get("id").and_then(|v| v.as_str()) {
+                Uuid::parse_str(s).map_err(|e| err_msg(format!("invalid 'id' field: {e}")))?
+            } else {
+                generate_v7_at(UNIX_EPOCH + Duration::from_secs(ts as u64))
+            };
+
+            let data_text = data_to_text(&data);
+            let metadata = build_metadata(doc);
+            let dedup_key = (key.clone(), data_text.clone());
+
+            // Intra-batch duplicate?
+            if let Some(&existing_id) = batch_seen.get(&dedup_key) {
+                self.record_duplicate(&key, &data_text, ts)?;
+                states.push(State::Duplicate(existing_id));
+                continue;
+            }
+
+            // DB duplicate?
+            let existing = self.engine.select_all(&format!(
+                "SELECT id FROM telemetry WHERE key = '{}' AND data_text = '{}'",
+                sql_escape(&key),
+                sql_escape(&data_text),
+            ))?;
+
+            if let Some(row) = existing.into_iter().next() {
+                let existing_id = parse_uuid_field(row, 0, "telemetry.id")?;
+                batch_seen.insert(dedup_key, existing_id);
+                self.record_duplicate(&key, &data_text, ts)?;
+                states.push(State::Duplicate(existing_id));
+            } else {
+                let idx = new_docs.len();
+                batch_seen.insert(dedup_key, id);
+                new_docs.push(NewDoc { id, ts, key, data, data_text, metadata });
+                states.push(State::New(idx));
+            }
+        }
+
+        if new_docs.is_empty() {
+            return Ok(states
+                .into_iter()
+                .map(|s| {
+                    let State::Duplicate(id) = s else { unreachable!() };
+                    (id, false, None)
+                })
+                .collect());
+        }
+
+        // ── phase 2: batch-embed all new docs in one ONNX pass ────────────────
+        let embed_inputs: Vec<String> = new_docs
+            .iter()
+            .map(|d| format!("key: {} {}", d.key, d.data_text))
+            .collect();
+        let embed_refs: Vec<&str> = embed_inputs.iter().map(|s| s.as_str()).collect();
+        let embeddings = self.embedding.embed_batch(&embed_refs)?;
+
+        // ── phase 3: classify all using in-memory cache, one lock for batch ───
+        struct Classified {
+            is_primary: bool,
+            similar_primary: Option<Uuid>,
+        }
+        let mut classified: Vec<Classified> = Vec::with_capacity(new_docs.len());
+
+        {
+            let mut cache = self.primary_cache.lock();
+            if cache.is_none() {
+                *cache = Some(self.load_primary_embeddings_from_db()?);
+            }
+            let entries = cache.as_mut().unwrap();
+            for (new_doc, emb) in new_docs.iter().zip(embeddings.iter()) {
+                let (is_primary, similar_primary) =
+                    Self::classify_in_memory(entries, emb, self.config.similarity_threshold)?;
+                if is_primary {
+                    // Update cache now so subsequent docs in this batch see this primary.
+                    entries.push((new_doc.id, emb.clone()));
+                }
+                classified.push(Classified { is_primary, similar_primary });
+            }
+        } // cache lock released before any I/O
+
+        // ── phase 4: all INSERTs in one transaction ───────────────────────────
+        let mut sql_stmts: Vec<String> = Vec::with_capacity(new_docs.len() * 2);
+
+        for ((new_doc, emb), cls) in new_docs
+            .iter()
+            .zip(embeddings.iter())
+            .zip(classified.iter())
+        {
+            let data_s = serde_json::to_string(&new_doc.data)
+                .map_err(|e| err_msg(format!("data serialisation failed: {e}")))?;
+            let meta_s = serde_json::to_string(&new_doc.metadata)
+                .map_err(|e| err_msg(format!("metadata serialisation failed: {e}")))?;
+
+            sql_stmts.push(format!(
+                "INSERT INTO telemetry (id, ts, key, data, metadata, data_text, is_primary) \
+                 VALUES ('{}', {}, '{}', '{}'::JSON, '{}'::JSON, '{}', {})",
+                new_doc.id,
+                new_doc.ts,
+                sql_escape(&new_doc.key),
+                sql_escape(&data_s),
+                sql_escape(&meta_s),
+                sql_escape(&new_doc.data_text),
+                if cls.is_primary { 1 } else { 0 },
+            ));
+
+            if cls.is_primary {
+                let hex = to_hex(&embedding_to_bytes(emb));
+                sql_stmts.push(format!(
+                    "INSERT INTO primary_embeddings VALUES ('{}', from_hex('{}'))",
+                    new_doc.id, hex
+                ));
+            } else {
+                let primary_id = cls.similar_primary.unwrap();
+                sql_stmts.push(format!(
+                    "INSERT INTO primary_secondary VALUES ('{}', '{}', {})",
+                    primary_id, new_doc.id, new_doc.ts
+                ));
+            }
+        }
+
+        self.engine.execute_many(&sql_stmts)?;
+
+        // ── phase 5: assemble results in original input order ─────────────────
+        let mut results = Vec::with_capacity(docs.len());
+        for state in states {
+            match state {
+                State::Duplicate(existing_id) => results.push((existing_id, false, None)),
+                State::New(idx) => {
+                    let cls = &classified[idx];
+                    let opt_emb = if cls.is_primary {
+                        Some(embeddings[idx].clone())
+                    } else {
+                        None
+                    };
+                    results.push((new_docs[idx].id, cls.is_primary, opt_emb));
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// Delete the record with `id` and all associated tracking rows.
@@ -650,21 +852,34 @@ impl ObservabilityStorage {
 
     // ── internal ──────────────────────────────────────────────────────────────
 
-    /// Compare `embedding` against all stored primary embeddings.
+    /// Classify `embedding` using the in-memory cache.
+    ///
+    /// On first call the cache is populated from `primary_embeddings`.
+    /// If the result is primary, `id_if_primary` is appended to the cache so
+    /// that subsequent classifies in the same session see it immediately —
+    /// without waiting for a DB round-trip.
     ///
     /// Returns `(is_primary, Option<most_similar_primary_uuid>)`.
-    fn classify(&self, embedding: &[f32]) -> Result<(bool, Option<Uuid>)> {
+    fn classify(&self, embedding: &[f32], id_if_primary: Uuid) -> Result<(bool, Option<Uuid>)> {
+        let mut cache = self.primary_cache.lock();
+        if cache.is_none() {
+            *cache = Some(self.load_primary_embeddings_from_db()?);
+        }
+        let entries = cache.as_mut().unwrap();
+        let result =
+            Self::classify_in_memory(entries, embedding, self.config.similarity_threshold)?;
+        if result.0 {
+            entries.push((id_if_primary, embedding.to_vec()));
+        }
+        Ok(result)
+    }
+
+    /// Load all rows from `primary_embeddings` into a Vec suitable for the cache.
+    fn load_primary_embeddings_from_db(&self) -> Result<Vec<(Uuid, Vec<f32>)>> {
         let rows = self
             .engine
             .select_all("SELECT primary_id, embedding FROM primary_embeddings")?;
-
-        if rows.is_empty() {
-            return Ok((true, None));
-        }
-
-        let mut best_sim = f32::NEG_INFINITY;
-        let mut best_id: Option<Uuid> = None;
-
+        let mut entries = Vec::with_capacity(rows.len());
         for row in rows {
             let mut it = row.into_iter();
             let pid = parse_uuid_value(
@@ -677,15 +892,32 @@ impl ObservabilityStorage {
                 .ok_or_else(|| err_msg("primary_embeddings row missing embedding"))?
                 .cast_bin()
                 .map_err(|e| err_msg(e.to_string()))?;
-            let prim_emb = bytes_to_embedding(&emb_bytes);
-            let sim = cosine_similarity(embedding, &prim_emb)?;
+            entries.push((pid, bytes_to_embedding(&emb_bytes)));
+        }
+        Ok(entries)
+    }
+
+    /// Pure in-memory cosine-similarity scan against `entries`.
+    ///
+    /// Returns `(is_primary, Option<most_similar_primary_uuid>)`.
+    fn classify_in_memory(
+        entries: &[(Uuid, Vec<f32>)],
+        embedding: &[f32],
+        threshold: f32,
+    ) -> Result<(bool, Option<Uuid>)> {
+        if entries.is_empty() {
+            return Ok((true, None));
+        }
+        let mut best_sim = f32::NEG_INFINITY;
+        let mut best_id: Option<Uuid> = None;
+        for (pid, prim_emb) in entries {
+            let sim = cosine_similarity(embedding, prim_emb)?;
             if sim > best_sim {
                 best_sim = sim;
-                best_id = Some(pid);
+                best_id = Some(*pid);
             }
         }
-
-        if best_sim >= self.config.similarity_threshold {
+        if best_sim >= threshold {
             Ok((false, best_id))
         } else {
             Ok((true, None))

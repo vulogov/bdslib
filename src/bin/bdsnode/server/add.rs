@@ -106,6 +106,8 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
     };
 
     let mut batch: Vec<serde_json::Value> = Vec::with_capacity(batch_size);
+    let mut total_records: u64 = 0;
+    let start = std::time::Instant::now();
 
     loop {
         crossbeam::select! {
@@ -114,7 +116,14 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                     Ok(doc) => {
                         batch.push(doc);
                         if batch.len() >= batch_size {
-                            flush(&mut batch);
+                            total_records += flush(&mut batch) as u64;
+                            let elapsed = start.elapsed().as_secs_f64();
+                            if elapsed > 0.0 {
+                                log::debug!(
+                                    "[add] throughput: {:.1} records/s ({total_records} total)",
+                                    total_records as f64 / elapsed
+                                );
+                            }
                         }
                     }
                     Err(_) => break,
@@ -125,29 +134,43 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                 while let Ok(doc) = ingest_rx.try_recv() {
                     batch.push(doc);
                     if batch.len() >= batch_size {
-                        flush(&mut batch);
+                        total_records += flush(&mut batch) as u64;
                     }
                 }
                 if !batch.is_empty() {
-                    flush(&mut batch);
+                    total_records += flush(&mut batch) as u64;
                 }
-                log::debug!("[add] shutdown complete");
+                let elapsed = start.elapsed().as_secs_f64();
+                if elapsed > 0.0 {
+                    log::debug!(
+                        "[add] shutdown complete — {total_records} records in {elapsed:.1}s ({:.1} records/s)",
+                        total_records as f64 / elapsed
+                    );
+                } else {
+                    log::debug!("[add] shutdown complete — {total_records} records");
+                }
                 break;
             }
             default(timeout) => {
                 if !batch.is_empty() {
-                    flush(&mut batch);
+                    total_records += flush(&mut batch) as u64;
                 }
             }
         }
     }
 }
 
-fn flush(batch: &mut Vec<serde_json::Value>) {
+fn flush(batch: &mut Vec<serde_json::Value>) -> usize {
     let docs = std::mem::take(batch);
     let n = docs.len();
     match bdslib::get_db().and_then(|db| db.add_batch(docs)) {
-        Ok(ids) => log::debug!("[add] flushed {n} records ({} stored)", ids.len()),
-        Err(e) => log::error!("[add] add_batch error: {e}"),
+        Ok(ids) => {
+            log::debug!("[add] flushed {n} records ({} stored)", ids.len());
+            n
+        }
+        Err(e) => {
+            log::error!("[add] add_batch error: {e}");
+            0
+        }
     }
 }

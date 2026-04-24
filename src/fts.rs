@@ -160,6 +160,43 @@ impl FTSEngine {
         Ok(())
     }
 
+    /// Index multiple `(id, text)` pairs in a single commit + reader reload.
+    ///
+    /// Each entry follows the same delete-then-add semantics as
+    /// [`add_document_with_id`], but all staging happens inside one mutex
+    /// critical section and a single commit is issued at the end. This is
+    /// significantly faster than calling [`add_document_with_id`] N times when
+    /// inserting a batch of primary documents.
+    ///
+    /// No-op when `docs` is empty.
+    ///
+    /// [`add_document_with_id`]: FTSEngine::add_document_with_id
+    pub fn add_documents_batch(&self, docs: &[(Uuid, String)]) -> Result<()> {
+        if docs.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut writer = self.writer.lock();
+            for (id, text) in docs {
+                let term = Term::from_field_text(self.id_field, &id.to_string());
+                let mut doc = TantivyDocument::default();
+                doc.add_text(self.id_field, id.to_string());
+                doc.add_text(self.body_field, text);
+                writer.delete_term(term);
+                writer
+                    .add_document(doc)
+                    .map_err(|e| err_msg(format!("Failed to stage document {id}: {e}")))?;
+            }
+            writer
+                .commit()
+                .map_err(|e| err_msg(format!("Failed to commit batch add: {e}")))?;
+        }
+        self.reader
+            .reload()
+            .map_err(|e| err_msg(format!("Failed to reload reader after batch add: {e}")))?;
+        Ok(())
+    }
+
     /// Search the index and return up to `limit` matching UUIDv7s, ranked by relevance.
     ///
     /// `query` uses Tantivy's query syntax (e.g. `"hello world"`, `hello AND world`).

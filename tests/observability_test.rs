@@ -78,7 +78,7 @@ fn test_add_non_string_key_is_err() {
 #[test]
 fn test_add_numeric_string_timestamp_is_ok() {
     let (_dir, store) = default_store();
-    let id = store
+    let (id, _, _) = store
         .add(json!({"timestamp": "1000", "key": "k", "data": 1}))
         .unwrap();
     assert!(!id.is_nil());
@@ -98,7 +98,7 @@ fn test_add_non_numeric_timestamp_is_err() {
 #[test]
 fn test_add_generates_uuid_when_id_absent() {
     let (_dir, store) = default_store();
-    let id = store.add(tel("k", json!(1), 1000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!(1), 1000)).unwrap();
     assert!(!id.is_nil());
 }
 
@@ -107,7 +107,7 @@ fn test_add_uses_provided_id() {
     let (_dir, store) = default_store();
     let custom_id = uuid::Uuid::now_v7();
     let doc = json!({"id": custom_id.to_string(), "key": "k", "data": 1, "timestamp": 1000});
-    let returned = store.add(doc).unwrap();
+    let (returned, _, _) = store.add(doc).unwrap();
     assert_eq!(returned, custom_id);
 }
 
@@ -116,7 +116,7 @@ fn test_add_uses_provided_id() {
 #[test]
 fn test_get_by_id_returns_stored_record() {
     let (_dir, store) = default_store();
-    let id = store
+    let (id, _, _) = store
         .add(json!({"key": "cpu", "data": 75, "timestamp": 1000, "host": "web-01"}))
         .unwrap();
     let got = store.get_by_id(id).unwrap().expect("should exist");
@@ -144,7 +144,7 @@ fn test_get_preserves_all_data_types() {
         "count": 42,
         "ratio": 3.14
     });
-    let id = store.add(doc.clone()).unwrap();
+    let (id, _, _) = store.add(doc.clone()).unwrap();
     let got = store.get_by_id(id).unwrap().unwrap();
     assert_eq!(got["data"], doc["data"]);
     assert_eq!(got["flag"], json!(false));
@@ -191,7 +191,7 @@ fn test_get_by_key_ordered_by_timestamp() {
 #[test]
 fn test_delete_by_id_removes_record() {
     let (_dir, store) = default_store();
-    let id = store.add(tel("k", json!(1), 1000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!(1), 1000)).unwrap();
     store.delete_by_id(id).unwrap();
     assert!(store.get_by_id(id).unwrap().is_none());
 }
@@ -221,8 +221,8 @@ fn test_delete_by_key_nonexistent_is_ok() {
 fn test_delete_by_id_clears_dedup_tracking() {
     let (_dir, store) = default_store();
     // First add stores the record; second add is a duplicate and logs a timestamp.
-    let id = store.add(tel("k", json!("hello"), 1000)).unwrap();
-    let dup_id = store.add(tel("k", json!("hello"), 2000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!("hello"), 1000)).unwrap();
+    let (dup_id, _, _) = store.add(tel("k", json!("hello"), 2000)).unwrap();
     assert_eq!(id, dup_id);
     assert_eq!(store.get_duplicate_timestamps("k").unwrap().len(), 1);
 
@@ -247,9 +247,9 @@ fn test_delete_by_key_clears_dedup_tracking() {
 #[test]
 fn test_list_ids_by_time_range_returns_correct_ids() {
     let (_dir, store) = default_store();
-    let id1 = store.add(tel("k", json!(1), 1000)).unwrap();
-    let id2 = store.add(tel("k", json!(2), 2000)).unwrap();
-    let _id3 = store.add(tel("k", json!(3), 3000)).unwrap();
+    let (id1, _, _) = store.add(tel("k", json!(1), 1000)).unwrap();
+    let (id2, _, _) = store.add(tel("k", json!(2), 2000)).unwrap();
+    let (_id3, _, _) = store.add(tel("k", json!(3), 3000)).unwrap();
 
     let ids = store.list_ids_by_time_range(ts(1000), ts(3000)).unwrap();
     assert_eq!(ids.len(), 2);
@@ -260,10 +260,10 @@ fn test_list_ids_by_time_range_returns_correct_ids() {
 #[test]
 fn test_list_ids_by_time_range_half_open() {
     let (_dir, store) = default_store();
-    let _a = store.add(tel("k", json!(1), 999)).unwrap();
-    let b = store.add(tel("k", json!(2), 1000)).unwrap();
-    let c = store.add(tel("k", json!(3), 1999)).unwrap();
-    let _d = store.add(tel("k", json!(4), 2000)).unwrap();
+    let (_a, _, _) = store.add(tel("k", json!(1), 999)).unwrap();
+    let (b, _, _) = store.add(tel("k", json!(2), 1000)).unwrap();
+    let (c, _, _) = store.add(tel("k", json!(3), 1999)).unwrap();
+    let (_d, _, _) = store.add(tel("k", json!(4), 2000)).unwrap();
 
     let ids = store.list_ids_by_time_range(ts(1000), ts(2000)).unwrap();
     assert_eq!(ids.len(), 2);
@@ -284,9 +284,9 @@ fn test_list_ids_by_time_range_empty() {
 #[test]
 fn test_add_duplicate_returns_existing_uuid() {
     let (_dir, store) = default_store();
-    let id1 = store.add(tel("cpu", json!(75), 1000)).unwrap();
+    let (id1, _, _) = store.add(tel("cpu", json!(75), 1000)).unwrap();
     // Same key + data, different timestamp → duplicate
-    let id2 = store.add(tel("cpu", json!(75), 2000)).unwrap();
+    let (id2, _, _) = store.add(tel("cpu", json!(75), 2000)).unwrap();
     assert_eq!(id1, id2, "duplicate should return the existing UUID");
 }
 
@@ -302,8 +302,8 @@ fn test_add_duplicate_does_not_store_second_record() {
 #[test]
 fn test_add_different_data_same_key_are_not_duplicates() {
     let (_dir, store) = default_store();
-    let id1 = store.add(tel("k", json!(1), 1000)).unwrap();
-    let id2 = store.add(tel("k", json!(2), 2000)).unwrap();
+    let (id1, _, _) = store.add(tel("k", json!(1), 1000)).unwrap();
+    let (id2, _, _) = store.add(tel("k", json!(2), 2000)).unwrap();
     assert_ne!(id1, id2);
     assert_eq!(store.get_by_key("k").unwrap().len(), 2);
 }
@@ -356,7 +356,7 @@ fn test_dedup_different_data_tracked_separately() {
 #[test]
 fn test_first_record_is_primary() {
     let (_dir, store) = default_store();
-    let id = store.add(tel("k", json!("unique signal"), 1000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!("unique signal"), 1000)).unwrap();
     let primaries = store.list_primaries().unwrap();
     assert!(primaries.contains(&id), "first record must be a primary");
 }
@@ -372,10 +372,10 @@ fn test_clearly_different_data_both_become_primaries() {
     // Threshold 1.1 is above the maximum possible cosine similarity (1.0), so
     // no record can ever be classified as secondary — every record is a primary.
     let (_dir, store) = tmp_store(1.1);
-    let id1 = store
+    let (id1, _, _) = store
         .add(tel("k", json!("quantum chromodynamics particle physics"), 1000))
         .unwrap();
-    let id2 = store
+    let (id2, _, _) = store
         .add(tel("k", json!("apple pie recipe baking flour sugar"), 2000))
         .unwrap();
     let primaries = store.list_primaries().unwrap();
@@ -389,10 +389,10 @@ fn test_very_similar_data_assigned_as_secondary() {
     // the condition `sim >= threshold` is always satisfied: the first record (no
     // primaries yet) becomes primary, every subsequent record becomes secondary.
     let (_dir, store) = tmp_store(-1.1);
-    let id1 = store
+    let (id1, _, _) = store
         .add(tel("k", json!("the quick brown fox"), 1000))
         .unwrap();
-    let id2 = store
+    let (id2, _, _) = store
         .add(tel("k2", json!("apple pie and other recipes"), 2000))
         .unwrap();
 
@@ -410,17 +410,17 @@ fn test_very_similar_data_assigned_as_secondary() {
 #[test]
 fn test_list_secondaries_empty_for_new_primary() {
     let (_dir, store) = default_store();
-    let id = store.add(tel("k", json!("unique"), 1000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!("unique"), 1000)).unwrap();
     assert!(store.list_secondaries(id).unwrap().is_empty());
 }
 
 #[test]
 fn test_list_primaries_in_range() {
     let (_dir, store) = default_store();
-    let id1 = store
+    let (id1, _, _) = store
         .add(tel("a", json!("alpha signal topic one"), 1000))
         .unwrap();
-    let id2 = store
+    let (id2, _, _) = store
         .add(tel("b", json!("beta signal topic two"), 3000))
         .unwrap();
 
@@ -432,7 +432,7 @@ fn test_list_primaries_in_range() {
 #[test]
 fn test_delete_by_id_removes_from_primary_tracking() {
     let (_dir, store) = default_store();
-    let id = store.add(tel("k", json!("some data"), 1000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!("some data"), 1000)).unwrap();
     store.delete_by_id(id).unwrap();
     assert!(!store.list_primaries().unwrap().contains(&id));
 }
@@ -443,7 +443,7 @@ fn test_delete_by_id_removes_from_primary_tracking() {
 fn test_clone_shares_underlying_store() {
     let (_dir, store) = default_store();
     let clone = store.clone();
-    let id = store.add(tel("k", json!(42), 1000)).unwrap();
+    let (id, _, _) = store.add(tel("k", json!(42), 1000)).unwrap();
     let got = clone.get_by_id(id).unwrap().expect("clone must see same data");
     assert_eq!(got["data"], json!(42));
 }
@@ -461,7 +461,7 @@ fn test_extra_fields_stored_as_metadata() {
         "region": "us-east",
         "tags": ["prod", "k8s"]
     });
-    let id = store.add(doc).unwrap();
+    let (id, _, _) = store.add(doc).unwrap();
     let got = store.get_by_id(id).unwrap().unwrap();
     assert_eq!(got["host"], json!("node-1"));
     assert_eq!(got["region"], json!("us-east"));
@@ -471,7 +471,7 @@ fn test_extra_fields_stored_as_metadata() {
 #[test]
 fn test_mandatory_fields_not_duplicated_in_metadata() {
     let (_dir, store) = default_store();
-    let id = store
+    let (id, _, _) = store
         .add(json!({
             "key": "k", "data": 1, "timestamp": 1000,
             "extra": "preserved"

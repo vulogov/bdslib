@@ -92,3 +92,5 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/fulltext`](v2_fulltext.md) | Full-text search returning matching primary IDs and BM25 relevance scores |
 | [`v2/fulltext.get`](v2_fulltext_get.md) | Full-text search returning complete primary documents with linked secondaries |
 | [`v2/fulltext.recent`](v2_fulltext_recent.md) | Full-text search returning IDs, timestamps, and scores sorted by most recent first |
+| [`v2/search`](v2_search.md) | Semantic vector search returning primary IDs, timestamps, and similarity scores sorted by score |
+| [`v2/search.get`](v2_search_get.md) | Semantic vector search returning complete primary documents sorted by timestamp |
