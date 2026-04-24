@@ -41,6 +41,15 @@ curl -s -X POST http://127.0.0.1:9000 \
 }
 ```
 
+## Error responses
+
+| Code | Condition |
+|---|---|
+| `-32001` | `ShardsManager` singleton not initialised |
+| `-32002` | Shard index query failed |
+| `-32003` | Shard open failed |
+| `-32004` | Timestamp range query failed |
+
 ## Notes
 
 - Iterates every shard and aggregates `MIN(ts)` / `MAX(ts)` from the `telemetry` table of each.

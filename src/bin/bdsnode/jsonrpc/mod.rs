@@ -14,6 +14,7 @@ mod primary;
 mod search;
 mod search_get;
 mod secondaries;
+mod topics;
 mod secondary;
 mod shards;
 mod timeline;
@@ -40,5 +41,6 @@ pub fn build_module() -> RpcModule<()> {
     fulltext_recent::register(&mut module);
     search::register(&mut module);
     search_get::register(&mut module);
+    topics::register(&mut module);
     module
 }

@@ -61,6 +61,9 @@ curl -s -X POST http://127.0.0.1:9000 \
 
 | Code | Condition |
 |---|---|
+| `-32001` | `ShardsManager` singleton not initialised |
+| `-32004` | Observability query failed |
+| `-32005` | Primary-of relationship lookup failed |
 | `-32600` | `secondary_id` is not a valid UUID |
 | `-32404` | No secondary record found with the given UUID, or no primary link exists |
 

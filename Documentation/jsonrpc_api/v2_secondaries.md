@@ -57,6 +57,8 @@ curl -s -X POST http://127.0.0.1:9000 \
 
 | Code | Condition |
 |---|---|
+| `-32001` | `ShardsManager` singleton not initialised |
+| `-32004` | Secondary listing query failed |
 | `-32600` | `primary_id` is not a valid UUID |
 | `-32404` | No primary record found with the given UUID |
 

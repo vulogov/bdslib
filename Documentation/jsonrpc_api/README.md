@@ -17,6 +17,7 @@ bdsnode [OPTIONS]
 | `-c, --config <PATH>` | `BDS_CONFIG` | — | Path to the hjson configuration file |
 | `--host <HOST>` | — | `127.0.0.1` | Address to bind the JSON-RPC listener |
 | `-p, --port <PORT>` | — | `9000` | TCP port for the JSON-RPC listener |
+| `--new` | — | false | Delete the existing data store and start with a fresh database before binding the listener |
 
 ### Example
 
@@ -95,3 +96,5 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/fulltext.recent`](v2_fulltext_recent.md) | Full-text search returning IDs, timestamps, and scores sorted by most recent first |
 | [`v2/search`](v2_search.md) | Semantic vector search returning primary IDs, timestamps, and similarity scores sorted by score |
 | [`v2/search.get`](v2_search_get.md) | Semantic vector search returning complete primary documents sorted by timestamp |
+| [`v2/topics`](v2_topics.md) | LDA topic modelling over a key's telemetry corpus within a lookback window, returning a keyword summary |
+| [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |
