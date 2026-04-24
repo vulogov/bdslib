@@ -4,6 +4,7 @@ pub mod hex;
 pub mod jsonfingerprint;
 pub mod logparser;
 pub mod math;
+pub mod pipe;
 pub mod sql;
 pub mod time;
 pub mod timerange;

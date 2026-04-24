@@ -1,4 +1,5 @@
 mod jsonrpc;
+mod server;
 
 use anyhow::Context;
 use clap::Parser;
@@ -31,6 +32,16 @@ async fn main() -> anyhow::Result<()> {
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;
+
+    bdslib::pipe::init(&["ingest"])
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("failed to initialise pipe registry")?;
+
+    if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
+        .context("failed to read ingest config")?
+    {
+        server::add::start(cfg);
+    }
 
     let addr = format!("{}:{}", cli.host, cli.port);
 
