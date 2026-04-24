@@ -383,6 +383,23 @@ impl ShardsManager {
         Ok(results)
     }
 
+    /// Return the unique, sorted list of primary record keys within
+    /// `[now − duration, now + 1s)` whose key matches `pattern` (DuckDB shell-glob).
+    ///
+    /// Pass `"*"` as the pattern to return all keys (equivalent to `v2/keys`).
+    pub fn keys_all(&self, duration: &str, pattern: &str) -> Result<Vec<String>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            let shard_keys = shard
+                .observability()
+                .list_primary_keys_in_range_by_pattern(pattern, start, end)?;
+            keys.extend(shard_keys);
+        }
+        Ok(keys.into_iter().collect())
+    }
+
     /// Return keys that have more than one primary record within
     /// `[now − duration, now + 1s)`, together with their record count and IDs.
     ///

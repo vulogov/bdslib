@@ -85,6 +85,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/count`](v2_count.md) | Total number of telemetry records, optionally filtered by time window |
 | [`v2/shards`](v2_shards.md) | List of shards with time boundaries, path, and primary/secondary counts |
 | [`v2/keys`](v2_keys.md) | Unique sorted list of primary record keys within a duration window |
+| [`v2/keys.all`](v2_keys_all.md) | Unique sorted list of primary record keys within a duration window, filtered by an optional shell-glob pattern (default `*`) |
 | [`v2/keys.get`](v2_keys_get.md) | Primary record IDs and secondary ID lists for keys matching a shell-glob pattern within a duration window |
 | [`v2/primaries`](v2_primaries.md) | UUIDs of all primary records, optionally filtered by time window |
 | [`v2/primaries.explore`](v2_primaries_explore.md) | Keys with more than one primary record in a duration window, with counts and UUIDs |

@@ -7,6 +7,7 @@ mod fulltext;
 mod fulltext_get;
 mod fulltext_recent;
 mod keys;
+mod keys_all;
 mod keys_get;
 mod params;
 mod primaries;
@@ -35,6 +36,7 @@ pub fn build_module() -> RpcModule<()> {
     timeline::register(&mut module);
     count::register(&mut module);
     keys::register(&mut module);
+    keys_all::register(&mut module);
     keys_get::register(&mut module);
     duplicates::register(&mut module);
     shards::register(&mut module);

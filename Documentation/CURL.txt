@@ -11,11 +11,12 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/primary","params":{"primary_id":"019dbca3-179c-7e72-bb86-000cd452e2d8"}}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/primaries.get","params":{"session": "1", "key": "queue.depth", "duration": "4h"},"id":1}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/primaries.get.telemetry","params":{"session": "1", "key": "queue.depth", "duration": "4h"},"id":1}' |jq .
-
 # Secondaries
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/secondaries","params":{"primary_id":"019dbca3-179c-7e72-bb86-000cd452e2d8"}}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/secondary","params":{"secondary_id":"019dbca3-1daf-7160-b81a-f1652ed62d34"}}' |jq .
 # Keys
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/keys.all","params":{"session": "1", "duration": "24h", "key": "http*"},"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/keys.all","params":{"session": "1", "duration": "24h"},"id":1}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/keys","params":{"duration":"1h"}}' |jq .
 # Duplicates
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/duplicates","params":{},"id":1}' |jq .

@@ -829,6 +829,25 @@ impl ObservabilityStorage {
     }
 
     /// Return the distinct keys of primary records whose event timestamp
+    /// falls in `[start, end)` and whose key matches `pattern` (DuckDB GLOB).
+    pub fn list_primary_keys_in_range_by_pattern(
+        &self,
+        pattern: &str,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<String>> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT DISTINCT key FROM telemetry \
+             WHERE is_primary = 1 AND ts >= {s} AND ts < {e} \
+             AND key GLOB '{}' ORDER BY key ASC",
+            sql_escape(pattern)
+        ))?;
+        self.parse_key_rows(rows)
+    }
+
+    /// Return the distinct keys of primary records whose event timestamp
     /// falls in `[start, end)`.
     pub fn list_primary_keys_in_range(
         &self,
