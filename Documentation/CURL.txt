@@ -4,3 +4,11 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/count","params":{}}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/count","params":{"duration":"1h"}}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/count","params":{"start_ts":1776978000,"end_ts":1776985000}}' |jq .
+# Primaries
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/primaries","params":{}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/primaries","params":{"duration":"30m"}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/primaries","params":{"start_ts":1776978000,"end_ts":1776985000}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/primary","params":{"primary_id":"019dbca3-179c-7e72-bb86-000cd452e2d8"}}' |jq .
+# Secondaries
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/secondaries","params":{"primary_id":"019dbca3-179c-7e72-bb86-000cd452e2d8"}}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"v2/secondary","params":{"secondary_id":"019dbca3-1daf-7160-b81a-f1652ed62d34"}}' |jq .

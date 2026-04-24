@@ -4,18 +4,18 @@ use jsonrpsee::RpcModule;
 use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
-struct PrimaryParams {
-    primary_id: String,
+struct SecondaryParams {
+    secondary_id: String,
 }
 
 pub fn register(module: &mut RpcModule<()>) {
     module
-        .register_async_method("v2/primary", |params, _ctx, _| async move {
-            let p: PrimaryParams = params.parse()?;
+        .register_async_method("v2/secondary", |params, _ctx, _| async move {
+            let p: SecondaryParams = params.parse()?;
 
             tokio::task::spawn_blocking(move || {
-                let uuid = Uuid::parse_str(&p.primary_id)
-                    .map_err(|e| rpc_err(-32600, format!("invalid UUID {:?}: {e}", p.primary_id)))?;
+                let uuid = Uuid::parse_str(&p.secondary_id)
+                    .map_err(|e| rpc_err(-32600, format!("invalid UUID {:?}: {e}", p.secondary_id)))?;
 
                 let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
                 let shard = find_shard_for_uuid(uuid, db)?;
@@ -24,13 +24,15 @@ pub fn register(module: &mut RpcModule<()>) {
                 let mut doc = obs
                     .get_by_id(uuid)
                     .map_err(|e| rpc_err(-32004, e))?
-                    .ok_or_else(|| rpc_err(-32404, format!("primary {} not found", p.primary_id)))?;
+                    .ok_or_else(|| rpc_err(-32404, format!("secondary {} not found", p.secondary_id)))?;
 
-                let secondaries_count =
-                    obs.list_secondaries(uuid).map(|v| v.len()).unwrap_or(0);
+                let primary_id = obs
+                    .primary_of(uuid)
+                    .map_err(|e| rpc_err(-32005, e))?
+                    .ok_or_else(|| rpc_err(-32404, format!("no primary found for secondary {}", p.secondary_id)))?;
 
                 if let Some(obj) = doc.as_object_mut() {
-                    obj.insert("secondaries_count".to_string(), serde_json::json!(secondaries_count));
+                    obj.insert("primary_id".to_string(), serde_json::json!(primary_id.to_string()));
                 }
 
                 Ok::<serde_json::Value, ErrorObject>(doc)

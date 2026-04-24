@@ -490,6 +490,19 @@ impl ObservabilityStorage {
         parse_uuid_column(rows)
     }
 
+    /// Return the primary UUID that owns `secondary_id`, or `None` if no such
+    /// relationship exists in this shard.
+    pub fn primary_of(&self, secondary_id: Uuid) -> Result<Option<Uuid>> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT primary_id FROM primary_secondary WHERE secondary_id = '{secondary_id}'"
+        ))?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| parse_uuid_field(row, 0, "primary_secondary.primary_id"))
+            .transpose()?)
+    }
+
     /// Return the `(min_ts, max_ts)` of all records in this shard.
     ///
     /// Both values are Unix seconds (`i64`). Returns `(None, None)` when the
