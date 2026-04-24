@@ -176,6 +176,13 @@ impl Shard {
         Ok(docs)
     }
 
+    /// Full-text search returning `(primary_id, BM25_score)` pairs only — no
+    /// document body is fetched. Use this when you only need IDs and relevance
+    /// scores without the overhead of retrieving and deserialising full records.
+    pub fn search_fts_scored(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
+        self.fts.search_with_scores(query, limit)
+    }
+
     /// Semantic vector search with MMR reranking over primary records.
     ///
     /// `query` is fingerprinted, embedded, and used to search the HNSW index.

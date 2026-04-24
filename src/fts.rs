@@ -164,6 +164,16 @@ impl FTSEngine {
     ///
     /// `query` uses Tantivy's query syntax (e.g. `"hello world"`, `hello AND world`).
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Uuid>> {
+        Ok(self
+            .search_with_scores(query, limit)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
+    }
+
+    /// Search the index and return up to `limit` `(UUID, BM25-score)` pairs,
+    /// ordered by descending relevance score.
+    pub fn search_with_scores(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
         let parsed = parser
@@ -175,7 +185,7 @@ impl FTSEngine {
             .map_err(|e| err_msg(format!("Search failed: {e}")))?;
 
         let mut results = Vec::with_capacity(hits.len());
-        for (_score, addr) in hits {
+        for (score, addr) in hits {
             let doc: TantivyDocument = searcher
                 .doc(addr)
                 .map_err(|e| err_msg(format!("Failed to retrieve document: {e}")))?;
@@ -183,7 +193,7 @@ impl FTSEngine {
             if let Some(raw) = doc.get_first(self.id_field) {
                 if let OwnedValue::Str(id_str) = OwnedValue::from(raw) {
                     if let Ok(uuid) = Uuid::parse_str(&id_str) {
-                        results.push(uuid);
+                        results.push((uuid, score));
                     }
                 }
             }

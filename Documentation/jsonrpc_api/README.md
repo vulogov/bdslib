@@ -89,3 +89,5 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/secondaries`](v2_secondaries.md) | UUIDs of secondary records associated with a primary |
 | [`v2/secondary`](v2_secondary.md) | Full document for a single secondary record by UUID |
 | [`v2/duplicates`](v2_duplicates.md) | Map of primary UUID → duplicate timestamps, optionally filtered by time window |
+| [`v2/fulltext`](v2_fulltext.md) | Full-text search returning matching primary IDs and BM25 relevance scores |
+| [`v2/fulltext.get`](v2_fulltext_get.md) | Full-text search returning complete primary documents with linked secondaries |

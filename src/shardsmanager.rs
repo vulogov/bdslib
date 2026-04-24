@@ -170,6 +170,29 @@ impl ShardsManager {
         Ok(results)
     }
 
+    /// Full-text search returning `(primary_id, BM25_score)` pairs across all
+    /// catalog-registered shards that overlap the lookback window
+    /// `[now − duration, now + 1s)`.
+    ///
+    /// Results from all shards are merged and sorted by score descending.
+    /// No document bodies are fetched — use [`search_fts`] when you need the
+    /// full records.
+    ///
+    /// [`search_fts`]: ShardsManager::search_fts
+    pub fn fulltextsearch(&self, duration: &str, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut results: Vec<(Uuid, f32)> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            // Fetch up to `limit` candidates per shard; after merging across all
+            // shards the final list is truncated to `limit` by score.
+            results.extend(shard.search_fts_scored(query, limit)?);
+        }
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+        Ok(results)
+    }
+
     /// Semantic vector search across all catalog-registered shards that overlap
     /// the lookback window `[now − duration, now + 1s)`.
     ///

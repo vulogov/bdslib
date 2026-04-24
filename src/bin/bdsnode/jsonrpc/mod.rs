@@ -3,6 +3,8 @@ mod add_batch;
 mod eval;
 mod count;
 mod duplicates;
+mod fulltext;
+mod fulltext_get;
 mod keys;
 mod params;
 mod primaries;
@@ -28,5 +30,7 @@ pub fn build_module() -> RpcModule<()> {
     primary::register(&mut module);
     secondaries::register(&mut module);
     secondary::register(&mut module);
+    fulltext::register(&mut module);
+    fulltext_get::register(&mut module);
     module
 }

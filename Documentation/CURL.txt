@@ -29,3 +29,6 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/add.batch","params":{"docs":[{"timestamp":1745042000,"key":"server.cpu","data":87.3},{"timestamp":1745042001,"key":"server.mem","data":4096}]}
 # Eval
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/eval","params":{"context": "1", "script": "2 40 + ." },"id":1}' |jq .
+# Fulltext
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/fulltext","params":{"session": "1", "duration": "24h", "query": "sshd OR ftpd" },"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/fulltext.get","params":{"session": "1", "duration": "24h", "query": "sshd OR ftpd" },"id":1}' |jq .
