@@ -554,6 +554,30 @@ impl ObservabilityStorage {
         ))
     }
 
+    pub fn count_primaries(&self) -> Result<u64> {
+        self.count_rows("SELECT COUNT(*) FROM telemetry WHERE is_primary = 1")
+    }
+
+    pub fn count_primaries_in_range(&self, start: SystemTime, end: SystemTime) -> Result<u64> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        self.count_rows(&format!(
+            "SELECT COUNT(*) FROM telemetry WHERE is_primary = 1 AND ts >= {s} AND ts < {e}"
+        ))
+    }
+
+    pub fn count_secondaries(&self) -> Result<u64> {
+        self.count_rows("SELECT COUNT(*) FROM telemetry WHERE is_primary = 0")
+    }
+
+    pub fn count_secondaries_in_range(&self, start: SystemTime, end: SystemTime) -> Result<u64> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        self.count_rows(&format!(
+            "SELECT COUNT(*) FROM telemetry WHERE is_primary = 0 AND ts >= {s} AND ts < {e}"
+        ))
+    }
+
     fn count_rows(&self, sql: &str) -> Result<u64> {
         let rows = self.engine.select_all(sql)?;
         let n = rows

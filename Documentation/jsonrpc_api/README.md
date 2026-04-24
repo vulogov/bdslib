@@ -80,6 +80,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 |---|---|
 | [`v2/timeline`](v2_timeline.md) | Earliest and latest event timestamps across all shards |
 | [`v2/count`](v2_count.md) | Total number of telemetry records, optionally filtered by time window |
+| [`v2/shards`](v2_shards.md) | List of shards with time boundaries, path, and primary/secondary counts |
 | [`v2/keys`](v2_keys.md) | Unique sorted list of primary record keys, optionally filtered by time window |
 | [`v2/primaries`](v2_primaries.md) | UUIDs of all primary records, optionally filtered by time window |
 | [`v2/primary`](v2_primary.md) | Full document for a single primary record by UUID |
