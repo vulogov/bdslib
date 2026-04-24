@@ -18,8 +18,6 @@ const BLOB_INIT_SQL: &str = "
         updated_at BIGINT NOT NULL,
         data       BLOB   NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_blobs_created_at ON blobs (created_at);
-    CREATE INDEX IF NOT EXISTS idx_blobs_updated_at ON blobs (updated_at);
 ";
 
 const JSON_INIT_SQL: &str = "
@@ -30,9 +28,7 @@ const JSON_INIT_SQL: &str = "
         key        TEXT   NOT NULL,
         document   JSON   NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_json_docs_key        ON json_docs (key);
-    CREATE INDEX IF NOT EXISTS idx_json_docs_created_at ON json_docs (created_at);
-    CREATE INDEX IF NOT EXISTS idx_json_docs_updated_at ON json_docs (updated_at);
+    CREATE INDEX IF NOT EXISTS idx_json_docs_key ON json_docs (key);
 ";
 
 // ── BlobStorage ───────────────────────────────────────────────────────────────

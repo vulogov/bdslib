@@ -25,9 +25,10 @@ const INIT_SQL: &str = "
         data_text  TEXT    NOT NULL,
         is_primary INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_tel_key     ON telemetry (key);
-    CREATE INDEX IF NOT EXISTS idx_tel_ts      ON telemetry (ts);
-    CREATE INDEX IF NOT EXISTS idx_tel_primary ON telemetry (is_primary);
+    CREATE INDEX IF NOT EXISTS idx_tel_ts         ON telemetry (ts);
+    CREATE INDEX IF NOT EXISTS idx_tel_key_data   ON telemetry (key, data_text);
+    CREATE INDEX IF NOT EXISTS idx_tel_primary_ts ON telemetry (is_primary, ts);
+    CREATE INDEX IF NOT EXISTS idx_tel_key_ts     ON telemetry (key, ts);
 
     CREATE TABLE IF NOT EXISTS dedup_tracking (
         key       TEXT NOT NULL,
@@ -43,8 +44,8 @@ const INIT_SQL: &str = "
         ts           BIGINT NOT NULL,
         PRIMARY KEY (primary_id, secondary_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_ps_primary ON primary_secondary (primary_id);
-    CREATE INDEX IF NOT EXISTS idx_ps_ts      ON primary_secondary (ts);
+    CREATE INDEX IF NOT EXISTS idx_ps_primary_ts ON primary_secondary (primary_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_ps_secondary  ON primary_secondary (secondary_id);
 
     CREATE TABLE IF NOT EXISTS primary_embeddings (
         primary_id TEXT NOT NULL PRIMARY KEY,
