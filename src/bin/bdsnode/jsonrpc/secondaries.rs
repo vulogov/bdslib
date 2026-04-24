@@ -11,9 +11,10 @@ struct SecondariesParams {
 pub fn register(module: &mut RpcModule<()>) {
     module
         .register_async_method("v2/secondaries", |params, _ctx, _| async move {
+            log::debug!("v2/secondaries: start");
             let p: SecondariesParams = params.parse()?;
 
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 let uuid = Uuid::parse_str(&p.primary_id)
                     .map_err(|e| rpc_err(-32600, format!("invalid UUID {:?}: {e}", p.primary_id)))?;
 
@@ -31,7 +32,9 @@ pub fn register(module: &mut RpcModule<()>) {
                 Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "ids": ids }))
             })
             .await
-            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?
+            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?;
+            log::debug!("v2/secondaries: done");
+            result
         })
         .unwrap();
 }

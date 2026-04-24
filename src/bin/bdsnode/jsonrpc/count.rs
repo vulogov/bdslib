@@ -4,10 +4,11 @@ use jsonrpsee::RpcModule;
 pub fn register(module: &mut RpcModule<()>) {
     module
         .register_async_method("v2/count", |params, _ctx, _| async move {
+            log::debug!("v2/count: start");
             let p: TimeWindowParams = params.parse().unwrap_or_default();
             let window = p.resolve()?;
 
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
                 let cache = db.cache();
 
@@ -31,7 +32,9 @@ pub fn register(module: &mut RpcModule<()>) {
                 Ok::<serde_json::Value, jsonrpsee::types::ErrorObject>(serde_json::json!({ "count": total }))
             })
             .await
-            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?
+            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?;
+            log::debug!("v2/count: done");
+            result
         })
         .unwrap();
 }

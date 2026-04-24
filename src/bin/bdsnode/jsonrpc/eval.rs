@@ -11,9 +11,10 @@ struct EvalParams {
 pub fn register(module: &mut RpcModule<()>) {
     module
         .register_async_method("v2/eval", |params, _ctx, _| async move {
+            log::debug!("v2/eval: start");
             let p: EvalParams = params.parse()?;
 
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 // Acquire (or lazily create) the named BUND VM instance.
                 let mut guard = bdslib::context::get(&p.context)
                     .map_err(|e| rpc_err(-32001, e))?;
@@ -38,7 +39,9 @@ pub fn register(module: &mut RpcModule<()>) {
                 Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "result": result }))
             })
             .await
-            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?
+            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?;
+            log::debug!("v2/eval: done");
+            result
         })
         .unwrap();
 }

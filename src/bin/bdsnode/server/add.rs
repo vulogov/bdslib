@@ -67,7 +67,7 @@ impl Handle {
         let _ = self.shutdown_tx.send(());
         if let Some(t) = self.thread.take() {
             if let Err(e) = t.join() {
-                eprintln!("[add] thread panicked on shutdown: {e:?}");
+                log::error!("[add] thread panicked on shutdown: {e:?}");
             }
         }
     }
@@ -92,7 +92,7 @@ pub fn start(cfg: Config) -> Handle {
 }
 
 fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
-    eprintln!(
+    log::debug!(
         "[add] started (batch_size={batch_size}, timeout={}ms)",
         timeout.as_millis()
     );
@@ -100,7 +100,7 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
     let ingest_rx = match bdslib::pipe::receiver("ingest") {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[add] cannot access ingest channel: {e}");
+            log::error!("[add] cannot access ingest channel: {e}");
             return;
         }
     };
@@ -131,7 +131,7 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                 if !batch.is_empty() {
                     flush(&mut batch);
                 }
-                eprintln!("[add] shutdown complete");
+                log::debug!("[add] shutdown complete");
                 break;
             }
             default(timeout) => {
@@ -147,7 +147,7 @@ fn flush(batch: &mut Vec<serde_json::Value>) {
     let docs = std::mem::take(batch);
     let n = docs.len();
     match bdslib::get_db().and_then(|db| db.add_batch(docs)) {
-        Ok(ids) => eprintln!("[add] flushed {n} records ({} stored)", ids.len()),
-        Err(e) => eprintln!("[add] add_batch error: {e}"),
+        Ok(ids) => log::debug!("[add] flushed {n} records ({} stored)", ids.len()),
+        Err(e) => log::error!("[add] add_batch error: {e}"),
     }
 }

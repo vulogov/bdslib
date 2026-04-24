@@ -19,11 +19,17 @@ struct Cli {
     /// Port for the JSON-RPC listener.
     #[arg(short, long, default_value_t = 9000)]
     port: u16,
+
+    /// Log verbosity (0=env default, 1=info, 2=debug, 3=trace).
+    #[arg(short = 'd', long, default_value_t = 0)]
+    debug: u32,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    bdslib::setloglevel::setloglevel(cli.debug);
 
     bdslib::init_db(cli.config.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))
@@ -59,11 +65,11 @@ async fn main() -> anyhow::Result<()> {
     let local_addr = server.local_addr()?;
     let handle = server.start(jsonrpc::build_module());
 
-    eprintln!("bdsnode listening on {local_addr}");
+    log::info!("bdsnode listening on {local_addr}");
 
     tokio::signal::ctrl_c().await.context("ctrl-c signal error")?;
 
-    eprintln!("shutting down…");
+    log::info!("shutting down…");
     handle.stop()?;
     handle.stopped().await;
 

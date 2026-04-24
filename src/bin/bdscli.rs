@@ -26,6 +26,10 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     nocolor: bool,
 
+    /// Log verbosity (0=env default, 1=info, 2=debug, 3=trace).
+    #[arg(long, global = true, default_value_t = 0)]
+    debug: u32,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -320,6 +324,8 @@ enum SearchMode {
 
 fn main() {
     let cli = Cli::parse();
+
+    bdslib::setloglevel::setloglevel(cli.debug);
 
     if let Err(e) = run(cli) {
         print_error_plain(e);
@@ -703,7 +709,7 @@ fn cmd_get(
                 }
             }
             if !found {
-                eprintln!("no duplicate timestamps for {raw}");
+                log::debug!("no duplicate timestamps for {raw}");
             }
         } else {
             // All primaries across all shards that have duplicates
@@ -726,7 +732,7 @@ fn cmd_get(
                     total += 1;
                 }
             }
-            eprintln!("dedup entries: {total}");
+            log::debug!("dedup entries: {total}");
         }
         return Ok(());
     }
@@ -756,7 +762,7 @@ fn cmd_get(
                         println!("{doc}");
                     }
                 }
-                eprintln!("secondaries: {n}");
+                log::debug!("secondaries: {n}");
                 return Ok(());
             }
         }
@@ -806,6 +812,6 @@ fn cmd_get(
             }
         }
     }
-    eprintln!("total: {total}");
+    log::debug!("total: {total}");
     Ok(())
 }

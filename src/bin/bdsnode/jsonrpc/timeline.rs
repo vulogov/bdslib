@@ -8,7 +8,8 @@ fn err(code: i32, msg: impl std::fmt::Display) -> ErrorObject<'static> {
 pub fn register(module: &mut RpcModule<()>) {
     module
         .register_async_method("v2/timeline", |_params, _ctx, _| async move {
-            tokio::task::spawn_blocking(|| {
+            log::debug!("v2/timeline: start");
+            let result = tokio::task::spawn_blocking(|| {
                 let db = bdslib::get_db().map_err(|e| err(-32001, e))?;
 
                 let shards = db
@@ -45,7 +46,9 @@ pub fn register(module: &mut RpcModule<()>) {
                 }))
             })
             .await
-            .map_err(|e| err(-32000, format!("task panicked: {e}")))?
+            .map_err(|e| err(-32000, format!("task panicked: {e}")))?;
+            log::debug!("v2/timeline: done");
+            result
         })
         .unwrap();
 }

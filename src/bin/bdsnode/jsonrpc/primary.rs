@@ -11,9 +11,10 @@ struct PrimaryParams {
 pub fn register(module: &mut RpcModule<()>) {
     module
         .register_async_method("v2/primary", |params, _ctx, _| async move {
+            log::debug!("v2/primary: start");
             let p: PrimaryParams = params.parse()?;
 
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 let uuid = Uuid::parse_str(&p.primary_id)
                     .map_err(|e| rpc_err(-32600, format!("invalid UUID {:?}: {e}", p.primary_id)))?;
 
@@ -38,7 +39,9 @@ pub fn register(module: &mut RpcModule<()>) {
                 Ok::<serde_json::Value, ErrorObject>(doc)
             })
             .await
-            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?
+            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?;
+            log::debug!("v2/primary: done");
+            result
         })
         .unwrap();
 }

@@ -730,6 +730,7 @@ dependencies = [
  "duckdb",
  "duct_sh",
  "easy-error",
+ "env_logger",
  "fakeit",
  "fancy-regex",
  "fastembed",
