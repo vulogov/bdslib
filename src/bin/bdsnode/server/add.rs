@@ -107,7 +107,8 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
 
     let mut batch: Vec<serde_json::Value> = Vec::with_capacity(batch_size);
     let mut total_records: u64 = 0;
-    let start = std::time::Instant::now();
+    let run_start = std::time::Instant::now();
+    let mut batch_start = std::time::Instant::now();
 
     loop {
         crossbeam::select! {
@@ -116,12 +117,14 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                     Ok(doc) => {
                         batch.push(doc);
                         if batch.len() >= batch_size {
-                            total_records += flush(&mut batch) as u64;
-                            let elapsed = start.elapsed().as_secs_f64();
-                            if elapsed > 0.0 {
+                            let n = flush(&mut batch) as u64;
+                            total_records += n;
+                            let batch_secs = batch_start.elapsed().as_secs_f64();
+                            batch_start = std::time::Instant::now();
+                            if batch_secs > 0.0 {
                                 log::debug!(
                                     "[add] throughput: {:.1} records/s ({total_records} total)",
-                                    total_records as f64 / elapsed
+                                    n as f64 / batch_secs
                                 );
                             }
                         }
@@ -140,10 +143,10 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                 if !batch.is_empty() {
                     total_records += flush(&mut batch) as u64;
                 }
-                let elapsed = start.elapsed().as_secs_f64();
+                let elapsed = run_start.elapsed().as_secs_f64();
                 if elapsed > 0.0 {
                     log::debug!(
-                        "[add] shutdown complete — {total_records} records in {elapsed:.1}s ({:.1} records/s)",
+                        "[add] shutdown complete — {total_records} records in {elapsed:.1}s ({:.1} avg records/s)",
                         total_records as f64 / elapsed
                     );
                 } else {
@@ -154,6 +157,7 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
             default(timeout) => {
                 if !batch.is_empty() {
                     total_records += flush(&mut batch) as u64;
+                    batch_start = std::time::Instant::now();
                 }
             }
         }
