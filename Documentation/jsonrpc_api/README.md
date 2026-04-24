@@ -89,6 +89,8 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/primaries`](v2_primaries.md) | UUIDs of all primary records, optionally filtered by time window |
 | [`v2/primaries.explore`](v2_primaries_explore.md) | Keys with more than one primary record in a duration window, with counts and UUIDs |
 | [`v2/primaries.explore.telemetry`](v2_primaries_explore_telemetry.md) | Keys with more than one numeric-data primary in a duration window — suitable for `v2/trends` |
+| [`v2/primaries.get`](v2_primaries_get.md) | `data` payloads and timestamps for all primary records matching an exact key within a duration window |
+| [`v2/primaries.get.telemetry`](v2_primaries_get_telemetry.md) | Extracted numeric values (`data` or `data["value"]`) for primary records matching an exact key within a duration window |
 | [`v2/primary`](v2_primary.md) | Full document for a single primary record by UUID |
 | [`v2/secondaries`](v2_secondaries.md) | UUIDs of secondary records associated with a primary |
 | [`v2/secondary`](v2_secondary.md) | Full document for a single secondary record by UUID |

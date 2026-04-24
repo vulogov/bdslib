@@ -68,7 +68,7 @@ impl TelemetryTrend {
         let mut points: Vec<(u64, f64)> = Vec::new();
         for info in db.cache().info().shards_in_range(start_ts, end_ts)? {
             let shard = db.cache().shard(info.start_time)?;
-            for doc in shard.get_by_key(key)? {
+            for doc in shard.get_primaries_by_key(key)? {
                 let ts = doc["timestamp"].as_u64().unwrap_or(0);
                 if ts >= start_secs && ts < end_secs {
                     if let Some(val) = extract_value(&doc) {
@@ -220,9 +220,9 @@ fn detect_breakouts(points: &[(u64, f64)], values: &[f64]) -> Vec<SamplePoint> {
 /// Tries `data.value` first (structured telemetry), then falls back to `data`
 /// itself when it is a bare number.
 fn extract_value(doc: &JsonValue) -> Option<f64> {
-    doc["data"]["value"]
+    doc["data"]
         .as_f64()
-        .or_else(|| doc["data"].as_f64())
+        .or_else(|| doc["data"]["value"].as_f64())
 }
 
 /// Return the `p`-quantile of `values` (sorted copy; `p` in `[0, 1]`).

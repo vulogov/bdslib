@@ -166,6 +166,11 @@ impl Shard {
         self.observability.get_by_key(key)
     }
 
+    /// Return only primary records whose `key` matches, ordered by timestamp ascending.
+    pub fn get_primaries_by_key(&self, key: &str) -> Result<Vec<JsonValue>> {
+        self.observability.get_primaries_by_key(key)
+    }
+
     /// Flush all three engines to disk.
     ///
     /// Calls `ObservabilityStorage::sync` (DuckDB CHECKPOINT),

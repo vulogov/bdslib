@@ -543,6 +543,15 @@ impl ObservabilityStorage {
         rows.into_iter().map(row_to_doc).collect()
     }
 
+    pub fn get_primaries_by_key(&self, key: &str) -> Result<Vec<JsonValue>> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, ts, key, data, metadata \
+             FROM telemetry WHERE key = '{}' AND is_primary = 1 ORDER BY ts ASC",
+            sql_escape(key)
+        ))?;
+        rows.into_iter().map(row_to_doc).collect()
+    }
+
     /// Return the UUIDs of all records whose event timestamp falls in
     /// the half-open interval `[start, end)`, ordered by timestamp ascending.
     pub fn list_ids_by_time_range(

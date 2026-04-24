@@ -12,6 +12,8 @@ mod params;
 mod primaries;
 mod primaries_explore;
 mod primaries_explore_telemetry;
+mod primaries_get;
+mod primaries_get_telemetry;
 mod primary;
 mod search;
 mod search_get;
@@ -39,6 +41,8 @@ pub fn build_module() -> RpcModule<()> {
     primaries::register(&mut module);
     primaries_explore::register(&mut module);
     primaries_explore_telemetry::register(&mut module);
+    primaries_get::register(&mut module);
+    primaries_get_telemetry::register(&mut module);
     primary::register(&mut module);
     secondaries::register(&mut module);
     secondary::register(&mut module);

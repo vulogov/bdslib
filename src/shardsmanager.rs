@@ -454,6 +454,86 @@ impl ShardsManager {
         Ok(result)
     }
 
+    /// Return `(id, timestamp, data)` for every primary record whose `key`
+    /// matches exactly within `[now − duration, now + 1s)`, sorted by
+    /// timestamp ascending.
+    pub fn primaries_get(
+        &self,
+        duration: &str,
+        key: &str,
+    ) -> Result<Vec<(Uuid, u64, JsonValue)>> {
+        let (start, end) = lookback_window(duration)?;
+        let start_secs = start
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let end_secs = end
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut results: Vec<(Uuid, u64, JsonValue)> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            for doc in shard.get_primaries_by_key(key)? {
+                let ts = doc["timestamp"].as_u64().unwrap_or(0);
+                if ts >= start_secs && ts < end_secs {
+                    let id = doc["id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        .unwrap_or_default();
+                    let data = doc["data"].clone();
+                    results.push((id, ts, data));
+                }
+            }
+        }
+        results.sort_by_key(|(_, ts, _)| *ts);
+        Ok(results)
+    }
+
+    /// Return `(id, timestamp, value)` for every primary record whose `key`
+    /// matches exactly within `[now − duration, now + 1s)` and whose `data`
+    /// contains a numeric measurement.  Records where no number can be extracted
+    /// are silently skipped.  Results are sorted by timestamp ascending.
+    ///
+    /// Extraction order: bare `data` number first, then `data["value"]`.
+    pub fn primaries_get_telemetry(
+        &self,
+        duration: &str,
+        key: &str,
+    ) -> Result<Vec<(Uuid, u64, f64)>> {
+        let (start, end) = lookback_window(duration)?;
+        let start_secs = start
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let end_secs = end
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut results: Vec<(Uuid, u64, f64)> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            for doc in shard.get_primaries_by_key(key)? {
+                let ts = doc["timestamp"].as_u64().unwrap_or(0);
+                if ts >= start_secs && ts < end_secs {
+                    let d = &doc["data"];
+                    let value = d.as_f64().or_else(|| d["value"].as_f64());
+                    if let Some(v) = value {
+                        let id = doc["id"]
+                            .as_str()
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                            .unwrap_or_default();
+                        results.push((id, ts, v));
+                    }
+                }
+            }
+        }
+        results.sort_by_key(|(_, ts, _)| *ts);
+        Ok(results)
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].
