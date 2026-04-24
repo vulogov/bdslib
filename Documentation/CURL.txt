@@ -32,3 +32,10 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 # Fulltext
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/fulltext","params":{"session": "1", "duration": "24h", "query": "sshd OR ftpd" },"id":1}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/fulltext.get","params":{"session": "1", "duration": "24h", "query": "sshd OR ftpd" },"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/fulltext.recent","params":{"session": "1", "duration": "24h", "query": "sshd OR ftpd", "limit": 2 },"id":1}' |jq .
+# Search
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/search","params":{"session": "1", "duration": "24h", "query": "Tell me about traffic from 45.54.187.220", "limit": 2 },"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/search.get","params":{"session": "1", "duration": "24h", "query": "Tell me about traffic from 45.54.187.220", "limit": 2 },"id":1}' |jq .
+# Keys
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/keys","params":{"session": "1", "duration": "24h"},"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/keys.get","params":{"session": "1", "duration": "24h", "key": "* /metrics"},"id":1}' |jq .

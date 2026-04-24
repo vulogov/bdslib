@@ -359,6 +359,30 @@ impl ShardsManager {
         Ok(results)
     }
 
+    /// Return `(primary_id, timestamp, secondary_ids)` for every primary whose
+    /// key matches `pattern` (DuckDB shell-glob: `*`, `?`, `[abc]`) across all
+    /// shards that overlap `[now − duration, now + 1s)`.
+    ///
+    /// Results from all shards are merged and sorted by `timestamp` ascending.
+    pub fn keys_by_pattern(
+        &self,
+        duration: &str,
+        pattern: &str,
+    ) -> Result<Vec<(Uuid, i64, Vec<Uuid>)>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut results: Vec<(Uuid, i64, Vec<Uuid>)> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            let obs = shard.observability();
+            for (id, ts) in obs.list_primaries_by_key_pattern_in_range(pattern, start, end)? {
+                let secondaries = obs.list_secondaries(id)?;
+                results.push((id, ts, secondaries));
+            }
+        }
+        results.sort_by_key(|r| r.1);
+        Ok(results)
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].

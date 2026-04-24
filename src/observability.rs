@@ -835,6 +835,39 @@ impl ObservabilityStorage {
         self.parse_key_rows(rows)
     }
 
+    /// Return `(id, ts)` for all primary records whose key matches `pattern`
+    /// (DuckDB shell-glob syntax: `*`, `?`, `[abc]`), ordered by `ts` ascending.
+    pub fn list_primaries_by_key_pattern_all(
+        &self,
+        pattern: &str,
+    ) -> Result<Vec<(Uuid, i64)>> {
+        let p = sql_escape(pattern);
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, ts FROM telemetry \
+             WHERE is_primary = 1 AND key GLOB '{p}' ORDER BY ts ASC"
+        ))?;
+        parse_id_ts_rows(rows)
+    }
+
+    /// Return `(id, ts)` for primary records whose key matches `pattern` and
+    /// whose event timestamp falls in `[start, end)`, ordered by `ts` ascending.
+    pub fn list_primaries_by_key_pattern_in_range(
+        &self,
+        pattern: &str,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<(Uuid, i64)>> {
+        let p = sql_escape(pattern);
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, ts FROM telemetry \
+             WHERE is_primary = 1 AND key GLOB '{p}' AND ts >= {s} AND ts < {e} \
+             ORDER BY ts ASC"
+        ))?;
+        parse_id_ts_rows(rows)
+    }
+
     fn parse_key_rows(&self, rows: Vec<Vec<DynamicValue>>) -> Result<Vec<String>> {
         rows.into_iter()
             .filter_map(|mut cols| cols.drain(0..1).next())
@@ -1081,6 +1114,23 @@ fn parse_uuid_field(row: Vec<DynamicValue>, idx: usize, ctx: &str) -> Result<Uui
 fn parse_uuid_column(rows: Vec<Vec<DynamicValue>>) -> Result<Vec<Uuid>> {
     rows.into_iter()
         .map(|row| parse_uuid_field(row, 0, "id column"))
+        .collect()
+}
+
+fn parse_id_ts_rows(rows: Vec<Vec<DynamicValue>>) -> Result<Vec<(Uuid, i64)>> {
+    rows.into_iter()
+        .map(|mut row| {
+            if row.len() < 2 {
+                return Err(err_msg("row missing id or ts column"));
+            }
+            let ts_val = row.remove(1);
+            let id_val = row.remove(0);
+            let id = parse_uuid_value(id_val, "id column")?;
+            let ts = ts_val
+                .cast_int()
+                .map_err(|e| err_msg(format!("ts cast error: {e}")))?;
+            Ok((id, ts))
+        })
         .collect()
 }
 
