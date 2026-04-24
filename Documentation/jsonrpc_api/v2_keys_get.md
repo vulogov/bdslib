@@ -8,7 +8,7 @@ Shell-glob patterns follow DuckDB conventions: `*` matches any sequence of chara
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `session` | string | yes | — | UUID v4 session identifier. Reserved for future result caching; accepted and logged but not currently used for routing or filtering. |
+| `session` | string | yes | — | UUID v7 session identifier. Reserved for future result caching; accepted and logged but not currently used for routing or filtering. |
 | `duration` | string | yes | — | Lookback window from now in humantime format, e.g. `"1h"`, `"30min"`, `"7days"`. Only shards whose time interval overlaps `[now − duration, now + 1s)` are queried. |
 | `key` | string | yes | — | Shell-glob pattern to match against the `key` field of primary records, e.g. `"server.*"`, `"http.requ?st"`, `"*.error"`. |
 

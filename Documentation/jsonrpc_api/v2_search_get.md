@@ -10,7 +10,7 @@ Only primary records are indexed for vector search. Secondary records are not di
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `session` | string | yes | — | UUID v4 session identifier. Reserved for future result caching; accepted and logged but not currently used for routing or filtering. |
+| `session` | string | yes | — | UUID v7 session identifier. Reserved for future result caching; accepted and logged but not currently used for routing or filtering. |
 | `query` | string | yes | — | Free-text query. Embedded with the same model as stored documents. |
 | `duration` | string | yes | — | Lookback window from now in humantime format, e.g. `"1h"`, `"30min"`, `"7days"`. Only shards whose time interval overlaps `[now − duration, now + 1s)` are searched. |
 | `limit` | integer | no | `10` | Maximum number of results to return after timestamp sorting. |

@@ -10,7 +10,7 @@ Only primary records are indexed for full-text search. Secondary records are not
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `session` | string | yes | — | UUID v4 session identifier. Reserved for future result caching; accepted and logged but not currently used for routing or filtering. |
+| `session` | string | yes | — | UUID v7 session identifier. Reserved for future result caching; accepted and logged but not currently used for routing or filtering. |
 | `query` | string | yes | — | Full-text query in [Tantivy query syntax](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html). Supports term queries (`cpu`), phrase queries (`"disk full"`), boolean operators (`cpu AND usage`), and field-scoped terms. |
 | `duration` | string | yes | — | Lookback window from now in humantime format, e.g. `"1h"`, `"30min"`, `"7days"`. Only shards whose time interval overlaps `[now − duration, now + 1s)` are searched. |
 | `limit` | integer | no | `10` | Maximum number of results to return after timestamp sorting. |

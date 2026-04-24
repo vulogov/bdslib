@@ -39,3 +39,9 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 # Keys
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/keys","params":{"session": "1", "duration": "24h"},"id":1}' |jq .
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/keys.get","params":{"session": "1", "duration": "24h", "key": "* /metrics"},"id":1}' |jq .
+# Topics
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/topics","params":{"session": "1", "duration": "30m", "key": "ConnectionError"},"id":1}' |jq .
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/topics.all","params":{"session": "1", "duration": "30m"},"id":1}' |jq .
+# Explore primaries
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/primaries.explore","params":{"session": "1", "duration": "12h"},"id":1}' |jq .
+# Trends
