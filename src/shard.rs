@@ -183,6 +183,22 @@ impl Shard {
         self.fts.search_with_scores(query, limit)
     }
 
+    /// Full-text search returning `(primary_id, unix_ts, BM25_score)` triples.
+    ///
+    /// The timestamp is fetched from `ObservabilityStorage` for each hit via a
+    /// single indexed PK lookup. Records whose IDs have been deleted between
+    /// the FTS search and the timestamp lookup are silently skipped.
+    pub fn search_fts_with_ts(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, i64, f32)>> {
+        let hits = self.fts.search_with_scores(query, limit)?;
+        let mut results = Vec::with_capacity(hits.len());
+        for (id, score) in hits {
+            if let Some(ts) = self.observability.get_ts_by_id(id)? {
+                results.push((id, ts, score));
+            }
+        }
+        Ok(results)
+    }
+
     /// Semantic vector search with MMR reranking over primary records.
     ///
     /// `query` is fingerprinted, embedded, and used to search the HNSW index.

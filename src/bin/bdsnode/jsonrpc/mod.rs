@@ -5,6 +5,7 @@ mod count;
 mod duplicates;
 mod fulltext;
 mod fulltext_get;
+mod fulltext_recent;
 mod keys;
 mod params;
 mod primaries;
@@ -32,5 +33,6 @@ pub fn build_module() -> RpcModule<()> {
     secondary::register(&mut module);
     fulltext::register(&mut module);
     fulltext_get::register(&mut module);
+    fulltext_recent::register(&mut module);
     module
 }

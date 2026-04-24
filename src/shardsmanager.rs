@@ -193,6 +193,29 @@ impl ShardsManager {
         Ok(results)
     }
 
+    /// Full-text search returning `(primary_id, unix_ts, BM25_score)` triples
+    /// across all catalog-registered shards that overlap the lookback window
+    /// `[now − duration, now + 1s)`.
+    ///
+    /// Results from all shards are merged and sorted by timestamp descending
+    /// (most recent first). After sorting the list is truncated to `limit`.
+    pub fn fulltextsearch_recent(
+        &self,
+        duration: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(Uuid, i64, f32)>> {
+        let (start, end) = lookback_window(duration)?;
+        let mut results: Vec<(Uuid, i64, f32)> = Vec::new();
+        for info in self.cache.info().shards_in_range(start, end)? {
+            let shard = self.cache.shard(info.start_time)?;
+            results.extend(shard.search_fts_with_ts(query, limit)?);
+        }
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.truncate(limit);
+        Ok(results)
+    }
+
     /// Semantic vector search across all catalog-registered shards that overlap
     /// the lookback window `[now − duration, now + 1s)`.
     ///

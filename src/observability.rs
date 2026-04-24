@@ -312,6 +312,25 @@ impl ObservabilityStorage {
         rows.into_iter().next().map(row_to_doc).transpose()
     }
 
+    /// Return the Unix-second timestamp for `id`, or `None` if not found.
+    pub fn get_ts_by_id(&self, id: Uuid) -> Result<Option<i64>> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT ts FROM telemetry WHERE id = '{id}'"
+        ))?;
+        match rows.into_iter().next() {
+            None => Ok(None),
+            Some(row) => {
+                let ts = row
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| err_msg("telemetry row missing ts"))?
+                    .cast_int()
+                    .map_err(|e| err_msg(e.to_string()))?;
+                Ok(Some(ts))
+            }
+        }
+    }
+
     /// Return all records whose `key` matches, ordered by `timestamp` ascending.
     pub fn get_by_key(&self, key: &str) -> Result<Vec<JsonValue>> {
         let rows = self.engine.select_all(&format!(

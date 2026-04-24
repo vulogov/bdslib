@@ -91,3 +91,4 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/duplicates`](v2_duplicates.md) | Map of primary UUID → duplicate timestamps, optionally filtered by time window |
 | [`v2/fulltext`](v2_fulltext.md) | Full-text search returning matching primary IDs and BM25 relevance scores |
 | [`v2/fulltext.get`](v2_fulltext_get.md) | Full-text search returning complete primary documents with linked secondaries |
+| [`v2/fulltext.recent`](v2_fulltext_recent.md) | Full-text search returning IDs, timestamps, and scores sorted by most recent first |
