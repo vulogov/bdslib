@@ -33,6 +33,10 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;
 
+    bdslib::context::init(cli.config.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("failed to initialise BUND context")?;
+
     bdslib::pipe::init(&["ingest"])
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise pipe registry")?;

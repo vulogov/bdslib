@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 pub(crate) static BUND: OnceLock<RwLock<Bund>> = OnceLock::new();
 
+pub mod context;
 pub mod eval;
 pub mod helpers;
 pub mod stdlib;

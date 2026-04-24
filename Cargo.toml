@@ -22,7 +22,7 @@ serde_cbor = "0.11"
 rmp-serde = "1.1"
 flate2 = "1.0"
 crossbeam = "0.8"
-parking_lot = "0.12.5"
+parking_lot = { version = "0.12.5", features = ["arc_lock"] }
 ndarray = "0.15"  # For vector operations
 rayon = "1.7"  # For parallel processing
 fastembed = { version = "5.13.0" }

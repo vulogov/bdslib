@@ -330,7 +330,7 @@ fn main() {
 fn run(cli: Cli) -> Result<(), easy_error::Error> {
     match cli.command {
         Command::Eval { stdin, eval, file, url } => {
-            cmd_eval(stdin, eval, file, url)
+            cmd_eval(cli.config.as_deref(), stdin, eval, file, url)
         }
         Command::Analyze { mode } => {
             setup_db(cli.config.as_deref())?;
@@ -367,14 +367,22 @@ fn run(cli: Cli) -> Result<(), easy_error::Error> {
 // ── shared setup ──────────────────────────────────────────────────────────────
 
 fn setup_db(config: Option<&str>) -> Result<(), easy_error::Error> {
-    init_db(config).map_err(|e| {
-        easy_error::err_msg(format!("DB init failed: {e}"))
-    })
+    init_db(config)
+        .map_err(|e| easy_error::err_msg(format!("DB init failed: {e}")))?;
+    bdslib::init_adam()
+        .map_err(|e| easy_error::err_msg(format!("VM init failed: {e}")))?;
+    bdslib::context::init(config)
+        .map_err(|e| easy_error::err_msg(format!("BUND context init failed: {e}")))?;
+    Ok(())
 }
 
 // ── eval ──────────────────────────────────────────────────────────────────────
 
-fn cmd_eval(stdin: bool, eval: Option<String>, file: Option<String>, url: Option<String>) -> Result<(), easy_error::Error> {
+fn cmd_eval(config: Option<&str>, stdin: bool, eval: Option<String>, file: Option<String>, url: Option<String>) -> Result<(), easy_error::Error> {
+    bdslib::init_adam()
+        .map_err(|e| easy_error::err_msg(format!("VM init failed: {e}")))?;
+    bdslib::context::init(config)
+        .map_err(|e| easy_error::err_msg(format!("BUND context init failed: {e}")))?;
     let snippet = match get_snippet(stdin, eval, file, url) {
         Some(s) => s,
         None => {

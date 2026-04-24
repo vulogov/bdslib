@@ -29,4 +29,5 @@ pub use analysis::{LdaConfig, SamplePoint, TelemetryTrend, TopicSummary};
 pub use common::generator::{Generator, LogFormat};
 pub use common::uuid::timestamp_from_v7;
 pub use vm::{bund_eval, init_adam};
+pub use vm::context;
 pub use common::pipe;
