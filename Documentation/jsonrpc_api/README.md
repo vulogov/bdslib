@@ -81,6 +81,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 |---|---|
 | [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence |
 | [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence |
+| [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion |
 | [`v2/timeline`](v2_timeline.md) | Earliest and latest event timestamps across all shards |
 | [`v2/count`](v2_count.md) | Total number of telemetry records, optionally filtered by time window |
 | [`v2/shards`](v2_shards.md) | List of shards with time boundaries, path, and primary/secondary counts |

@@ -1,4 +1,4 @@
-use crossbeam::channel::{bounded, Receiver, Sender};
+use crossbeam::channel::{Receiver, Sender, bounded};
 use serde_json::Value as JsonValue;
 use std::time::{Duration, Instant};
 
@@ -48,7 +48,10 @@ impl Config {
             .unwrap_or(5000)
             .max(1);
 
-        Ok(Some(Config { batch_size, timeout_ms }))
+        Ok(Some(Config {
+            batch_size,
+            timeout_ms,
+        }))
     }
 }
 
@@ -90,7 +93,10 @@ pub fn start(cfg: Config) -> Handle {
         .name("bds-add-file".to_string())
         .spawn(move || run(cfg.batch_size, timeout, shutdown_rx))
         .expect("failed to spawn bds-add-file thread");
-    Handle { shutdown_tx, thread: Some(thread) }
+    Handle {
+        shutdown_tx,
+        thread: Some(thread),
+    }
 }
 
 fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
@@ -190,16 +196,17 @@ fn process_file(
         Ok(doc)
     };
 
-    if let Err(e) = bdslib::common::logparser::ingest_file(
-        parse_json,
-        |doc| file_docs.push(doc),
-        path,
-    ) {
+    if let Err(e) =
+        bdslib::common::logparser::ingest_file(parse_json, |doc| file_docs.push(doc), path)
+    {
         log::warn!("[add_file] error reading {path:?}: {e}");
         return;
     }
 
-    log::debug!("[add_file] parsed {} records from {path:?}", file_docs.len());
+    log::debug!(
+        "[add_file] parsed {} records from {path:?}",
+        file_docs.len()
+    );
 
     for doc in file_docs {
         batch.push(doc);

@@ -1,5 +1,6 @@
 mod add;
 mod add_batch;
+mod add_file;
 mod eval;
 mod count;
 mod duplicates;
@@ -32,6 +33,7 @@ pub fn build_module() -> RpcModule<()> {
     let mut module = RpcModule::new(());
     add::register(&mut module);
     add_batch::register(&mut module);
+    add_file::register(&mut module);
     eval::register(&mut module);
     timeline::register(&mut module);
     count::register(&mut module);
