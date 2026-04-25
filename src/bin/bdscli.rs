@@ -218,6 +218,18 @@ enum GenerateMode {
         #[arg(long, default_value_t = false)]
         ingest: bool,
     },
+
+    /// Generate raw RFC-3164 syslog lines parseable by `parse_syslog`.
+    /// Each line is printed to stdout as plain text (not JSON).
+    Syslog {
+        /// Time window for generated timestamps (humantime, e.g. `1h`, `30min`).
+        #[arg(short, long, default_value = "1h")]
+        duration: String,
+
+        /// Number of lines to generate.
+        #[arg(short = 'n', long, default_value_t = 100)]
+        count: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -521,6 +533,7 @@ fn mode_duration(mode: &GenerateMode) -> &str {
         GenerateMode::Telemetry { duration, .. } => duration,
         GenerateMode::Mixed     { duration, .. } => duration,
         GenerateMode::Templated { duration, .. } => duration,
+        GenerateMode::Syslog    { duration, .. } => duration,
     }
 }
 
@@ -554,6 +567,15 @@ fn cmd_generate(config: Option<&str>, duplicate: f64, mode: GenerateMode) -> Res
         return Err(easy_error::err_msg("--duplicate must be between 0.0 and 1.0"));
     }
 
+    // Syslog emits raw RFC-3164 text lines, not JSON — handle before the JSON path.
+    if let GenerateMode::Syslog { ref duration, count } = mode {
+        let lines = bdslib::Generator::new().syslog_lines(duration, count);
+        for line in lines {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+
     let duration_secs = humantime::parse_duration(mode_duration(&mode))
         .map(|d| d.as_secs())
         .unwrap_or(3600);
@@ -585,6 +607,7 @@ fn cmd_generate(config: Option<&str>, duplicate: f64, mode: GenerateMode) -> Res
             let docs = bdslib::Generator::new().templated(&duration, &tmpl, count);
             (docs, ingest)
         }
+        GenerateMode::Syslog { .. } => unreachable!(),
     };
 
     inject_duplicates(&mut docs, duplicate, duration_secs);

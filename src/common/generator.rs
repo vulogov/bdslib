@@ -283,6 +283,27 @@ impl Generator {
             .collect()
     }
 
+    /// Generate `n` raw RFC-3164 syslog lines ready to be parsed by `parse_syslog`.
+    ///
+    /// Each line has the form:
+    /// ```text
+    /// Nov 16 23:01:55 web-01 sshd[12345]: Accepted publickey for alice from 10.0.0.1 port 54321
+    /// ```
+    pub fn syslog_lines(&self, duration: &str, n: usize) -> Vec<String> {
+        let tr = self.time_range_for(duration);
+        let mut rng = rand::thread_rng();
+        (0..n)
+            .map(|_| {
+                let program  = pick(&mut rng, SYSLOG_PROGRAMS);
+                let host     = pick(&mut rng, HOSTS);
+                let pid: u32 = rng.gen_range(100..65535);
+                let message  = syslog_message(&mut rng, program);
+                let ts       = self.rand_ts(&mut rng, tr);
+                format!("{} {} {}[{}]: {}", syslog_ts_str(ts), host, program, pid, message)
+            })
+            .collect()
+    }
+
     /// Generate `n` documents from a JSON template over `duration`.
     ///
     /// `template` must be a valid JSON string.  String values that begin
