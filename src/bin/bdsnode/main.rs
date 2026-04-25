@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND context")?;
 
-    bdslib::pipe::init(&["ingest"])
+    bdslib::pipe::init(&["ingest", "ingest_file"])
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise pipe registry")?;
 
@@ -78,6 +78,15 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+
+    let add_file_handle =
+        if let Some(cfg) = server::add_file::Config::from_config(cli.config.as_deref())
+            .context("failed to read file-ingest config")?
+        {
+            Some(server::add_file::start(cfg))
+        } else {
+            None
+        };
 
     let addr = format!("{}:{}", cli.host, cli.port);
 
@@ -100,8 +109,11 @@ async fn main() -> anyhow::Result<()> {
     cleanup_handle.stop().await;
     server::bundcleanup::vm_close();
 
-    // Drain the ingest channel and join the batch thread before checkpointing
-    // so that no queued records are lost.
+    // Drain ingest channels and join batch threads before checkpointing so
+    // that no queued records are lost.
+    if let Some(h) = add_file_handle {
+        h.stop();
+    }
     if let Some(h) = add_handle {
         h.stop();
     }
