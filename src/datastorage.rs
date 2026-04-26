@@ -35,10 +35,13 @@ const JSON_INIT_SQL: &str = "
 
 /// Thread-safe binary blob store backed by [`StorageEngine`].
 ///
-/// Each blob is assigned a UUIDv7 on insertion. Both `created_at` and
-/// `updated_at` are Unix timestamps (seconds); `created_at` is set once at
-/// insertion and never changed; `updated_at` is refreshed on every
-/// [`update_blob`] call.
+/// The primary key column is `TEXT`, so records can be identified by either a
+/// UUIDv7 (auto-generated or caller-supplied) or by an arbitrary string key.
+/// All three key families share the same underlying table and can coexist.
+///
+/// Both `created_at` and `updated_at` are Unix timestamps (seconds).
+/// `created_at` is set once at insertion and never changed; `updated_at` is
+/// refreshed on every update call.
 ///
 /// `BlobStorage` is `Clone`; all clones share the same underlying pool.
 ///
@@ -77,6 +80,24 @@ impl BlobStorage {
         Ok(id)
     }
 
+    /// Store `data` under the caller-supplied `id`, recording the current time
+    /// as both `created_at` and `updated_at`.
+    ///
+    /// Returns `Err` if a record with `id` already exists. Use [`update_blob`]
+    /// to replace an existing record's payload, or call [`drop_blob`] first if
+    /// both the data and the timestamps must be reset.
+    ///
+    /// [`update_blob`]: BlobStorage::update_blob
+    /// [`drop_blob`]: BlobStorage::drop_blob
+    pub fn add_blob_with_key(&self, id: Uuid, data: &[u8]) -> Result<()> {
+        let ts = now_unix_secs()?;
+        let hex = to_hex(data);
+        self.engine.execute(&format!(
+            "INSERT INTO blobs (id, created_at, updated_at, data) \
+             VALUES ('{id}', {ts}, {ts}, from_hex('{hex}'))"
+        ))
+    }
+
     /// Return the bytes stored under `id`, or `None` if no such record exists.
     pub fn get_blob(&self, id: Uuid) -> Result<Option<Vec<u8>>> {
         let rows = self
@@ -113,6 +134,77 @@ impl BlobStorage {
     pub fn drop_blob(&self, id: Uuid) -> Result<()> {
         self.engine
             .execute(&format!("DELETE FROM blobs WHERE id = '{id}'"))
+    }
+
+    // ── string-key API ────────────────────────────────────────────────────────
+
+    /// Store `data` under the caller-supplied string `key`, recording the
+    /// current time as both `created_at` and `updated_at`.
+    ///
+    /// `key` may be any non-empty string and is stored verbatim as the primary
+    /// key. Single quotes and other characters that would normally require SQL
+    /// escaping are handled automatically.
+    ///
+    /// Returns `Err` if a record with `key` already exists. Use
+    /// [`update_blob_by_string_key`] to replace an existing record's payload,
+    /// or call [`drop_blob_by_string_key`] first if the timestamps must also be
+    /// reset.
+    ///
+    /// [`update_blob_by_string_key`]: BlobStorage::update_blob_by_string_key
+    /// [`drop_blob_by_string_key`]: BlobStorage::drop_blob_by_string_key
+    pub fn add_blob_with_string_key(&self, key: &str, data: &[u8]) -> Result<()> {
+        let ts = now_unix_secs()?;
+        let hex = to_hex(data);
+        self.engine.execute(&format!(
+            "INSERT INTO blobs (id, created_at, updated_at, data) \
+             VALUES ('{}', {ts}, {ts}, from_hex('{hex}'))",
+            sql_escape(key),
+        ))
+    }
+
+    /// Return the bytes stored under the string `key`, or `None` if no such
+    /// record exists.
+    pub fn get_blob_by_string_key(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT data FROM blobs WHERE id = '{}'",
+            sql_escape(key),
+        ))?;
+        match rows.into_iter().next() {
+            None => Ok(None),
+            Some(row) => {
+                let bytes = row
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| err_msg("blob row missing data column"))?
+                    .cast_bin()
+                    .map_err(|e| err_msg(e.to_string()))?;
+                Ok(Some(bytes))
+            }
+        }
+    }
+
+    /// Replace the bytes stored under the string `key` and set `updated_at` to
+    /// now.
+    ///
+    /// Returns `Ok(())` even if `key` does not exist (no-op).
+    pub fn update_blob_by_string_key(&self, key: &str, data: &[u8]) -> Result<()> {
+        let ts = now_unix_secs()?;
+        let hex = to_hex(data);
+        self.engine.execute(&format!(
+            "UPDATE blobs SET data = from_hex('{hex}'), updated_at = {ts} \
+             WHERE id = '{}'",
+            sql_escape(key),
+        ))
+    }
+
+    /// Delete the record for the string `key`.
+    ///
+    /// Returns `Ok(())` even if `key` does not exist.
+    pub fn drop_blob_by_string_key(&self, key: &str) -> Result<()> {
+        self.engine.execute(&format!(
+            "DELETE FROM blobs WHERE id = '{}'",
+            sql_escape(key),
+        ))
     }
 }
 
