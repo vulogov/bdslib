@@ -1,0 +1,69 @@
+
+  ╔═════════════════════════════════════════════════════════╗
+  ║      RCA DEMO  —  Infrastructure Incident Analysis      ║
+  ╚═════════════════════════════════════════════════════════╝
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  INGESTING DATASET                                      │
+  └─────────────────────────────────────────────────────────┘
+  Auth cluster   (sshd, pam, auditd)               30 events
+  Web cluster    (nginx, haproxy)                   20 events
+  DB cluster     (postgres, redis)                  20 events
+  Failure cascade (disk_warn → ... → app_crash)    30 events
+  Telemetry noise (cpu.usage, mem.used) — filtered  14 records
+
+  Total ingested : 114 records
+  Event records  : 100  (telemetry filtered before clustering)
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  RCA  —  CO-OCCURRENCE CLUSTERING  (all events, 3 h window)│
+  └─────────────────────────────────────────────────────────┘
+  Events analysed : 89   Distinct keys : 12   Clusters found : 3
+  Window          : 2h 59m 56s ago  →  31s ago
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Cluster   Members                                                       Cohesion   Support   │
+╞══════════════════════════════════════════════════════════════════════════════════════════════╡
+│ #0        postgres,  redis                                              1.000      9 buckets │
+│ #1        app_crash,  app_error,  disk_full,  disk_warn,  nfs_timeout   1.000      6 buckets │
+│ #2        auditd,  haproxy,  nginx,  pam,  sshd                         0.956      8 buckets │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Failure-cascade cluster (id #1):
+    Members  : app_crash → app_error → disk_full → disk_warn → nfs_timeout
+    Cohesion : 1.000  (all 5 keys always co-occur)
+    Support  : 6 incidents detected in 3 h window
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  RCA  —  PROBABLE CAUSES  for failure key "app_crash"   │
+  └─────────────────────────────────────────────────────────┘
+  Candidates ranked by average lead time (positive = precedes failure):
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Rank   Key           Avg lead   Jaccard   Co-occ   Assessment               │
+╞═════════════════════════════════════════════════════════════════════════════╡
+│ #1     disk_warn     180.0s     1.000     6        LIKELY ROOT CAUSE        │
+│ #2     sshd          180.0s     0.167     2        LIKELY ROOT CAUSE        │
+│ #3     pam           170.0s     0.167     2        LIKELY ROOT CAUSE        │
+│ #4     auditd        160.0s     0.167     2        LIKELY ROOT CAUSE        │
+│ #5     disk_full     135.0s     1.000     6        LIKELY ROOT CAUSE        │
+│ #6     nfs_timeout   90.0s      1.000     6        Contributing factor      │
+│ #7     app_error     30.0s      1.000     6        Possible precursor       │
+│ #8     nginx         -20.0s     0.167     2        Concurrent / consequence │
+│ #9     haproxy       -35.0s     0.154     2        Concurrent / consequence │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  SUMMARY                                                │
+  └─────────────────────────────────────────────────────────┘
+  Most probable root cause  :  disk_warn
+  Avg precedes app_crash by :  180s across 6 co-occurring incidents
+  Jaccard co-occurrence     :  1.000
+
+  Cluster interpretation:
+    #0  [postgres, redis]  cohesion=1.00  ← data-tier cluster (normal)
+    #1  [app_crash, app_error, disk_full, disk_warn, nfs_timeout]  cohesion=1.00  ← failure-cascade cluster (investigate root cause)
+    #2  [auditd, haproxy, nginx, pam, sshd]  cohesion=0.96  ← authentication-activity cluster (normal)
+
+  Demo complete.  Temp directory removed.
+
