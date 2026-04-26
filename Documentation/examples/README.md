@@ -41,6 +41,7 @@ cargo run --example <name>
 |---|---|---|
 | [StorageEngine](storage_engine_demo.md) | `storage_engine_demo.rs` | Low-level DuckDB SQL engine with R2D2 pool and rust_dynamic type bridge |
 | [DataStorage](datastorage_demo.md) | `datastorage_demo.rs` | `BlobStorage` and `JsonStorage` with key-based deduplication |
+| [DocumentStorage](documentstorage_demo.md) | `documentstorage_demo.rs` | `DocumentStorage`: metadata + blob + unified HNSW vector store — add, search, update, delete, string output, persistence |
 | [ObservabilityStorage](observability_demo.md) | `observability_demo.rs` | redb-backed dedup, primary/secondary classification, time-range queries |
 
 ### Search engines

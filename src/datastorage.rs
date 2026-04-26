@@ -324,6 +324,29 @@ impl JsonStorage {
         }
     }
 
+    /// Store `document` under the caller-supplied `id`, recording the current
+    /// time as both `created_at` and `updated_at`.
+    ///
+    /// The `key` column is populated using the same `config.key_field` logic as
+    /// [`add_json`]; the key is used for secondary lookups and deduplication
+    /// but does not affect the primary key.
+    ///
+    /// Returns `Err` if a record with `id` already exists.
+    ///
+    /// [`add_json`]: JsonStorage::add_json
+    pub fn add_json_with_id(&self, id: Uuid, document: JsonValue) -> Result<()> {
+        let ts = now_unix_secs()?;
+        let key = self.resolve_key(&document);
+        let doc_str = serde_json::to_string(&document)
+            .map_err(|e| err_msg(format!("JSON serialisation failed: {e}")))?;
+        self.engine.execute(&format!(
+            "INSERT INTO json_docs (id, created_at, updated_at, key, document) \
+             VALUES ('{id}', {ts}, {ts}, '{}', '{}'::JSON)",
+            sql_escape(&key),
+            sql_escape(&doc_str),
+        ))
+    }
+
     /// Return the document stored under `id`, or `None` if no such record exists.
     pub fn get_json(&self, id: Uuid) -> Result<Option<JsonValue>> {
         let rows = self.engine.select_all(&format!(

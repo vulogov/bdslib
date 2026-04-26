@@ -15,6 +15,7 @@ Reference documentation for bdslib, bdscli, bdsnode, and the BUND scripting VM.
 | [EMBEDDINGENGINE.md](EMBEDDINGENGINE.md) | `EmbeddingEngine` — fastembed-based vector embedding generation |
 | [FTSENGINE.md](FTSENGINE.md) | `FTSEngine` — Tantivy full-text search index management |
 | [VECTORENGINE.md](VECTORENGINE.md) | `VectorEngine` — HNSW vector index backed by VecStore |
+| [DOCUMENTSENGINE.md](DOCUMENTSENGINE.md) | `DocumentStorage` — combined metadata, blob, and vector store with unified similarity search |
 | [OBSERVABILITYENGINE.md](OBSERVABILITYENGINE.md) | `ObservabilityStorage` — redb key-value store for dedup tracking and secondaries |
 | [COMMON.md](COMMON.md) | Common utilities: error handling, JSON fingerprint, math, time ranges, UUID |
 
