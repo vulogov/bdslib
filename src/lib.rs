@@ -14,7 +14,10 @@ pub mod shardsmanager;
 pub mod storageengine;
 pub mod vectorengine;
 pub mod vm;
-pub use analysis::{LdaConfig, SamplePoint, TelemetryTrend, TopicSummary};
+pub use analysis::{
+    CausalCandidate, EventCluster, LdaConfig, RcaConfig, RcaResult, SamplePoint,
+    TelemetryTrend, TopicSummary,
+};
 pub use common::generator::{Generator, LogFormat};
 pub use common::pipe;
 pub use common::uuid::timestamp_from_v7;
