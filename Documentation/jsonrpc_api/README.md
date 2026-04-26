@@ -105,4 +105,5 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/trends`](v2_trends.md) | Statistical trend summary for a single key: min, max, mean, median, std-dev, anomalies, and breakouts |
 | [`v2/topics`](v2_topics.md) | LDA topic modelling over a single key's telemetry corpus within a lookback window, returning a keyword summary |
 | [`v2/topics.all`](v2_topics_all.md) | LDA topic modelling over every distinct key in the window, returning one keyword summary per key |
+| [`v2/rca`](v2_rca.md) | Root cause analysis: cluster non-telemetry events by co-occurrence and rank probable causes of a named failure key |
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |
