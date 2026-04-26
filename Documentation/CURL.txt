@@ -49,3 +49,5 @@ curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/primaries.explore.telemetry","params":{"session": "1", "duration": "4h"},"id":1}' |jq .
 # Trends
 curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/trends","params":{"session": "1", "key": "queue.depth", "duration": "4h"},"id":1}' |jq .
+# Status
+curl -s -X POST http://127.0.0.1:9000 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"v2/status","params":{},"id":1}' |jq .
