@@ -38,6 +38,21 @@ On startup `bdsnode`:
 
 ---
 
+## Client
+
+`bdscmd` is the dedicated command-line client for this API. It wraps every
+method listed below as its own subcommand, handles the pre-flight server check,
+and pretty-prints results. See [../BDSCMD.md](../BDSCMD.md) for the full
+reference.
+
+```bash
+bdscmd status
+bdscmd fulltext -q "kernel panic" -d 1h
+bdscmd eval my_script.bund
+```
+
+---
+
 ## Protocol
 
 All requests use **JSON-RPC 2.0** over plain HTTP `POST` to the server root (`/`).
@@ -83,6 +98,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence |
 | [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence |
 | [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion |
+| [`v2/add.file.syslog`](v2_add_file_syslog.md) | Validate and enqueue an RFC 3164 syslog file for async background ingestion; each line is parsed and converted to a structured telemetry document |
 | [`v2/timeline`](v2_timeline.md) | Earliest and latest event timestamps across all shards |
 | [`v2/count`](v2_count.md) | Total number of telemetry records, optionally filtered by time window |
 | [`v2/shards`](v2_shards.md) | List of shards with time boundaries, path, and primary/secondary counts |

@@ -23,6 +23,7 @@ Reference documentation for bdslib, bdscli, bdsnode, and the BUND scripting VM.
 | Document | Description |
 |---|---|
 | [BDSCLI.md](BDSCLI.md) | `bdscli` — full command reference: init, generate, ingest, get, search, analyze |
+| [BDSCMD.md](BDSCMD.md) | `bdscmd` — full JSON-RPC client reference: all 30 `v2/*` methods, eval shebang, quick reference |
 
 ## JSON-RPC API (bdsnode)
 
@@ -38,13 +39,14 @@ Key methods:
 | [`v2/add`](jsonrpc_api/v2_add.md) | Enqueue a single telemetry document |
 | [`v2/add.batch`](jsonrpc_api/v2_add_batch.md) | Enqueue a batch of telemetry documents |
 | [`v2/add.file`](jsonrpc_api/v2_add_file.md) | Submit an NDJSON file path for background ingestion |
+| [`v2/add.file.syslog`](jsonrpc_api/v2_add_file_syslog.md) | Submit an RFC 3164 syslog file path for background ingestion |
 | [`v2/trends`](jsonrpc_api/v2_trends.md) | Statistical trend summary with anomaly and breakout detection |
 | [`v2/topics`](jsonrpc_api/v2_topics.md) | LDA topic modelling over a key's corpus |
 | [`v2/rca`](jsonrpc_api/v2_rca.md) | Root cause analysis: co-occurrence clustering and causal ranking |
 | [`v2/search`](jsonrpc_api/v2_search.md) | Semantic vector search |
 | [`v2/fulltext`](jsonrpc_api/v2_fulltext.md) | Full-text BM25 search |
 
-See [jsonrpc_api/README.md](jsonrpc_api/README.md) for the complete method list.
+See [jsonrpc_api/README.md](jsonrpc_api/README.md) for the complete method list and the `bdscmd` client reference.
 
 ## BUND scripting VM
 
