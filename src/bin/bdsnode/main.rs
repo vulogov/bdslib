@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND context")?;
 
-    bdslib::pipe::init(&["ingest", "ingest_file"])
+    bdslib::pipe::init(&["ingest", "ingest_file", "ingest_file_syslog"])
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise pipe registry")?;
 
@@ -96,6 +96,15 @@ async fn main() -> anyhow::Result<()> {
             .context("failed to read file-ingest config")?
         {
             Some(server::add_file::start(cfg, status::get().current_file.clone()))
+        } else {
+            None
+        };
+
+    let add_file_syslog_handle =
+        if let Some(cfg) = server::add_file_syslog::Config::from_config(cli.config.as_deref())
+            .context("failed to read syslog file-ingest config")?
+        {
+            Some(server::add_file_syslog::start(cfg, status::get().current_syslog_file.clone()))
         } else {
             None
         };
@@ -123,6 +132,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Drain ingest channels and join batch threads before checkpointing so
     // that no queued records are lost.
+    if let Some(h) = add_file_syslog_handle {
+        h.stop();
+    }
     if let Some(h) = add_file_handle {
         h.stop();
     }

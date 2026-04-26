@@ -66,6 +66,7 @@ Key scripts:
 |---|---|
 | `send_file_to_node.sh` | Generate an NDJSON file, submit via `v2/add.file`, monitor `v2/status` until complete, then remove the file |
 | `send_logs_to_node.sh` | Generate mixed + log documents in memory and submit as a single `v2/add.batch` |
+| `send_syslog_to_node.sh` | Generate an RFC 3164 syslog file, submit via `v2/add.file.syslog`, monitor `v2/status`, verify with `v2/fulltext*` |
 | `verify_analysis.sh` | End-to-end LDA topic analysis test against bdscli and a fresh database |
 | `verify_ingestion.sh` | End-to-end ingestion test: record counts, primary/secondary split, dedup, vector index |
 | `verify_logs.sh` | End-to-end log pipeline test: ingestion, deduplication, FTS, and vector search |

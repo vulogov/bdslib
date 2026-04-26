@@ -10,6 +10,7 @@ Shell scripts for data ingestion, node submission, and end-to-end verification o
 |---|---|
 | [`send_file_to_node.sh`](#send_file_to_nodesh) | Generate an NDJSON file, submit it to bdsnode via `v2/add.file`, wait for ingestion, then remove the file |
 | [`send_logs_to_node.sh`](#send_logs_to_nodesh) | Generate mixed + log documents in memory and submit them as a single `v2/add.batch` call |
+| [`send_syslog_to_node.sh`](#send_syslog_to_nodesh) | Generate an RFC 3164 syslog file, submit via `v2/add.file.syslog`, wait for ingestion, verify with `v2/fulltext*` |
 | [`verify_analysis.sh`](#verify_analysissh) | End-to-end LDA topic analysis test against a live bdscli binary and database |
 | [`verify_ingestion.sh`](#verify_ingestionsh) | End-to-end ingestion correctness test: primary/secondary split, exact-match dedup, vector index |
 | [`verify_logs.sh`](#verify_logssh) | End-to-end log pipeline test: ingestion, deduplication, FTS, and vector search |
@@ -151,6 +152,92 @@ Because both generators run synchronously and the payload is delivered in a sing
 # http-nginx logs for FTS / vector search testing:
 ./send_logs_to_node.sh -f http-nginx -n 200
 ```
+
+---
+
+## send_syslog_to_node.sh
+
+Generate synthetic RFC 3164 syslog lines into a file via `bdscli generate syslog`, submit the file path to a running `bdsnode` via `v2/add.file.syslog`, and wait for background ingestion to complete by polling `v2/status`.  When `syslog_file_queue` reaches `0` and `syslog_file_name` becomes `null`, ingestion is finished.  The script then verifies ingestion by issuing three full-text queries (`v2/fulltext`, `v2/fulltext.get`, `v2/fulltext.recent`) and prints the results.  The file is removed unless `--keep` or `-o` is in effect.
+
+### Dependencies
+
+`bdscli` · `curl` · `jq`
+
+### Usage
+
+```
+./send_syslog_to_node.sh [OPTIONS]
+```
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `-a`, `--address ADDR` | `127.0.0.1:9000` | bdsnode `host:port` or full URL.  `http://` is prepended automatically when absent. |
+| `-n`, `--count N` | `100` | Number of RFC 3164 syslog lines to generate. |
+| `-d`, `--duration DUR` | `1h` | Timestamp window for generated lines in humantime format (e.g. `30min`, `6h`, `7days`). |
+| `-q`, `--query TERM` | `kernel` | FTS term used for the post-ingestion `v2/fulltext*` verification queries.  Common syslog program names: `kernel` `sshd` `cron` `su` `nginx`. |
+| `--verify-limit N` | `10` | Maximum hits returned by `v2/fulltext` and `v2/fulltext.recent`. |
+| `-o`, `--output FILE` | — | Write the generated syslog to `FILE` instead of a temp file.  Implies `--keep`. |
+| `--keep` | off | Keep the generated file after ingestion completes. |
+| `--poll-interval N` | `1` | Seconds between `v2/status` polls while waiting for ingestion. |
+| `--timeout N` | `300` | Maximum seconds to wait.  Exits with code `2` if ingestion is not complete within this limit.  Set to `0` to disable. |
+| `-c`, `--config FILE` | — | Optional bdscli config file, passed as `bdscli --config FILE`. |
+| `--bdscli PATH` | `bdscli` | Path to the bdscli binary.  Also read from `$BDSCLI` environment variable. |
+| `-h`, `--help` | — | Print usage and exit. |
+
+### Behaviour
+
+1. Generates `--count` RFC 3164 syslog lines via `bdscli generate syslog` and writes them to the output file (one plain-text line per syslog entry).
+2. Submits the absolute file path to `bdsnode` via a `v2/add.file.syslog` JSON-RPC call.
+3. If the response contains a JSON-RPC `error` field the script exits with code `1`.
+4. Polls `v2/status` every `--poll-interval` seconds, printing a live status line showing `syslog_file_queue` and `syslog_file_name`.
+5. Exits the monitoring loop when `syslog_file_queue == 0` and `syslog_file_name == null`.
+6. Runs three verification queries against the `--duration` window:
+   - `v2/fulltext` — returns matching IDs and BM25 scores (up to `--verify-limit`).
+   - `v2/fulltext.get` — returns the first 3 full documents matching the query.
+   - `v2/fulltext.recent` — returns matching IDs sorted newest-first.
+7. Prints a warning (but does not fail) if `v2/fulltext` returns 0 hits — this can happen when the default query term is not present in the generated data; use `--query` to choose a different term.
+8. Removes the file (or keeps it if `--keep` / `-o`).
+
+If the script exits early due to an error before ingestion monitoring completes, any temp file it created is removed by an `EXIT` trap.
+
+### Difference from `send_file_to_node.sh`
+
+| Aspect | `send_file_to_node.sh` | `send_syslog_to_node.sh` |
+|---|---|---|
+| Generator | `bdscli generate mixed` | `bdscli generate syslog` |
+| File format | NDJSON (one JSON doc per line) | Plain RFC 3164 syslog (one text line per entry) |
+| RPC method | `v2/add.file` | `v2/add.file.syslog` |
+| Status fields watched | `json_file_queue`, `json_file_name` | `syslog_file_queue`, `syslog_file_name` |
+| Post-ingestion verify | — | `v2/fulltext`, `v2/fulltext.get`, `v2/fulltext.recent` |
+
+### Examples
+
+```bash
+# 200 syslog lines over a 2h window, local node:
+./send_syslog_to_node.sh -n 200 -d 2h
+
+# Keep the generated file, verify with "sshd" term:
+./send_syslog_to_node.sh -n 500 --keep -q sshd
+
+# Write to a specific path (kept automatically):
+./send_syslog_to_node.sh -n 1000 -o /tmp/test.syslog
+
+# Poll every 2 seconds, time out after 10 minutes:
+./send_syslog_to_node.sh -n 5000 --poll-interval 2 --timeout 600
+
+# Submit to a remote node, query with "cron":
+./send_syslog_to_node.sh -a 10.0.0.5:9000 -n 300 -q cron
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Ingestion confirmed complete; file disposed according to `--keep`. |
+| `1` | Preflight failure, generation error, or server returned an error response. |
+| `2` | Timed out waiting for ingestion to complete. |
 
 ---
 
@@ -311,18 +398,18 @@ Colour-coded `PASS` / `FAIL` lines.  Exits with code `1` on first failure; print
 
 | Tool | Used by |
 |---|---|
-| `bdscli` | `send_file_to_node.sh`, `send_logs_to_node.sh` |
-| `curl` | `send_file_to_node.sh`, `send_logs_to_node.sh` |
-| `jq` | `send_file_to_node.sh`, `send_logs_to_node.sh` |
+| `bdscli` | `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
+| `curl` | `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
+| `jq` | `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
 | `cargo` | `verify_*.sh` |
 | `python3` | `verify_ingestion.sh`, `verify_logs.sh` |
 
 ### BDSCLI environment variable
 
-`send_file_to_node.sh` and `send_logs_to_node.sh` respect the `BDSCLI` environment variable as an alternative to `--bdscli`:
+`send_file_to_node.sh`, `send_logs_to_node.sh`, and `send_syslog_to_node.sh` respect the `BDSCLI` environment variable as an alternative to `--bdscli`:
 
 ```bash
-BDSCLI=/usr/local/bin/bdscli ./send_logs_to_node.sh -n 200
+BDSCLI=/usr/local/bin/bdscli ./send_syslog_to_node.sh -n 200
 ```
 
 ### Config file (verify scripts)

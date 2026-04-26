@@ -13,21 +13,28 @@ pub fn register(module: &mut RpcModule<()>) {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let logs_queue      = bdslib::pipe::len("ingest").unwrap_or(0);
-            let json_file_queue = bdslib::pipe::len("ingest_file").unwrap_or(0);
-            let json_file_name  = state.current_file
+            let logs_queue         = bdslib::pipe::len("ingest").unwrap_or(0);
+            let json_file_queue    = bdslib::pipe::len("ingest_file").unwrap_or(0);
+            let syslog_file_queue  = bdslib::pipe::len("ingest_file_syslog").unwrap_or(0);
+            let json_file_name     = state.current_file
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            let syslog_file_name   = state.current_syslog_file
                 .lock()
                 .ok()
                 .and_then(|g| g.clone());
 
             let value = serde_json::json!({
-                "node_id":         state.node_id,
-                "hostname":        state.hostname,
-                "uptime_secs":     uptime_secs,
-                "timestamp":       timestamp,
-                "logs_queue":      logs_queue,
-                "json_file_queue": json_file_queue,
-                "json_file_name":  json_file_name,
+                "node_id":           state.node_id,
+                "hostname":          state.hostname,
+                "uptime_secs":       uptime_secs,
+                "timestamp":         timestamp,
+                "logs_queue":        logs_queue,
+                "json_file_queue":   json_file_queue,
+                "json_file_name":    json_file_name,
+                "syslog_file_queue": syslog_file_queue,
+                "syslog_file_name":  syslog_file_name,
             });
 
             log::debug!("v2/status: done");

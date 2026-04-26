@@ -2,10 +2,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 pub struct NodeState {
-    pub node_id:      String,
-    pub hostname:     String,
-    pub started_at:   Instant,
-    pub current_file: Arc<Mutex<Option<String>>>,
+    pub node_id:              String,
+    pub hostname:             String,
+    pub started_at:           Instant,
+    pub current_file:         Arc<Mutex<Option<String>>>,
+    pub current_syslog_file:  Arc<Mutex<Option<String>>>,
 }
 
 static STATE: OnceLock<NodeState> = OnceLock::new();
@@ -15,9 +16,10 @@ static STATE: OnceLock<NodeState> = OnceLock::new();
 pub fn init(node_id: String) {
     let _ = STATE.set(NodeState {
         node_id,
-        hostname:     resolve_hostname(),
-        started_at:   Instant::now(),
-        current_file: Arc::new(Mutex::new(None)),
+        hostname:            resolve_hostname(),
+        started_at:          Instant::now(),
+        current_file:        Arc::new(Mutex::new(None)),
+        current_syslog_file: Arc::new(Mutex::new(None)),
     });
 }
 

@@ -1,6 +1,7 @@
 mod add;
 mod add_batch;
 mod add_file;
+mod add_file_syslog;
 mod eval;
 mod count;
 mod duplicates;
@@ -36,6 +37,7 @@ pub fn build_module() -> RpcModule<()> {
     add::register(&mut module);
     add_batch::register(&mut module);
     add_file::register(&mut module);
+    add_file_syslog::register(&mut module);
     eval::register(&mut module);
     timeline::register(&mut module);
     count::register(&mut module);
