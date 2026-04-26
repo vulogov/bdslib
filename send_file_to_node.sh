@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# send_file_to_node.sh — generate synthetic docs into a file and submit to
-#                         bdsnode via v2/add.file for background ingestion.
+# send_file_to_node.sh — generate synthetic docs into a file, submit to
+#                         bdsnode via v2/add.file, then monitor v2/status
+#                         until ingestion completes before exiting.
 set -euo pipefail
 
 # ── defaults ──────────────────────────────────────────────────────────────────
@@ -13,6 +14,8 @@ OUTPUT_FILE=""
 CONFIG=""
 BDSCLI="${BDSCLI:-bdscli}"
 KEEP=0
+POLL_INTERVAL=1
+POLL_TIMEOUT=300
 SESSION="a1b2c3d4-e5f6-7a8b-9c0d-e1f2a3b4c5d6"
 
 # ── usage ─────────────────────────────────────────────────────────────────────
@@ -22,8 +25,10 @@ Usage: send_file_to_node.sh [OPTIONS]
 
 Generate synthetic mixed documents (telemetry + log entries) via
 "bdscli generate mixed", write them as newline-delimited JSON to a file,
-and submit the file path to a running bdsnode via v2/add.file for
-background ingestion.
+submit the file path to a running bdsnode via v2/add.file, then poll
+v2/status until both json_file_queue is 0 and json_file_name is null
+(ingestion complete).  The file is removed on completion unless --keep
+or -o is specified.
 
 Options:
   -a, --address ADDR       bdsnode host:port or full URL  (default: 127.0.0.1:9000)
@@ -34,7 +39,10 @@ Options:
       --duplicate FLOAT    fraction re-emitted as duplicates  (default: 0.0)
   -o, --output FILE        write generated docs to FILE instead of a temp file;
                              implies --keep
-      --keep               keep the generated file after submission
+      --keep               keep the generated file after ingestion completes
+      --poll-interval N    seconds between v2/status polls  (default: 1)
+      --timeout N          max seconds to wait for ingestion; exit 2 on timeout
+                             (default: 300)
   -c, --config FILE        bdscli config file (optional)
       --bdscli PATH        path to bdscli binary  (default: bdscli or $BDSCLI)
   -h, --help               show this help
@@ -54,22 +62,27 @@ Examples:
 
   # 20% duplicates, all-telemetry mix:
   ./send_file_to_node.sh --duplicate 0.2 -r 1.0 -n 300
+
+  # Poll every 2 seconds, time out after 10 minutes:
+  ./send_file_to_node.sh -n 5000 --poll-interval 2 --timeout 600
 EOF
 }
 
 # ── parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -a|--address)   NODE_ADDR="$2";    shift 2 ;;
-        -n|--count)     COUNT="$2";        shift 2 ;;
-        -d|--duration)  DURATION="$2";     shift 2 ;;
-        -r|--ratio)     RATIO="$2";        shift 2 ;;
-        --duplicate)    DUPLICATE="$2";    shift 2 ;;
-        -o|--output)    OUTPUT_FILE="$2";  KEEP=1; shift 2 ;;
-        --keep)         KEEP=1;            shift ;;
-        -c|--config)    CONFIG="$2";       shift 2 ;;
-        --bdscli)       BDSCLI="$2";       shift 2 ;;
-        -h|--help)      usage; exit 0 ;;
+        -a|--address)       NODE_ADDR="$2";       shift 2 ;;
+        -n|--count)         COUNT="$2";           shift 2 ;;
+        -d|--duration)      DURATION="$2";        shift 2 ;;
+        -r|--ratio)         RATIO="$2";           shift 2 ;;
+        --duplicate)        DUPLICATE="$2";       shift 2 ;;
+        -o|--output)        OUTPUT_FILE="$2";     KEEP=1; shift 2 ;;
+        --keep)             KEEP=1;               shift ;;
+        --poll-interval)    POLL_INTERVAL="$2";   shift 2 ;;
+        --timeout)          POLL_TIMEOUT="$2";    shift 2 ;;
+        -c|--config)        CONFIG="$2";          shift 2 ;;
+        --bdscli)           BDSCLI="$2";          shift 2 ;;
+        -h|--help)          usage; exit 0 ;;
         *) printf 'Unknown option: %s\n\n' "$1" >&2; usage >&2; exit 1 ;;
     esac
 done
@@ -100,8 +113,15 @@ TEMP_FILE=""
 if [[ -z "$OUTPUT_FILE" ]]; then
     TEMP_FILE=$(mktemp /tmp/bds_ingest_XXXXXX.jsonl)
     OUTPUT_FILE="$TEMP_FILE"
-    trap '[[ $KEEP -eq 0 ]] && rm -f "$TEMP_FILE"' EXIT
 fi
+
+# Clean up the temp file if we exit before completing ingestion monitoring.
+_early_exit_cleanup() {
+    if [[ -n "$TEMP_FILE" && -f "$TEMP_FILE" ]]; then
+        rm -f "$TEMP_FILE"
+    fi
+}
+trap '_early_exit_cleanup' EXIT
 
 # Resolve to an absolute path so the server can always find the file.
 OUTPUT_FILE=$(cd "$(dirname "$OUTPUT_FILE")" && pwd)/$(basename "$OUTPUT_FILE")
@@ -144,9 +164,60 @@ RESPONSE=$(curl -sf \
 echo ">>> response:"
 jq . <<< "$RESPONSE"
 
-# ── report final file disposition ─────────────────────────────────────────────
+# Check for a JSON-RPC error in the submission response.
+if jq -e '.error' <<< "$RESPONSE" >/dev/null 2>&1; then
+    echo "error: v2/add.file returned an error — aborting" >&2
+    exit 1
+fi
+
+# ── monitor ingestion via v2/status ──────────────────────────────────────────
+STATUS_PAYLOAD='{"jsonrpc":"2.0","method":"v2/status","params":{},"id":2}'
+
+echo ">>> monitoring ingestion (polling every ${POLL_INTERVAL}s, timeout ${POLL_TIMEOUT}s)…"
+
+ELAPSED=0
+while true; do
+    STATUS=$(curl -sf \
+        --connect-timeout 5 \
+        --max-time 10 \
+        -X POST "$NODE_URL" \
+        -H "Content-Type: application/json" \
+        -d "$STATUS_PAYLOAD" 2>/dev/null) || {
+        echo "warning: v2/status request failed — retrying…" >&2
+        sleep "$POLL_INTERVAL"
+        ELAPSED=$(( ELAPSED + POLL_INTERVAL ))
+        continue
+    }
+
+    FILE_QUEUE=$(jq -r '.result.json_file_queue // 0'    <<< "$STATUS")
+    FILE_NAME=$( jq -r '.result.json_file_name  // "null"' <<< "$STATUS")
+
+    printf '\r    queued=%-4s  processing=%s                    ' \
+        "$FILE_QUEUE" "$FILE_NAME"
+
+    if [[ "$FILE_QUEUE" -eq 0 && "$FILE_NAME" == "null" ]]; then
+        echo ""
+        echo ">>> ingestion complete (waited ${ELAPSED}s)"
+        break
+    fi
+
+    if [[ "$POLL_TIMEOUT" -gt 0 && "$ELAPSED" -ge "$POLL_TIMEOUT" ]]; then
+        echo "" >&2
+        echo "error: timed out after ${POLL_TIMEOUT}s waiting for ingestion to complete" >&2
+        exit 2
+    fi
+
+    sleep "$POLL_INTERVAL"
+    ELAPSED=$(( ELAPSED + POLL_INTERVAL ))
+done
+
+# ── file disposal ─────────────────────────────────────────────────────────────
+# Disarm the early-exit trap — we handle disposal ourselves from here.
+trap - EXIT
+
 if [[ $KEEP -eq 1 ]]; then
     echo ">>> file kept: ${OUTPUT_FILE}"
 else
-    echo ">>> temp file will be removed on exit"
+    rm -f "$OUTPUT_FILE"
+    echo ">>> file removed: ${OUTPUT_FILE}"
 fi

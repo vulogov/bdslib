@@ -21,6 +21,7 @@ mod search;
 mod search_get;
 mod secondaries;
 mod rca;
+mod status;
 mod topics;
 mod topics_all;
 mod trends;
@@ -57,6 +58,7 @@ pub fn build_module() -> RpcModule<()> {
     search::register(&mut module);
     search_get::register(&mut module);
     rca::register(&mut module);
+    status::register(&mut module);
     topics::register(&mut module);
     topics_all::register(&mut module);
     trends::register(&mut module);

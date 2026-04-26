@@ -1,5 +1,6 @@
 mod jsonrpc;
 mod server;
+mod status;
 
 use anyhow::Context;
 use clap::Parser;
@@ -24,6 +25,13 @@ struct Cli {
     #[arg(short = 'd', long, default_value_t = 0)]
     debug: u32,
 
+    /// Node identifier included in v2/status responses.
+    ///
+    /// Pass an explicit value for fixed cluster identities (e.g. a hostname or
+    /// role name).  When omitted a UUID v7 is generated at startup.
+    #[arg(long)]
+    nodeid: Option<String>,
+
     /// Wipe the existing data store and start fresh before opening.
     ///
     /// Reads `dbpath` from the config file, removes the directory tree, then
@@ -35,6 +43,10 @@ struct Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    let node_id = cli.nodeid.clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    status::init(node_id);
 
     bdslib::setloglevel::setloglevel(cli.debug);
 
@@ -83,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
         if let Some(cfg) = server::add_file::Config::from_config(cli.config.as_deref())
             .context("failed to read file-ingest config")?
         {
-            Some(server::add_file::start(cfg))
+            Some(server::add_file::start(cfg, status::get().current_file.clone()))
         } else {
             None
         };

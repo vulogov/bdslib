@@ -1,5 +1,6 @@
 use crossbeam::channel::{Receiver, Sender, bounded};
 use serde_json::Value as JsonValue;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Configuration for the file-ingestion thread.
@@ -86,12 +87,16 @@ impl Handle {
 /// documents are accumulated into batches and flushed via
 /// [`ShardsManager::add_batch`] when either `batch_size` records are queued
 /// or `timeout_ms` milliseconds pass with no new file.
-pub fn start(cfg: Config) -> Handle {
+///
+/// `current_file` is updated to `Some(path)` while a file is being processed
+/// and reset to `None` when processing completes.  Pass
+/// `crate::status::get().current_file.clone()` from the main thread.
+pub fn start(cfg: Config, current_file: Arc<Mutex<Option<String>>>) -> Handle {
     let (shutdown_tx, shutdown_rx) = bounded(1);
     let timeout = Duration::from_millis(cfg.timeout_ms);
     let thread = std::thread::Builder::new()
         .name("bds-add-file".to_string())
-        .spawn(move || run(cfg.batch_size, timeout, shutdown_rx))
+        .spawn(move || run(cfg.batch_size, timeout, shutdown_rx, current_file))
         .expect("failed to spawn bds-add-file thread");
     Handle {
         shutdown_tx,
@@ -99,7 +104,12 @@ pub fn start(cfg: Config) -> Handle {
     }
 }
 
-fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
+fn run(
+    batch_size:   usize,
+    timeout:      Duration,
+    shutdown_rx:  Receiver<()>,
+    current_file: Arc<Mutex<Option<String>>>,
+) {
     log::debug!(
         "[add_file] started (batch_size={batch_size}, timeout={}ms)",
         timeout.as_millis()
@@ -130,6 +140,7 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                                 &mut batch,
                                 &mut total_records,
                                 &mut batch_start,
+                                &current_file,
                             );
                         } else {
                             log::warn!("[add_file] received non-string value on ingest_file channel, skipping");
@@ -148,6 +159,7 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
                             &mut batch,
                             &mut total_records,
                             &mut batch_start,
+                            &current_file,
                         );
                     }
                 }
@@ -177,14 +189,19 @@ fn run(batch_size: usize, timeout: Duration, shutdown_rx: Receiver<()>) {
 
 /// Read `path` line-by-line, parse each non-empty line as a JSON telemetry
 /// document, and append to `batch`.  Flushes the batch whenever it reaches
-/// `batch_size`.
+/// `batch_size`.  Sets `current_file` to `Some(path)` for the duration of
+/// processing and resets it to `None` before returning.
 fn process_file(
-    path: &str,
-    batch_size: usize,
-    batch: &mut Vec<JsonValue>,
+    path:         &str,
+    batch_size:   usize,
+    batch:        &mut Vec<JsonValue>,
     total_records: &mut u64,
-    batch_start: &mut Instant,
+    batch_start:  &mut Instant,
+    current_file: &Arc<Mutex<Option<String>>>,
 ) {
+    if let Ok(mut g) = current_file.lock() {
+        *g = Some(path.to_string());
+    }
     log::debug!("[add_file] ingesting {path:?}");
 
     let mut file_docs: Vec<JsonValue> = Vec::new();
@@ -200,6 +217,7 @@ fn process_file(
         bdslib::common::logparser::ingest_file(parse_json, |doc| file_docs.push(doc), path)
     {
         log::warn!("[add_file] error reading {path:?}: {e}");
+        if let Ok(mut g) = current_file.lock() { *g = None; }
         return;
     }
 
@@ -223,6 +241,8 @@ fn process_file(
             }
         }
     }
+
+    if let Ok(mut g) = current_file.lock() { *g = None; }
 }
 
 fn flush(batch: &mut Vec<JsonValue>) -> usize {

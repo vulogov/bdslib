@@ -72,6 +72,11 @@ pub fn recv_timeout(name: &str, timeout: Duration) -> Result<Option<Value>> {
     }
 }
 
+/// Number of messages currently waiting in the named channel.
+pub fn len(name: &str) -> Result<usize> {
+    Ok(get(name)?.receiver.len())
+}
+
 /// Borrow the raw [`Receiver`] for `name`.
 ///
 /// Intended for callers that need to use `crossbeam::select!` across

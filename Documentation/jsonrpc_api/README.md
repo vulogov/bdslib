@@ -79,6 +79,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 
 | Method | Description |
 |---|---|
+| [`v2/status`](v2_status.md) | Live process snapshot: node identity, uptime, timestamp, hostname, and ingest queue depths |
 | [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence |
 | [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence |
 | [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion |
