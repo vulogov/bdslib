@@ -1,4 +1,5 @@
 use crate::common::error::{err_msg, Result};
+use crate::documentstorage::DocumentStorage;
 use crate::observability::ObservabilityStorageConfig;
 use crate::shardscache::ShardsCache;
 use crate::EmbeddingEngine;
@@ -67,10 +68,12 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
 /// | `pool_size` | integer | no (default 4) | DuckDB connection-pool size |
 /// | `similarity_threshold` | float | no (default 0.85) | Deduplication threshold |
 ///
-/// `ShardsManager` is `Clone`; all clones share the same underlying shard cache.
+/// `ShardsManager` is `Clone`; all clones share the same underlying shard cache
+/// and document store.
 #[derive(Clone)]
 pub struct ShardsManager {
-    cache: ShardsCache,
+    pub(crate) cache: ShardsCache,
+    pub(crate) docstore: DocumentStorage,
 }
 
 impl ShardsManager {
@@ -99,6 +102,12 @@ impl ShardsManager {
             },
             None => ObservabilityStorageConfig::default(),
         };
+
+        // Clone the engine before handing ownership to the cache; both the
+        // shard cache and the document store share the same underlying Arc.
+        let docstore_path = format!("{}/docstore", cfg.dbpath);
+        let docstore = DocumentStorage::with_embedding(&docstore_path, embedding.clone())?;
+
         let cache = ShardsCache::with_config(
             &cfg.dbpath,
             &cfg.shard_duration,
@@ -106,7 +115,7 @@ impl ShardsManager {
             embedding,
             obs_config,
         )?;
-        Ok(Self { cache })
+        Ok(Self { cache, docstore })
     }
 
     // ── writes ────────────────────────────────────────────────────────────────
@@ -556,6 +565,16 @@ impl ShardsManager {
     /// Borrow the underlying [`ShardsCache`].
     pub fn cache(&self) -> &ShardsCache {
         &self.cache
+    }
+
+    /// Borrow the embedded [`DocumentStorage`].
+    ///
+    /// The store lives at `{dbpath}/docstore` (relative to the `dbpath` set in
+    /// the config file) and shares the same [`EmbeddingEngine`] as the shard
+    /// cache.  All `ShardsManager` clones share the same `DocumentStorage`
+    /// instance via `Arc`.
+    pub fn docstore(&self) -> &DocumentStorage {
+        &self.docstore
     }
 }
 

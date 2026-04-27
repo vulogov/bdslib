@@ -60,6 +60,7 @@ cargo run --example <name>
 | [Shard](shard_demo.md) | `shard_demo.rs` | Single time-partition: telemetry table, FTS, vector search, delete |
 | [ShardsCache](shardscache_demo.md) | `shardscache_demo.rs` | LRU shard cache, time-aligned buckets, cross-shard span queries |
 | [ShardsManager](shardsmanager_demo.md) | `shardsmanager_demo.rs` | Config-driven top-level API: bulk ingest, cross-shard FTS and vector |
+| [ShardsManager+DocumentStore](shardsmanager_documentstore.md) | `shardsmanager_documentstore.rs` | Telemetry + runbooks: RAG pattern combining shard FTS/vector search with semantic chunk retrieval and context-window expansion |
 
 ### Analytics
 
