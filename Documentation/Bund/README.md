@@ -20,6 +20,12 @@ BUND is a stack-based, concatenative programming language with a circular multis
 | [BASIC_LIBRARY.md](BASIC_LIBRARY.md) | Markdown | Complete word reference with stack-effect notation for every built-in command |
 | [BASIC_LIBRARY.typ](BASIC_LIBRARY.typ) | Typst | Typeset version of the above — render with `typst compile BASIC_LIBRARY.typ` |
 
+### Extension Libraries
+
+| Document | Format | Contents |
+|---|---|---|
+| [BDS.md](BDS.md) | Markdown | All `db.*` and `doc.*` words — shard DB ingest/search and document store operations |
+
 ---
 
 ## Examples
