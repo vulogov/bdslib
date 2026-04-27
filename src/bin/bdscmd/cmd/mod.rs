@@ -1,5 +1,16 @@
 pub mod add;
 pub mod add_batch;
+pub mod doc_add;
+pub mod doc_add_file;
+pub mod doc_delete;
+pub mod doc_get;
+pub mod doc_get_content;
+pub mod doc_get_metadata;
+pub mod doc_search;
+pub mod doc_search_json;
+pub mod doc_search_strings;
+pub mod doc_update_content;
+pub mod doc_update_metadata;
 pub mod add_file;
 pub mod add_file_syslog;
 pub mod count;

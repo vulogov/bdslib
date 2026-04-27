@@ -115,6 +115,41 @@ enum Commands {
 
     /// Evaluate a BUND script
     Eval(cmd::eval::Cmd),
+
+    // ── document store ────────────────────────────────────────────────────────
+
+    /// Store a document with JSON metadata and text content
+    DocAdd(cmd::doc_add::Cmd),
+
+    /// Load a text file, chunk it, and store it in the document store
+    DocAddFile(cmd::doc_add_file::Cmd),
+
+    /// Retrieve metadata and content for a document by UUID
+    DocGet(cmd::doc_get::Cmd),
+
+    /// Retrieve only the metadata for a document by UUID
+    DocGetMetadata(cmd::doc_get_metadata::Cmd),
+
+    /// Retrieve only the content text for a document by UUID
+    DocGetContent(cmd::doc_get_content::Cmd),
+
+    /// Replace the metadata of a document in-place
+    DocUpdateMetadata(cmd::doc_update_metadata::Cmd),
+
+    /// Replace the content text of a document in-place
+    DocUpdateContent(cmd::doc_update_content::Cmd),
+
+    /// Remove a document from the document store
+    DocDelete(cmd::doc_delete::Cmd),
+
+    /// Semantic search in the document store by plain-text query
+    DocSearch(cmd::doc_search::Cmd),
+
+    /// Semantic search in the document store by JSON query object
+    DocSearchJson(cmd::doc_search_json::Cmd),
+
+    /// Semantic search returning results as json_fingerprint strings
+    DocSearchStrings(cmd::doc_search_strings::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -169,6 +204,17 @@ fn main() -> Result<()> {
         Commands::TopicsAll(a)                => cmd::topics_all::run(&url, &session, a),
         Commands::Rca(a)                      => cmd::rca::run(&url, &session, a),
         Commands::Eval(a)                     => cmd::eval::run(&url, &session, a),
+        Commands::DocAdd(a)                   => cmd::doc_add::run(&url, &session, a),
+        Commands::DocAddFile(a)               => cmd::doc_add_file::run(&url, &session, a),
+        Commands::DocGet(a)                   => cmd::doc_get::run(&url, &session, a),
+        Commands::DocGetMetadata(a)           => cmd::doc_get_metadata::run(&url, &session, a),
+        Commands::DocGetContent(a)            => cmd::doc_get_content::run(&url, &session, a),
+        Commands::DocUpdateMetadata(a)        => cmd::doc_update_metadata::run(&url, &session, a),
+        Commands::DocUpdateContent(a)         => cmd::doc_update_content::run(&url, &session, a),
+        Commands::DocDelete(a)                => cmd::doc_delete::run(&url, &session, a),
+        Commands::DocSearch(a)                => cmd::doc_search::run(&url, &session, a),
+        Commands::DocSearchJson(a)            => cmd::doc_search_json::run(&url, &session, a),
+        Commands::DocSearchStrings(a)         => cmd::doc_search_strings::run(&url, &session, a),
     }?;
 
     if cli.raw {

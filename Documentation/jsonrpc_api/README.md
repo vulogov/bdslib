@@ -124,3 +124,14 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/topics.all`](v2_topics_all.md) | LDA topic modelling over every distinct key in the window, returning one keyword summary per key |
 | [`v2/rca`](v2_rca.md) | Root cause analysis: cluster non-telemetry events by co-occurrence and rank probable causes of a named failure key |
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |
+| [`v2/doc.add`](v2_doc_add.md) | Store a document with JSON metadata and text content; auto-embeds both slots in the HNSW index |
+| [`v2/doc.add.file`](v2_doc_add_file.md) | Load a text file, split into overlapping chunks, and store each chunk as an independently searchable record |
+| [`v2/doc.get`](v2_doc_get.md) | Retrieve both metadata and content text for a document by UUID |
+| [`v2/doc.get.metadata`](v2_doc_get_metadata.md) | Retrieve only the JSON metadata for a document by UUID |
+| [`v2/doc.get.content`](v2_doc_get_content.md) | Retrieve only the content text for a document by UUID |
+| [`v2/doc.update.metadata`](v2_doc_update_metadata.md) | Replace the metadata of a document in-place (vector index not updated automatically) |
+| [`v2/doc.update.content`](v2_doc_update_content.md) | Replace the content text of a document in-place (vector index not updated automatically) |
+| [`v2/doc.delete`](v2_doc_delete.md) | Remove a document from all three sub-stores (metadata, blob, HNSW); idempotent |
+| [`v2/doc.search`](v2_doc_search.md) | Semantic search by plain-text query; returns ranked documents with score, metadata, and content |
+| [`v2/doc.search.json`](v2_doc_search_json.md) | Semantic search by JSON query object via json_fingerprint embedding |
+| [`v2/doc.search.strings`](v2_doc_search_strings.md) | Semantic search returning results as flat json_fingerprint strings |
