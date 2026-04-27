@@ -29,12 +29,11 @@ fn to_rows(results: &serde_json::Value) -> Vec<LogRow> {
 }
 
 fn hit_to_row(v: &serde_json::Value) -> LogRow {
-    let ts = v.get("timestamp").and_then(|x| x.as_u64()).unwrap_or(0);
+    let ts   = v.get("timestamp").and_then(|x| x.as_u64()).unwrap_or(0);
     let data = v.get("data");
     let message = data
-        .and_then(|d| d.as_str())
-        .map(|s| s.to_owned())
-        .or_else(|| data.and_then(|d| d.get("message")).and_then(|m| m.as_str()).map(|s| s.to_owned()))
+        .and_then(|d| d.as_str()).map(str::to_owned)
+        .or_else(|| data.and_then(|d| d.get("message")).and_then(|m| m.as_str()).map(str::to_owned))
         .or_else(|| data.map(|d| d.to_string()))
         .unwrap_or_default();
     let score = v.get("_score").and_then(|x| x.as_f64())
@@ -62,7 +61,80 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
     Ok(Html(LogsPage { duration: p.duration, q: p.q }.render()?))
 }
 
-// ── HTMX results fragment ─────────────────────────────────────────────────────
+// ── HTMX: key cloud ──────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "partials/key_cloud.html")]
+struct KeyCloud {
+    keys:      Vec<String>,
+    duration:  String,
+    href_base: String,
+}
+
+pub async fn keys(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let resp = rpc(&state, "v2/keys.all", json!({
+        "session":  SESSION,
+        "duration": p.duration,
+        "key":      "*",
+    })).await.unwrap_or_default();
+
+    let keys = resp.get("keys")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+
+    Ok(Html(KeyCloud {
+        keys,
+        duration:  p.duration,
+        href_base: "/logs".to_owned(),
+    }.render()?))
+}
+
+// ── HTMX: topics cloud ───────────────────────────────────────────────────────
+
+pub struct TopicRow {
+    pub key:      String,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Template)]
+#[template(path = "partials/topics_cloud.html")]
+struct TopicsCloud { topics: Vec<TopicRow>, duration: String }
+
+pub async fn topics(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let resp = rpc(&state, "v2/topics.all", json!({
+        "session":  SESSION,
+        "duration": p.duration,
+    })).await;
+
+    let topics = match resp {
+        Err(_) => vec![],
+        Ok(v) => {
+            v.get("topics")
+             .and_then(|x| x.as_array())
+             .map(|arr| arr.iter().map(|t| {
+                 let key = t.get("key").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+                 let kw_str = t.get("keywords").and_then(|x| x.as_str()).unwrap_or("");
+                 let keywords = kw_str.split(',')
+                     .map(|s| s.trim().to_owned())
+                     .filter(|s| !s.is_empty())
+                     .collect();
+                 TopicRow { key, keywords }
+             }).collect())
+             .unwrap_or_default()
+        }
+    };
+
+    Ok(Html(TopicsCloud { topics, duration: p.duration }.render()?))
+}
+
+// ── HTMX: vector search results fragment ─────────────────────────────────────
 
 #[derive(Template)]
 #[template(path = "partials/log_rows.html")]
@@ -76,10 +148,11 @@ pub async fn results(
         return Ok(Html(LogRows { rows: vec![], duration: p.duration, q: p.q }.render()?));
     }
 
-    let resp = rpc(&state, "v2/fulltext.get", json!({
+    let resp = rpc(&state, "v2/search.get", json!({
         "session":  SESSION,
         "query":    p.q,
         "duration": p.duration,
+        "limit":    50,
     })).await?;
 
     Ok(Html(LogRows {

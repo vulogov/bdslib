@@ -13,6 +13,7 @@ mod doc_get_content;
 mod doc_get_metadata;
 mod doc_search;
 mod doc_search_json;
+mod doc_reindex;
 mod doc_search_strings;
 mod doc_update_content;
 mod doc_update_metadata;
@@ -60,6 +61,7 @@ pub fn build_module() -> RpcModule<()> {
     doc_get::register(&mut module);
     doc_get_content::register(&mut module);
     doc_get_metadata::register(&mut module);
+    doc_reindex::register(&mut module);
     doc_search::register(&mut module);
     doc_search_json::register(&mut module);
     doc_search_strings::register(&mut module);

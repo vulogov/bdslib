@@ -5,10 +5,11 @@
 {% block content %}
 <div class="flex items-center justify-between mb-6">
   <h1 class="text-xl font-semibold text-slate-200">Log Search</h1>
-  <span class="text-xs text-slate-500">Full-text BM25 search across log records</span>
+  <span class="text-xs text-slate-500">Vector (semantic) search across log records</span>
 </div>
 
-<div class="card rounded-lg p-5 mb-6">
+<!-- Search form -->
+<div class="card rounded-lg p-5 mb-4">
   <form hx-get="/logs/results"
         hx-target="#results"
         hx-swap="innerHTML"
@@ -16,17 +17,22 @@
         class="flex flex-wrap gap-3 items-end">
     <div class="flex-1 min-w-48">
       <label class="block text-xs text-slate-500 mb-1">Query</label>
-      <input type="text" name="q" value="{{ q }}"
-             placeholder="e.g. nginx, sshd, kernel panic, OOM…"
+      <input id="q-input" type="text" name="q" value="{{ q }}"
+             placeholder="e.g. nginx 500, sshd auth failure, OOM kill…"
              class="w-full rounded px-3 py-2 text-sm"
              hx-get="/logs/results"
-             hx-trigger="input changed delay:400ms"
+             hx-trigger="input changed delay:450ms"
              hx-target="#results"
              hx-include="closest form" />
     </div>
     <div class="w-32">
       <label class="block text-xs text-slate-500 mb-1">Duration</label>
-      <select name="duration" class="w-full rounded px-3 py-2 text-sm">
+      <select name="duration"
+              class="w-full rounded px-3 py-2 text-sm"
+              hx-get="/logs/keys"
+              hx-trigger="change"
+              hx-target="#key-cloud"
+              hx-include="[name=duration]">
         <option value="15min" {% if duration == "15min" %}selected{% endif %}>15min</option>
         <option value="30min" {% if duration == "30min" %}selected{% endif %}>30min</option>
         <option value="1h"    {% if duration == "1h"    %}selected{% endif %}>1h</option>
@@ -43,15 +49,46 @@
   </form>
 </div>
 
+<!-- Side-by-side clouds -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+
+  <!-- Key cloud -->
+  <div class="card rounded-lg px-4 py-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Known Keys</div>
+    <div id="key-cloud"
+         hx-get="/logs/keys?duration={{ duration }}"
+         hx-trigger="load">
+      <span class="text-slate-600 text-xs">Loading keys…</span>
+    </div>
+  </div>
+
+  <!-- Topics cloud -->
+  <div class="card rounded-lg px-4 py-3">
+    <div class="flex items-center justify-between mb-2">
+      <div class="text-xs text-slate-500 uppercase tracking-wide">Topic Keywords</div>
+      <span class="text-xs text-slate-600">LDA — v2/topics.all</span>
+    </div>
+    <div id="topics-cloud"
+         hx-get="/logs/topics?duration={{ duration }}"
+         hx-trigger="load">
+      <span class="text-slate-600 text-xs">Analyzing topics…</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Results area -->
 <div id="results">
   {% if q.is_empty() %}
-  <div class="text-center py-16 text-slate-600 text-sm">Enter a search term to query log records.</div>
+  <div class="text-center py-12 text-slate-600 text-sm">
+    Enter a query, click a key, or click a topic keyword to search log records.
+  </div>
   {% else %}
   <div class="text-center py-8 text-slate-500 text-sm"
        hx-get="/logs/results?q={{ q }}&duration={{ duration }}"
        hx-trigger="load"
        hx-target="#results"
-       hx-swap="innerHTML">Loading…</div>
+       hx-swap="innerHTML">Searching…</div>
   {% endif %}
 </div>
 {% endblock %}

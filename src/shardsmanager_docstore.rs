@@ -116,6 +116,14 @@ impl ShardsManager {
         self.docstore.sync()
     }
 
+    /// Rebuild the HNSW vector index from the persisted metadata and blob stores.
+    ///
+    /// Useful after a crash or an unclean shutdown where DuckDB survived but the
+    /// vecstore index was not flushed.  Returns the number of documents indexed.
+    pub fn doc_reindex(&self) -> Result<usize> {
+        self.docstore.reindex()
+    }
+
     // ── reads ─────────────────────────────────────────────────────────────────
 
     /// Return the JSON metadata for `id`, or `None` if no such document exists.

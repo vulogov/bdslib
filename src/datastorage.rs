@@ -394,6 +394,27 @@ impl JsonStorage {
             .execute(&format!("DELETE FROM json_docs WHERE id = '{id}'"))
     }
 
+    /// Return all `(id, document)` pairs in the store.
+    pub fn list_all(&self) -> Result<Vec<(Uuid, JsonValue)>> {
+        let rows = self.engine.select_all("SELECT id, document FROM json_docs")?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut cols = row.into_iter();
+            let id_str = cols.next()
+                .ok_or_else(|| err_msg("json_docs row missing id"))?
+                .cast_string().map_err(|e| err_msg(e.to_string()))?;
+            let doc_str = cols.next()
+                .ok_or_else(|| err_msg("json_docs row missing document"))?
+                .cast_string().map_err(|e| err_msg(e.to_string()))?;
+            let id = Uuid::parse_str(&id_str)
+                .map_err(|e| err_msg(format!("invalid UUID in json_docs: {e}")))?;
+            let doc: JsonValue = serde_json::from_str(&doc_str)
+                .map_err(|e| err_msg(format!("JSON parse failed: {e}")))?;
+            out.push((id, doc));
+        }
+        Ok(out)
+    }
+
     // ── internal ──────────────────────────────────────────────────────────────
 
     fn resolve_key(&self, doc: &JsonValue) -> String {

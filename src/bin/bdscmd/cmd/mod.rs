@@ -4,6 +4,7 @@ pub mod aggregationsearch;
 pub mod doc_add;
 pub mod doc_add_file;
 pub mod doc_delete;
+pub mod doc_reindex;
 pub mod doc_get;
 pub mod doc_get_content;
 pub mod doc_get_metadata;

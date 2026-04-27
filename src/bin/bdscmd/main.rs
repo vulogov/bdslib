@@ -142,6 +142,9 @@ enum Commands {
     /// Remove a document from the document store
     DocDelete(cmd::doc_delete::Cmd),
 
+    /// Rebuild the document store vector index from persisted metadata and blobs
+    DocReindex(cmd::doc_reindex::Cmd),
+
     /// Semantic search in the document store by plain-text query
     DocSearch(cmd::doc_search::Cmd),
 
@@ -215,6 +218,7 @@ fn main() -> Result<()> {
         Commands::DocUpdateMetadata(a)        => cmd::doc_update_metadata::run(&url, &session, a),
         Commands::DocUpdateContent(a)         => cmd::doc_update_content::run(&url, &session, a),
         Commands::DocDelete(a)                => cmd::doc_delete::run(&url, &session, a),
+        Commands::DocReindex(a)               => cmd::doc_reindex::run(&url, &session, a),
         Commands::DocSearch(a)                => cmd::doc_search::run(&url, &session, a),
         Commands::DocSearchJson(a)            => cmd::doc_search_json::run(&url, &session, a),
         Commands::DocSearchStrings(a)         => cmd::doc_search_strings::run(&url, &session, a),

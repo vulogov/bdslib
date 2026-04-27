@@ -42,6 +42,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 let doc_id = db
                     .doc_add_from_file(&p.path, &p.name, p.slice, p.overlap)
                     .map_err(|e| rpc_err(-32011, e))?;
+                db.doc_sync().map_err(|e| rpc_err(-32011, e))?;
                 let n_chunks_value = db
                     .doc_get_metadata(doc_id)
                     .map_err(|e| rpc_err(-32011, e))?

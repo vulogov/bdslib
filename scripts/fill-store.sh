@@ -123,6 +123,10 @@ done < <("$BDSCLI" "${CONFIG_ARGS[@]}" generate docs --count "$DOC_COUNT" 2>/dev
 
 tally "documents added:"  "$doc_ok"
 [[ $doc_fail -gt 0 ]] && tally "documents failed:" "$doc_fail"
+
+info "Rebuilding document vector index …"
+reindexed=$("$BDSCMD" "${BDSCMD_OPTS[@]}" doc-reindex 2>/dev/null | jq -r '.indexed // 0')
+tally "documents re-indexed:" "$reindexed"
 ok "Docstore done"
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────

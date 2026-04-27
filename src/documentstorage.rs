@@ -442,6 +442,30 @@ impl DocumentStorage {
     pub fn sync(&self) -> Result<()> {
         self.vectors.sync()
     }
+
+    /// Rebuild the vector index from the DuckDB metadata and blob stores.
+    ///
+    /// Iterates every record in `metadata.db`, embeds the JSON metadata
+    /// fingerprint as `"{id}:meta"` and the blob content as `"{id}:content"`,
+    /// then saves the index to disk.  Existing vector entries for a UUID are
+    /// overwritten (upsert semantics in vecstore).
+    ///
+    /// Returns the number of documents re-indexed.  Requires an embedding
+    /// engine; returns `Err` if none was configured.
+    pub fn reindex(&self) -> Result<usize> {
+        let all = self.meta.list_all()?;
+        let count = all.len();
+        for (id, metadata) in all {
+            let id_str = id.to_string();
+            self.vectors.store_document(&format!("{id_str}:meta"), metadata)?;
+            if let Some(bytes) = self.blobs.get_blob(id)? {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                self.vectors.store_document(&format!("{id_str}:content"), serde_json::json!(text))?;
+            }
+        }
+        self.vectors.sync()?;
+        Ok(count)
+    }
 }
 
 // ── internals ─────────────────────────────────────────────────────────────────

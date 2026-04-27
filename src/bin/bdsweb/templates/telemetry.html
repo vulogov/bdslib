@@ -5,10 +5,11 @@
 {% block content %}
 <div class="flex items-center justify-between mb-6">
   <h1 class="text-xl font-semibold text-slate-200">Telemetry Search</h1>
-  <span class="text-xs text-slate-500">Full-text search across telemetry records</span>
+  <span class="text-xs text-slate-500">Vector (semantic) search across telemetry records</span>
 </div>
 
-<div class="card rounded-lg p-5 mb-6">
+<!-- Search form -->
+<div class="card rounded-lg p-5 mb-4">
   <form id="search-form"
         hx-get="/telemetry/results"
         hx-target="#results"
@@ -17,17 +18,23 @@
         class="flex flex-wrap gap-3 items-end">
     <div class="flex-1 min-w-48">
       <label class="block text-xs text-slate-500 mb-1">Query</label>
-      <input type="text" name="q" value="{{ q }}"
-             placeholder="e.g. cpu.usage, error, payment…"
+      <input id="q-input" type="text" name="q" value="{{ q }}"
+             placeholder="e.g. cpu spike, memory pressure, http latency…"
              class="w-full rounded px-3 py-2 text-sm"
              hx-get="/telemetry/results"
-             hx-trigger="input changed delay:400ms"
+             hx-trigger="input changed delay:450ms"
              hx-target="#results"
              hx-include="closest form" />
     </div>
     <div class="w-32">
       <label class="block text-xs text-slate-500 mb-1">Duration</label>
-      <select name="duration" class="w-full rounded px-3 py-2 text-sm">
+      <select name="duration"
+              id="duration-select"
+              class="w-full rounded px-3 py-2 text-sm"
+              hx-get="/telemetry/keys"
+              hx-trigger="change"
+              hx-target="#key-cloud"
+              hx-include="[name=duration]">
         <option value="15min" {% if duration == "15min" %}selected{% endif %}>15min</option>
         <option value="30min" {% if duration == "30min" %}selected{% endif %}>30min</option>
         <option value="1h"    {% if duration == "1h"    %}selected{% endif %}>1h</option>
@@ -44,15 +51,28 @@
   </form>
 </div>
 
+<!-- Key cloud -->
+<div class="card rounded-lg px-4 py-3 mb-6">
+  <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Known Keys</div>
+  <div id="key-cloud"
+       hx-get="/telemetry/keys?duration={{ duration }}"
+       hx-trigger="load">
+    <span class="text-slate-600 text-xs">Loading keys…</span>
+  </div>
+</div>
+
+<!-- Results area -->
 <div id="results">
   {% if q.is_empty() %}
-  <div class="text-center py-16 text-slate-600 text-sm">Enter a query to search telemetry records.</div>
+  <div class="text-center py-16 text-slate-600 text-sm">
+    Enter a query above or click a key in the cloud to search telemetry records.
+  </div>
   {% else %}
   <div class="text-center py-8 text-slate-500 text-sm"
        hx-get="/telemetry/results?q={{ q }}&duration={{ duration }}"
        hx-trigger="load"
        hx-target="#results"
-       hx-swap="innerHTML">Loading…</div>
+       hx-swap="innerHTML">Searching…</div>
   {% endif %}
 </div>
 {% endblock %}

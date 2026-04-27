@@ -21,6 +21,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 let id = db
                     .doc_add(p.metadata, p.content.as_bytes())
                     .map_err(|e| rpc_err(-32011, e))?;
+                db.doc_sync().map_err(|e| rpc_err(-32011, e))?;
                 Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "id": id.to_string() }))
             })
             .await
