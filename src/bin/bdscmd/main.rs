@@ -150,6 +150,9 @@ enum Commands {
 
     /// Semantic search returning results as json_fingerprint strings
     DocSearchStrings(cmd::doc_search_strings::Cmd),
+
+    /// Parallel telemetry vector search + document store semantic search in one call
+    AggregationSearch(cmd::aggregationsearch::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -215,6 +218,7 @@ fn main() -> Result<()> {
         Commands::DocSearch(a)                => cmd::doc_search::run(&url, &session, a),
         Commands::DocSearchJson(a)            => cmd::doc_search_json::run(&url, &session, a),
         Commands::DocSearchStrings(a)         => cmd::doc_search_strings::run(&url, &session, a),
+        Commands::AggregationSearch(a)        => cmd::aggregationsearch::run(&url, &session, a),
     }?;
 
     if cli.raw {

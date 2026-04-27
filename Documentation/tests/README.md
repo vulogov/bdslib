@@ -50,6 +50,7 @@ cargo test <test_function_name> -- --show-output
 | [shard_test](shard_test.md) | `tests/shard_test.rs` | `Shard`: FTS + vector + observability consistency, secondary isolation, embedded secondaries in results |
 | [shardscache_test](shardscache_test.md) | `tests/shardscache_test.rs` | `ShardsCache`: auto-creation, interval alignment, LRU cache, catalog persistence, span queries |
 | [shardsmanager_test](shardsmanager_test.md) | `tests/shardsmanager_test.rs` | `ShardsManager`: config loading, timestamp routing, cross-shard FTS/vector, cross-shard update |
+| [shardsmanager_aggregationsearch_test](shardsmanager_aggregationsearch_test.md) | `tests/shardsmanager_aggregationsearch_test.rs` | `ShardsManager::aggregationsearch`: result structure, empty store, telemetry hits with `_score`, document hits with metadata/content, combined population, duration error propagation |
 
 ## Data generation and parsing
 

@@ -124,6 +124,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/topics.all`](v2_topics_all.md) | LDA topic modelling over every distinct key in the window, returning one keyword summary per key |
 | [`v2/rca`](v2_rca.md) | Root cause analysis: cluster non-telemetry events by co-occurrence and rank probable causes of a named failure key |
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |
+| [`v2/aggregationsearch`](v2_aggregationsearch.md) | Parallel vector search over time-scoped telemetry shards + semantic document store search; returns `"observability"` and `"documents"` |
 | [`v2/doc.add`](v2_doc_add.md) | Store a document with JSON metadata and text content; auto-embeds both slots in the HNSW index |
 | [`v2/doc.add.file`](v2_doc_add_file.md) | Load a text file, split into overlapping chunks, and store each chunk as an independently searchable record |
 | [`v2/doc.get`](v2_doc_get.md) | Retrieve both metadata and content text for a document by UUID |
