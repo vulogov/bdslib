@@ -12,6 +12,7 @@ pub mod shard;
 pub mod shardscache;
 pub mod shardsinfo;
 pub mod shardsmanager;
+pub mod shardsmanager_aggregationsearch;
 pub mod shardsmanager_docstore;
 pub mod storageengine;
 pub mod vectorengine;

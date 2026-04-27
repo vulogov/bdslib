@@ -61,6 +61,7 @@ cargo run --example <name>
 | [ShardsCache](shardscache_demo.md) | `shardscache_demo.rs` | LRU shard cache, time-aligned buckets, cross-shard span queries |
 | [ShardsManager](shardsmanager_demo.md) | `shardsmanager_demo.rs` | Config-driven top-level API: bulk ingest, cross-shard FTS and vector |
 | [ShardsManager+DocumentStore](shardsmanager_documentstore.md) | `shardsmanager_documentstore.rs` | Telemetry + runbooks: RAG pattern combining shard FTS/vector search with semantic chunk retrieval and context-window expansion |
+| [AggregationSearch](aggregationsearch_demo.md) | `aggregationsearch_demo.rs` | `aggregationsearch`: parallel vector search over time-scoped telemetry shards + semantic document store search in one call; duration-scoping behaviour; result structure |
 
 ### Analytics
 
