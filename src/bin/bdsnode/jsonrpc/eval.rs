@@ -26,15 +26,15 @@ pub fn register(module: &mut RpcModule<()>) {
                 )
                 .map_err(|e| rpc_err(-32002, e))?;
 
-                // Collect the workbench (result stack) as a JSON array.
-                let result: Vec<serde_json::Value> = guard
+                // Pull the last value pushed to the workbench.
+                let result: serde_json::Value = guard
                     .vm
                     .stack
                     .workbench
                     .stack
-                    .iter()
-                    .map(|v| v.cast_value_to_json().unwrap_or(serde_json::Value::Null))
-                    .collect();
+                    .pop_back()
+                    .map(bdslib::vm::helpers::eval::dynamic_to_json)
+                    .unwrap_or(serde_json::Value::Null);
 
                 Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "result": result }))
             })

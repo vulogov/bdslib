@@ -86,9 +86,10 @@ impl VectorEngine {
     /// before embedding. The full JSON is persisted as metadata and returned in
     /// search results.
     ///
-    /// Returns `Err` if no `EmbeddingEngine` was provided at construction time.
+    /// Returns `Ok(())` silently when no `EmbeddingEngine` was configured (no-op).
+    /// Returns `Err` only when an engine is present but embedding or storage fails.
     pub fn store_document(&self, id: &str, document: JsonValue) -> Result<()> {
-        let engine = self.require_embedding("store_document")?;
+        let Some(engine) = &self.embedding else { return Ok(()); };
         let fingerprint = json_fingerprint(&document);
         let vector = engine.embed(&fingerprint)?;
         let meta = json_to_metadata(document);

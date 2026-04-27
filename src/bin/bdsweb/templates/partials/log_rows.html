@@ -10,21 +10,21 @@
       "<span class="text-blue-300">{{ q }}</span>" — last {{ duration }}
     </span>
   </div>
-  <table>
+  <table style="table-layout:fixed;width:100%">
     <thead>
       <tr>
-        <th style="width:160px">Timestamp</th>
-        <th style="width:180px">Key</th>
+        <th style="width:145px">Timestamp</th>
+        <th style="width:120px">Key</th>
         <th>Message</th>
-        <th style="width:70px" class="text-right">Score</th>
+        <th style="width:58px" class="text-right">Score</th>
       </tr>
     </thead>
     <tbody>
       {% for r in rows %}
       <tr>
         <td class="font-mono text-xs text-slate-400 whitespace-nowrap">{{ r.timestamp }}</td>
-        <td class="font-mono text-xs text-blue-300">{{ r.key }}</td>
-        <td class="text-xs text-slate-300">{{ r.message }}</td>
+        <td class="font-mono text-xs text-blue-300" style="overflow-wrap:break-word;word-break:break-all">{{ r.key }}</td>
+        <td class="text-xs text-slate-300" style="overflow-wrap:break-word;word-break:break-all;white-space:pre-wrap">{{ r.message }}</td>
         <td class="text-right font-mono text-xs text-green-400">{{ r.score }}</td>
       </tr>
       {% endfor %}

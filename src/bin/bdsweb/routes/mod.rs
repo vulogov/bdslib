@@ -1,3 +1,4 @@
+pub mod bund;
 pub mod dashboard;
 pub mod docs;
 pub mod logs;

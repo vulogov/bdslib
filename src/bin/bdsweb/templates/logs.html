@@ -2,6 +2,27 @@
 {% block title %}Log Search · bdsnode{% endblock %}
 {% block nav_logs %}active{% endblock %}
 
+{% block head %}
+<style>
+#results-panel {
+  position: fixed;
+  top: 57px;          /* matches nav height */
+  right: 0;
+  bottom: 0;
+  width: min(660px, 100vw);
+  background: #111720;
+  border-left: 1px solid #1e2535;
+  box-shadow: -6px 0 32px rgba(0,0,0,0.5);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.22s ease-in-out;
+}
+#results-panel.open { transform: translateX(0); }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="flex items-center justify-between mb-6">
   <h1 class="text-xl font-semibold text-slate-200">Log Search</h1>
@@ -23,6 +44,7 @@
              hx-get="/logs/results"
              hx-trigger="input changed delay:450ms"
              hx-target="#results"
+             hx-swap="innerHTML"
              hx-include="closest form" />
     </div>
     <div class="w-32">
@@ -50,7 +72,7 @@
 </div>
 
 <!-- Side-by-side clouds -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
   <!-- Key cloud -->
   <div class="card rounded-lg px-4 py-3">
@@ -66,7 +88,7 @@
   <div class="card rounded-lg px-4 py-3">
     <div class="flex items-center justify-between mb-2">
       <div class="text-xs text-slate-500 uppercase tracking-wide">Topic Keywords</div>
-      <span class="text-xs text-slate-600">LDA — v2/topics.all</span>
+      <span class="text-xs text-slate-600">LDA · v2/topics.all</span>
     </div>
     <div id="topics-cloud"
          hx-get="/logs/topics?duration={{ duration }}"
@@ -77,18 +99,51 @@
 
 </div>
 
-<!-- Results area -->
-<div id="results">
-  {% if q.is_empty() %}
-  <div class="text-center py-12 text-slate-600 text-sm">
-    Enter a query, click a key, or click a topic keyword to search log records.
+<!-- ── Floating results panel ──────────────────────────────────────────────── -->
+<div id="results-panel">
+
+  <!-- Panel header -->
+  <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+       style="border-bottom:1px solid #1e2535; background:#0e1520;">
+    <span class="text-xs text-slate-500 uppercase tracking-wide">Results</span>
+    <button onclick="closePanel()"
+            class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
+            title="Close">✕</button>
   </div>
-  {% else %}
-  <div class="text-center py-8 text-slate-500 text-sm"
-       hx-get="/logs/results?q={{ q }}&duration={{ duration }}"
-       hx-trigger="load"
-       hx-target="#results"
-       hx-swap="innerHTML">Searching…</div>
-  {% endif %}
+
+  <!-- Panel body — HTMX target -->
+  <div id="results" class="flex-1 overflow-y-auto p-4">
+    {% if !q.is_empty() %}
+    <div class="text-center py-8 text-slate-500 text-sm"
+         hx-get="/logs/results?q={{ q }}&duration={{ duration }}"
+         hx-trigger="load"
+         hx-target="#results"
+         hx-swap="innerHTML">Searching…</div>
+    {% endif %}
+  </div>
+
 </div>
+
+<script>
+// Open panel whenever HTMX drops content into #results
+document.body.addEventListener('htmx:afterSwap', function(e) {
+  if (e.detail.target.id === 'results') {
+    document.getElementById('results-panel').classList.add('open');
+  }
+});
+
+function closePanel() {
+  document.getElementById('results-panel').classList.remove('open');
+}
+
+// Esc key closes the panel
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closePanel();
+});
+
+// Re-open if the page loaded with a query already set
+{% if !q.is_empty() %}
+document.getElementById('results-panel').classList.add('open');
+{% endif %}
+</script>
 {% endblock %}

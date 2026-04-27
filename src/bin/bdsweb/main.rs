@@ -3,7 +3,7 @@ mod error;
 mod routes;
 mod state;
 
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 use clap::Parser;
 use state::AppState;
 use tower_http::compression::CompressionLayer;
@@ -56,6 +56,8 @@ async fn main() {
         .route("/search/results", get(routes::search::results))
         .route("/trends",         get(routes::trends::page))
         .route("/trends/results", get(routes::trends::results))
+        .route("/bund",           get(routes::bund::page))
+        .route("/bund/eval",      post(routes::bund::eval))
         .layer(CompressionLayer::new())
         .with_state(state);
 

@@ -113,9 +113,9 @@ impl DocumentStorage {
         self.meta.add_json_with_id(id, metadata.clone())?;
         self.blobs.add_blob_with_key(id, content)?;
 
-        let _ = self.vectors.store_document(&format!("{id_str}:meta"), metadata);
         let content_text = String::from_utf8_lossy(content).into_owned();
-        let _ = self.vectors.store_document(&format!("{id_str}:content"), serde_json::json!(content_text));
+        self.vectors.store_document(&format!("{id_str}:meta"), metadata)?;
+        self.vectors.store_document(&format!("{id_str}:content"), serde_json::json!(content_text))?;
 
         Ok(id)
     }
@@ -402,15 +402,14 @@ impl DocumentStorage {
             // Metadata: per-chunk provenance.
             self.meta.add_json_with_id(chunk_id, chunk_meta.clone())?;
 
-            // Vectors (best-effort; silently ignored when no engine is attached).
-            let _ = self.vectors.store_document(
+            self.vectors.store_document(
                 &format!("{chunk_id_str}:content"),
                 serde_json::json!(chunk_text),
-            );
-            let _ = self.vectors.store_document(
+            )?;
+            self.vectors.store_document(
                 &format!("{chunk_id_str}:meta"),
                 chunk_meta,
-            );
+            )?;
 
             chunk_ids.push(chunk_id_str);
         }
@@ -427,10 +426,10 @@ impl DocumentStorage {
         });
 
         self.meta.add_json_with_id(meta_id, doc_meta.clone())?;
-        let _ = self.vectors.store_document(
+        self.vectors.store_document(
             &format!("{meta_id_str}:meta"),
             doc_meta,
-        );
+        )?;
 
         Ok(meta_id)
     }

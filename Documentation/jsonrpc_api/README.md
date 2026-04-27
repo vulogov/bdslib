@@ -136,3 +136,4 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/doc.search`](v2_doc_search.md) | Semantic search by plain-text query; returns ranked documents with score, metadata, and content |
 | [`v2/doc.search.json`](v2_doc_search_json.md) | Semantic search by JSON query object via json_fingerprint embedding |
 | [`v2/doc.search.strings`](v2_doc_search_strings.md) | Semantic search returning results as flat json_fingerprint strings |
+| [`v2/doc.reindex`](v2_doc_reindex.md) | Rebuild the HNSW vector index from persisted metadata and blobs; use after unclean shutdown or bulk content updates |
