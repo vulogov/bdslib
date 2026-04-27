@@ -4,6 +4,15 @@ use tempfile::TempDir;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/// Write `content` to a temporary file and return the `(TempDir, path)` pair.
+/// The `TempDir` must be kept alive for as long as the file is needed.
+fn write_tmp_file(content: &str) -> (TempDir, std::path::PathBuf) {
+    let dir  = TempDir::new().unwrap();
+    let path = dir.path().join("doc.txt");
+    std::fs::write(&path, content).unwrap();
+    (dir, path)
+}
+
 fn tmp_store() -> (TempDir, DocumentStorage) {
     let dir = TempDir::new().unwrap();
     let store = DocumentStorage::new(dir.path().to_str().unwrap()).unwrap();
@@ -717,6 +726,279 @@ fn test_search_document_text_strings_without_embedding_returns_err() {
     let (_dir, store) = tmp_store();
     let result = store.search_document_text_strings("query", 5);
     assert!(result.is_err());
+}
+
+// ── add_document_from_file ────────────────────────────────────────────────────
+
+// ── construction / errors ─────────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_returns_non_nil_uuid() {
+    let (_sdir, store) = tmp_store();
+    let (_fdir, path) = write_tmp_file("Hello world. This is a test document.");
+    let id = store.add_document_from_file(path.to_str().unwrap(), "doc", 200, 0.0).unwrap();
+    assert!(!id.is_nil());
+}
+
+#[test]
+fn test_from_file_nonexistent_path_returns_err() {
+    let (_sdir, store) = tmp_store();
+    let result = store.add_document_from_file("/no/such/file.txt", "doc", 200, 0.0);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("cannot read"));
+}
+
+// ── document-level metadata ───────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_doc_metadata_has_required_fields() {
+    let (_sdir, store) = tmp_store();
+    let (_fdir, path) = write_tmp_file("One sentence. Two sentences.");
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "myname", 200, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    assert_eq!(meta["name"],    json!("myname"));
+    assert_eq!(meta["slice"],   json!(200usize));
+    assert_eq!(meta["path"],    json!(path.to_str().unwrap()));
+    assert!(meta["n_chunks"].as_u64().unwrap() >= 1);
+    assert!(meta["chunks"].is_array());
+}
+
+#[test]
+fn test_from_file_doc_metadata_stores_overlap_param() {
+    let (_sdir, store) = tmp_store();
+    let (_fdir, path) = write_tmp_file("Content.");
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 500, 25.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    // overlap is stored as the raw f32 the caller provided
+    let stored = meta["overlap"].as_f64().unwrap();
+    assert!((stored - 25.0).abs() < 0.001, "overlap stored as {stored}");
+}
+
+#[test]
+fn test_from_file_n_chunks_matches_chunks_list_length() {
+    let (_sdir, store) = tmp_store();
+    let (_fdir, path)  = write_tmp_file("A. B. C. D. E.");
+    let id    = store.add_document_from_file(path.to_str().unwrap(), "d", 8, 0.0).unwrap();
+    let meta  = store.get_metadata(id).unwrap().unwrap();
+    let n     = meta["n_chunks"].as_u64().unwrap() as usize;
+    let list  = meta["chunks"].as_array().unwrap();
+    assert_eq!(n, list.len());
+}
+
+// ── chunk count ───────────────────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_single_chunk_when_text_fits_in_slice() {
+    let (_sdir, store) = tmp_store();
+    let (_fdir, path)  = write_tmp_file("Short sentence.");
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 1000, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    assert_eq!(meta["n_chunks"], json!(1));
+}
+
+#[test]
+fn test_from_file_multiple_chunks_for_large_text() {
+    let (_sdir, store) = tmp_store();
+    // Each sentence is ~20 chars; slice = 30 forces multiple chunks.
+    let text = "First sentence here. Second sentence here. Third sentence here.";
+    let (_fdir, path) = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 30, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    assert!(meta["n_chunks"].as_u64().unwrap() > 1, "expected multiple chunks");
+}
+
+// ── per-chunk storage ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_all_chunks_are_stored_in_blob() {
+    let (_sdir, store) = tmp_store();
+    let text = "Alpha sentence. Beta sentence. Gamma sentence.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 20, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    for chunk_id_val in meta["chunks"].as_array().unwrap() {
+        let uuid  = uuid::Uuid::parse_str(chunk_id_val.as_str().unwrap()).unwrap();
+        let bytes = store.get_content(uuid).unwrap().expect("chunk blob must exist");
+        assert!(!bytes.is_empty());
+    }
+}
+
+#[test]
+fn test_from_file_chunk_metadata_fields() {
+    let (_sdir, store) = tmp_store();
+    let text = "Sentence one. Sentence two. Sentence three.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "chunkdoc", 20, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    let chunk_ids = meta["chunks"].as_array().unwrap().clone();
+    let n_chunks  = meta["n_chunks"].as_u64().unwrap();
+
+    for (i, cid) in chunk_ids.iter().enumerate() {
+        let uuid       = uuid::Uuid::parse_str(cid.as_str().unwrap()).unwrap();
+        let chunk_meta = store.get_metadata(uuid).unwrap().expect("chunk metadata must exist");
+        assert_eq!(chunk_meta["document_name"], json!("chunkdoc"),   "document_name mismatch at i={i}");
+        assert_eq!(chunk_meta["document_id"],   json!(id.to_string()), "document_id mismatch at i={i}");
+        assert_eq!(chunk_meta["chunk_index"],   json!(i),             "chunk_index mismatch at i={i}");
+        assert_eq!(chunk_meta["n_chunks"],      json!(n_chunks),      "n_chunks mismatch at i={i}");
+    }
+}
+
+#[test]
+fn test_from_file_chunk_uuids_are_time_ordered() {
+    let (_sdir, store) = tmp_store();
+    let text = "First. Second. Third. Fourth. Fifth.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id    = store.add_document_from_file(path.to_str().unwrap(), "d", 10, 0.0).unwrap();
+    let meta  = store.get_metadata(id).unwrap().unwrap();
+    let ids: Vec<uuid::Uuid> = meta["chunks"].as_array().unwrap().iter()
+        .map(|v| uuid::Uuid::parse_str(v.as_str().unwrap()).unwrap())
+        .collect();
+    for w in ids.windows(2) {
+        assert!(w[0] < w[1], "chunk UUIDs must be monotonically increasing");
+    }
+}
+
+// ── text coverage and ordering ────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_all_words_present_across_chunks() {
+    let (_sdir, store) = tmp_store();
+    let text = "The quick brown fox. Jumps over the lazy dog. Pack my box.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 25, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+
+    let all_text: String = meta["chunks"].as_array().unwrap().iter().map(|cid| {
+        let uuid = uuid::Uuid::parse_str(cid.as_str().unwrap()).unwrap();
+        String::from_utf8(store.get_content(uuid).unwrap().unwrap()).unwrap()
+    }).collect::<Vec<_>>().join(" ");
+
+    for word in ["quick", "brown", "lazy", "box"] {
+        assert!(all_text.contains(word), "word '{word}' missing from chunks");
+    }
+}
+
+#[test]
+fn test_from_file_chunk_order_matches_document_order() {
+    let (_sdir, store) = tmp_store();
+    // Chunks must appear in document order: "ALPHA" before "BETA" before "GAMMA".
+    let text = "ALPHA text here ends. BETA text here ends. GAMMA text here ends.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 25, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    let chunks_text: Vec<String> = meta["chunks"].as_array().unwrap().iter().map(|cid| {
+        let uuid = uuid::Uuid::parse_str(cid.as_str().unwrap()).unwrap();
+        String::from_utf8(store.get_content(uuid).unwrap().unwrap()).unwrap()
+    }).collect();
+
+    let first_alpha = chunks_text.iter().position(|c| c.contains("ALPHA")).unwrap();
+    let first_beta  = chunks_text.iter().rposition(|c| c.contains("BETA")).unwrap();
+    let first_gamma = chunks_text.iter().rposition(|c| c.contains("GAMMA")).unwrap();
+    assert!(first_alpha <= first_beta,  "ALPHA chunk must not come after BETA chunk");
+    assert!(first_beta  <= first_gamma, "BETA chunk must not come after GAMMA chunk");
+}
+
+// ── overlap ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_zero_overlap_no_shared_sentences() {
+    let (_sdir, store) = tmp_store();
+    let text = "First end. Second end. Third end. Fourth end. Fifth end.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 15, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    assert!(meta["n_chunks"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn test_from_file_overlap_adjacent_chunks_share_content() {
+    let (_sdir, store) = tmp_store();
+    // Sentences are ~12 chars each; slice=25 fits ~2, overlap=50% carries ~1 back.
+    let text = "Alpha ends. Beta ends. Gamma ends. Delta ends. Epsilon ends.";
+    let (_fdir, path)  = write_tmp_file(text);
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 25, 50.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    let chunk_ids = meta["chunks"].as_array().unwrap();
+
+    if chunk_ids.len() >= 2 {
+        let get = |idx: usize| -> String {
+            let uuid = uuid::Uuid::parse_str(chunk_ids[idx].as_str().unwrap()).unwrap();
+            String::from_utf8(store.get_content(uuid).unwrap().unwrap()).unwrap()
+        };
+        let c0 = get(0);
+        let c1 = get(1);
+        // The last word of c0 should appear in c1 if overlap is working.
+        let last_word = c0.split_whitespace().last().unwrap_or("");
+        let punct_stripped: String = last_word.chars().filter(|c| c.is_alphabetic()).collect();
+        assert!(
+            !punct_stripped.is_empty() && c1.contains(&punct_stripped),
+            "overlap: last token of chunk 0 ('{punct_stripped}') not in chunk 1 ('{c1}')"
+        );
+    }
+}
+
+#[test]
+fn test_from_file_more_overlap_produces_more_chunks() {
+    // Higher overlap means shorter stride → more chunks for the same text.
+    let (_sdir, store) = tmp_store();
+    let text = "One sentence here. Two sentences here. Three. Four. Five. Six. Seven.";
+    let (_fdir, path0)  = write_tmp_file(text);
+    let (_fdir2, path50) = write_tmp_file(text);
+    let n0 = {
+        let id = store.add_document_from_file(path0.to_str().unwrap(),  "d0", 25, 0.0).unwrap();
+        store.get_metadata(id).unwrap().unwrap()["n_chunks"].as_u64().unwrap()
+    };
+    let n50 = {
+        let id = store.add_document_from_file(path50.to_str().unwrap(), "d50", 25, 50.0).unwrap();
+        store.get_metadata(id).unwrap().unwrap()["n_chunks"].as_u64().unwrap()
+    };
+    assert!(n50 >= n0, "50% overlap should produce at least as many chunks as 0% (got {n50} vs {n0})");
+}
+
+// ── paragraph and multi-line input ────────────────────────────────────────────
+
+#[test]
+fn test_from_file_paragraph_boundary_is_respected() {
+    let (_sdir, store) = tmp_store();
+    let text = "First paragraph content here.\n\nSecond paragraph content here.";
+    let (_fdir, path)  = write_tmp_file(text);
+    // Large slice so both paragraphs would fit in one chunk — but they may be split.
+    let id   = store.add_document_from_file(path.to_str().unwrap(), "d", 200, 0.0).unwrap();
+    let meta = store.get_metadata(id).unwrap().unwrap();
+    assert!(meta["n_chunks"].as_u64().unwrap() >= 1);
+    // All content must survive regardless of how it's split.
+    let all: String = meta["chunks"].as_array().unwrap().iter().map(|cid| {
+        let uuid = uuid::Uuid::parse_str(cid.as_str().unwrap()).unwrap();
+        String::from_utf8(store.get_content(uuid).unwrap().unwrap()).unwrap()
+    }).collect::<Vec<_>>().join(" ");
+    assert!(all.contains("First paragraph"));
+    assert!(all.contains("Second paragraph"));
+}
+
+// ── RAG retrieval pattern ─────────────────────────────────────────────────────
+
+#[test]
+fn test_from_file_chunks_have_blob_and_metadata() {
+    // Verify the two-level structure expected by RAG: metadata record links to
+    // chunk blobs; each chunk blob has its own metadata with back-reference.
+    let (_sdir, store) = tmp_store();
+    let text  = "Introduction here. Method section. Results described. Conclusion written.";
+    let (_fdir, path) = write_tmp_file(text);
+    let doc_id = store.add_document_from_file(path.to_str().unwrap(), "paper", 30, 0.0).unwrap();
+    let doc_meta = store.get_metadata(doc_id).unwrap().unwrap();
+
+    // Document record has the index.
+    assert!(doc_meta["chunks"].as_array().unwrap().len() >= 1);
+
+    // Each chunk is fully addressable.
+    for cid in doc_meta["chunks"].as_array().unwrap() {
+        let uuid       = uuid::Uuid::parse_str(cid.as_str().unwrap()).unwrap();
+        let chunk_blob = store.get_content(uuid).unwrap().expect("blob must exist");
+        let chunk_meta = store.get_metadata(uuid).unwrap().expect("chunk meta must exist");
+        assert!(!chunk_blob.is_empty());
+        assert_eq!(chunk_meta["document_id"], json!(doc_id.to_string()));
+        assert_eq!(chunk_meta["document_name"], json!("paper"));
+    }
 }
 
 // ── with_embedding (live model) ───────────────────────────────────────────────

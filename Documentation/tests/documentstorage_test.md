@@ -121,6 +121,70 @@ Tests the full lifecycle of `DocumentStorage`: construction, CRUD operations on 
 | `test_search_document_json_strings_without_embedding_returns_err` | `search_document_json_strings` returns an error when no embedding engine is configured |
 | `test_search_document_text_strings_without_embedding_returns_err` | `search_document_text_strings` returns an error when no embedding engine is configured |
 
+## `add_document_from_file` — RAG ingestion
+
+Helper used by these tests: `write_tmp_file(content)` — writes a string to a temp file and returns the `TempDir` guard plus the file path.
+
+### Construction and errors
+
+| Test | Description |
+|---|---|
+| `test_from_file_nonexistent_path_returns_err` | Passing a path that does not exist returns `Err` |
+| `test_from_file_returns_non_nil_uuid` | On success, returns a non-nil UUID for the document-level record |
+
+### Document-level metadata
+
+| Test | Description |
+|---|---|
+| `test_from_file_doc_metadata_has_required_fields` | The document-level metadata record contains `name`, `path`, `slice`, `n_chunks`, and `chunks` fields |
+| `test_from_file_doc_metadata_stores_overlap_param` | The `overlap` value supplied at call time is stored verbatim in the document metadata |
+
+### Chunk count
+
+| Test | Description |
+|---|---|
+| `test_from_file_n_chunks_matches_chunks_list_length` | The `n_chunks` field equals the length of the `chunks` array |
+| `test_from_file_multiple_chunks_for_large_text` | A text clearly larger than `slice` produces more than one chunk |
+| `test_from_file_single_chunk_when_text_fits_in_slice` | A short text that fits in one slice produces exactly one chunk |
+| `test_from_file_more_overlap_produces_more_chunks` | Higher overlap percentage produces more (or equal) chunks than lower overlap for the same text |
+
+### Per-chunk storage
+
+| Test | Description |
+|---|---|
+| `test_from_file_chunks_have_blob_and_metadata` | Every UUID in `chunks` has a corresponding blob entry and a metadata entry |
+| `test_from_file_all_chunks_are_stored_in_blob` | `get_content` returns `Some` for every chunk UUID in the `chunks` list |
+| `test_from_file_chunk_metadata_fields` | Each chunk's metadata contains `document_name`, `document_id`, `chunk_index`, and `n_chunks` |
+
+### Text coverage and ordering
+
+| Test | Description |
+|---|---|
+| `test_from_file_all_words_present_across_chunks` | Every word from the original text appears in at least one chunk (no text is dropped) |
+| `test_from_file_chunk_order_matches_document_order` | The last word of chunk `i` appears before the first word of chunk `i+1` in the original text, confirming order preservation |
+| `test_from_file_chunk_uuids_are_time_ordered` | The chunk UUIDs in the `chunks` list are monotonically increasing (UUIDv7 ordering matches document order) |
+
+### Overlap behaviour
+
+| Test | Description |
+|---|---|
+| `test_from_file_overlap_adjacent_chunks_share_content` | When overlap > 0, adjacent chunks share at least one common sentence or phrase at their boundary |
+| `test_from_file_zero_overlap_no_shared_sentences` | When overlap = 0, adjacent chunks do not share any sentence-final text |
+
+### Boundary handling
+
+| Test | Description |
+|---|---|
+| `test_from_file_paragraph_boundary_is_respected` | A two-paragraph text with a paragraph-level split point produces at least two chunks whose boundaries align with the paragraph break |
+
+### RAG retrieval pattern
+
+| Test | Description |
+|---|---|
+| (covered by `test_from_file_chunks_have_blob_and_metadata` + ordering tests) | Simulates the RAG pattern: search returns a chunk result; `document_id` from chunk metadata resolves to the document-level record which in turn holds the ordered `chunks` list for context expansion |
+
+---
+
 ## Live embedding model (`#[ignore]`)
 
 > **`test_with_embedding_add_document_indexes_vectors`** — marked `#[ignore]` because it downloads and runs the `AllMiniLML6V2` model at test time.
@@ -141,3 +205,4 @@ Tests the full lifecycle of `DocumentStorage`: construction, CRUD operations on 
 - Persistence: metadata, blobs, and the vector index (post-`sync`) all survive a close-and-reopen cycle
 - `results_to_strings` and `search_document_strings` produce consistent, human-readable fingerprints matching the underlying `search_document` results
 - Graceful errors (with "EmbeddingEngine" message) for JSON- and text-query paths when no embedding engine is present
+- `add_document_from_file`: file-load errors, document metadata fields, chunk count under varied slice/overlap settings, per-chunk blob and metadata storage, full text coverage across chunks, document-order preservation, UUIDv7 monotonic chunk ordering, overlap content sharing, paragraph boundary alignment

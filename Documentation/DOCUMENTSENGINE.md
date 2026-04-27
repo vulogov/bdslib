@@ -125,6 +125,116 @@ let id = store.add_document_with_vectors(
 )?;
 ```
 
+### `add_document_from_file`
+
+```rust
+fn add_document_from_file(
+    &self,
+    path: &str,
+    name: &str,
+    slice: usize,
+    overlap: f32,
+) -> Result<Uuid>
+```
+
+Load a text file from `path`, split it into overlapping chunks on natural sentence and paragraph boundaries, and store each chunk as an independently searchable record. Returns the UUIDv7 of the document-level metadata record.
+
+This is the primary entry point for RAG (Retrieval-Augmented Generation) ingestion. Every chunk is a first-class document in `BlobStorage` and `JsonStorage`, and (when an `EmbeddingEngine` is attached) both its content and metadata fingerprint are indexed in the shared HNSW vector index. The document-level record holds the ordered list of chunk UUIDs so a retriever can expand context by fetching neighbouring chunks.
+
+**Parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `path` | `&str` | Filesystem path to read (`std::fs::read_to_string`) |
+| `name` | `&str` | Human-readable document name stored in all metadata records |
+| `slice` | `usize` | Maximum character count per chunk (clamped to `≥ 1`) |
+| `overlap` | `f32` | Overlap as a percentage of `slice` (clamped to `[0.0, 99.0]`). E.g. `25.0` means the last ≈ 25 % of a chunk reappears at the start of the next. |
+
+**Chunking algorithm**
+
+The text is first split into *atoms* — sentences, paragraphs, or individual words (never exceeding `slice` characters each). Atoms are accumulated into a sliding window that grows until adding the next atom would exceed `slice`. The overlap region (the last `overlap_chars` characters of the current chunk) carries over to the start of the next window, so adjacent chunks share context at their boundaries.
+
+The hierarchy used when splitting:
+1. Paragraph boundaries (`\n\n`)
+2. Sentence boundaries (`.`, `!`, `?` followed by whitespace + uppercase or non-alpha — avoids splitting on `Mr.`, `e.g.`)
+3. Soft line breaks (`\n`)
+4. Word boundaries (whitespace)
+5. Hard cut at `slice` characters for tokens that cannot be split further
+
+**Storage layout**
+
+For each chunk `i`:
+
+| Store | Key | Value |
+|---|---|---|
+| `BlobStorage` | chunk UUIDv7 | Raw UTF-8 bytes of the chunk text |
+| `JsonStorage` | chunk UUIDv7 | `{"document_name", "document_id", "chunk_index", "n_chunks"}` |
+| VectorEngine | `"{chunk_id}:content"` | Embedding of the chunk text (if engine present) |
+| VectorEngine | `"{chunk_id}:meta"` | Embedding of the chunk metadata fingerprint (if engine present) |
+
+For the document level:
+
+| Store | Key | Value |
+|---|---|---|
+| `JsonStorage` | doc UUIDv7 | `{"name", "path", "slice", "overlap", "n_chunks", "chunks": [uuid, …]}` |
+| VectorEngine | `"{doc_id}:meta"` | Embedding of the document metadata fingerprint (if engine present) |
+
+The `chunks` array is ordered — `chunks[0]` is the first chunk in the file, `chunks[n_chunks-1]` is the last. All chunk UUIDs are also monotonically ordered by time, so lexicographic sort preserves document order.
+
+**Example**
+
+```rust
+use bdslib::DocumentStorage;
+
+let store = DocumentStorage::new("/data/rag")?;
+
+// Split a 50 000-character essay into ≤ 512-character chunks
+// with 20 % overlap between adjacent chunks.
+let doc_id = store.add_document_from_file(
+    "/data/papers/attention_is_all_you_need.txt",
+    "Attention Is All You Need",
+    512,
+    20.0,
+)?;
+
+// Retrieve document-level metadata (chunk list, path, …)
+let meta = store.get_metadata(doc_id)?.unwrap();
+let chunk_ids: Vec<&str> = meta["chunks"]
+    .as_array().unwrap()
+    .iter()
+    .map(|v| v.as_str().unwrap())
+    .collect();
+
+println!("stored {} chunks", meta["n_chunks"]);
+
+// Fetch the first chunk
+let first_id: uuid::Uuid = chunk_ids[0].parse().unwrap();
+let first_chunk = store.get_content(first_id)?.unwrap();
+println!("{}", String::from_utf8_lossy(&first_chunk));
+```
+
+**RAG retrieval pattern**
+
+```rust
+// Semantic search over all chunk vectors.
+let results = store.search_document(query_vec, 5)?;
+
+for r in &results {
+    println!("chunk: {:.4}  {}", r["score"], r["metadata"]["document_name"]);
+    println!("  doc_id:      {}", r["metadata"]["document_id"]);
+    println!("  chunk_index: {}", r["metadata"]["chunk_index"]);
+    println!("  content:     {}", &r["document"].as_str().unwrap()[..80]);
+}
+```
+
+To expand context, fetch neighbouring chunks using `chunk_index ± 1` from the document-level `chunks` array.
+
+**Errors**
+
+Returns `Err` if `path` cannot be read. Storage errors from sub-store writes are propagated. Vector indexing failures are silently discarded (`let _ = …`) — a missing embedding engine does not cause the call to fail.
+
+---
+
 ### `update_metadata`
 
 ```rust
@@ -414,6 +524,7 @@ store.sync()?; // flush HNSW index before process exits
 |---|---|
 | `add_document` | Writes metadata + blob; silently skips vector indexing |
 | `add_document_with_vectors` | Always indexes both vectors (no engine needed) |
+| `add_document_from_file` | Writes all chunk/doc records; silently skips vector indexing |
 | `search_document` | Works; results are empty if no vectors were ever stored |
 | `search_document_json` | Returns `Err` |
 | `search_document_text` | Returns `Err` |
