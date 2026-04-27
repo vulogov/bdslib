@@ -1,6 +1,6 @@
 # bdslib — Operational Scripts
 
-Shell scripts for data ingestion, node submission, and end-to-end verification of a running bdslib installation.  All scripts require `bash` 4+ and are safe to run with `set -euo pipefail`.
+Shell scripts for data ingestion, node submission, and end-to-end verification of a running bdslib installation.  All scripts live in the `scripts/` directory and require `bash` 4+ (`set -euo pipefail`).
 
 ---
 
@@ -8,12 +8,116 @@ Shell scripts for data ingestion, node submission, and end-to-end verification o
 
 | Script | Purpose |
 |---|---|
+| [`fill-store.sh`](#fill-storesh) | Populate a running bdsnode with synthetic telemetry, logs, and docstore documents in one shot |
 | [`send_file_to_node.sh`](#send_file_to_nodesh) | Generate an NDJSON file, submit it to bdsnode via `v2/add.file`, wait for ingestion, then remove the file |
 | [`send_logs_to_node.sh`](#send_logs_to_nodesh) | Generate mixed + log documents in memory and submit them as a single `v2/add.batch` call |
 | [`send_syslog_to_node.sh`](#send_syslog_to_nodesh) | Generate an RFC 3164 syslog file, submit via `v2/add.file.syslog`, wait for ingestion, verify with `v2/fulltext*` |
 | [`verify_analysis.sh`](#verify_analysissh) | End-to-end LDA topic analysis test against a live bdscli binary and database |
 | [`verify_ingestion.sh`](#verify_ingestionsh) | End-to-end ingestion correctness test: primary/secondary split, exact-match dedup, vector index |
 | [`verify_logs.sh`](#verify_logssh) | End-to-end log pipeline test: ingestion, deduplication, FTS, and vector search |
+
+---
+
+## fill-store.sh
+
+Populate a running `bdsnode` with synthetic data in a single command.  The script generates and submits three classes of data:
+
+- **Docstore documents** — realistic IT operational content (runbooks, incident tickets, post-mortems, KB articles, change requests) submitted one-by-one via `v2/doc.add`.
+- **Telemetry** — numeric metric records for 10 infrastructure keys (`cpu.usage`, `mem.used_pct`, `http.latency_ms`, …) submitted in batches via `v2/add.batch`.
+- **Logs** — syslog, HTTP, nginx, and Python traceback entries submitted per-format in batches via `v2/add.batch`.
+- **Mixed batch** — an extra combined telemetry+log batch spread over an 8-hour window.
+
+After ingestion the script queries `v2/count` and `v2/timeline` and prints a store summary.
+
+### Dependencies
+
+`bdscli` · `bdscmd` · `jq`
+
+If `bdscli` or `bdscmd` are not in `PATH`, the script falls back to `target/debug/<bin>` relative to the repository root.
+
+### Usage
+
+```
+./scripts/fill-store.sh [OPTIONS]
+```
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--addr HOST:PORT` | `http://127.0.0.1:9000` | bdsnode address.  Passed to every `bdscmd` call as `-a`. |
+| `--config PATH` | — | hjson config file.  Passed to every `bdscli generate` call as `--config`.  Falls back to the `BDS_CONFIG` environment variable when omitted. |
+| `--tel-count N` | `200` | Telemetry records generated **per key** (10 keys → up to `10 × N` telemetry records queued). |
+| `--log-count N` | `300` | Log records generated **per format** (4 formats → up to `4 × N` log records queued). |
+| `--doc-count N` | `40` | Docstore documents (runbooks, tickets, post-mortems, KB articles, change requests) added to the docstore. |
+| `--no-color` | off | Suppress ANSI colour codes in output. |
+| `-h`, `--help` | — | Print usage and exit. |
+
+### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `BDSCLI` | Path to the bdscli binary (default: `bdscli`). |
+| `BDSCMD` | Path to the bdscmd binary (default: `bdscmd`). |
+| `BDSCMD_ADDR` | bdsnode address; equivalent of `--addr`. |
+| `BDS_CONFIG` | Config file path; used by `bdscli generate` when `--config` is not given. |
+
+### Behaviour
+
+1. **Preflight** — verifies `jq`, `bdscli`, `bdscmd` are available; confirms `bdsnode` is reachable via `v2/status`.
+2. **Docstore** — calls `bdscli generate docs --count N`, reads each NDJSON line, extracts `metadata` and `content` with `jq`, and calls `bdscmd doc-add`.  Counts successes and failures.
+3. **Telemetry** — for each of the 10 metric keys, pipes `bdscli generate telemetry --key K --duration D --count N` into `bdscmd add-batch` and records the `queued` count returned by the server.
+
+   | Key | Window |
+   |---|---|
+   | `cpu.usage` | 6 h |
+   | `mem.used_pct` | 6 h |
+   | `disk.io_wait` | 3 h |
+   | `disk.read_bytes` | 3 h |
+   | `net.rx_bytes` | 12 h |
+   | `net.tx_bytes` | 12 h |
+   | `http.latency_ms` | 4 h |
+   | `db.connections` | 4 h |
+   | `cache.hit_ratio` | 2 h |
+   | `queue.depth` | 2 h |
+
+4. **Logs** — for each format, pipes `bdscli generate log --format F --duration D --count N` into `bdscmd add-batch`.
+
+   | Format | Window |
+   |---|---|
+   | `syslog` | 24 h |
+   | `http` | 12 h |
+   | `http-nginx` | 12 h |
+   | `traceback` | 6 h |
+
+5. **Mixed batch** — generates `2 × tel-count` records with `--ratio 0.5` over an 8-hour window and batch-submits them.
+6. **Summary** — prints total observability record count (from `v2/count`) and the oldest/newest event timestamps (from `v2/timeline`).
+
+### Examples
+
+```bash
+# Default counts (40 docs, 200 telemetry/key, 300 logs/format) against local node:
+BDS_CONFIG=/etc/bdslib/config.hjson ./scripts/fill-store.sh
+
+# Custom counts for a quick smoke test:
+./scripts/fill-store.sh --config ./bds.hjson --doc-count 10 --tel-count 50 --log-count 100
+
+# Remote node, no colour:
+./scripts/fill-store.sh --addr http://10.0.0.5:9000 --config /etc/bds/prod.hjson --no-color
+
+# Binaries not in PATH (freshly built):
+BDSCLI=./target/debug/bdscli BDSCMD=./target/debug/bdscmd \
+  ./scripts/fill-store.sh --config ./bds.hjson
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All generators ran and data was submitted without fatal errors. |
+| `1` | Preflight failure (missing dependency or unreachable bdsnode). |
+
+Individual `bdscmd doc-add` failures are counted and reported but do not abort the script.
 
 ---
 
@@ -28,7 +132,7 @@ Generate synthetic documents into a file, submit the file path to a running `bds
 ### Usage
 
 ```
-./send_file_to_node.sh [OPTIONS]
+./scripts/send_file_to_node.sh [OPTIONS]
 ```
 
 ### Options
@@ -63,19 +167,19 @@ If the script exits early due to an error before ingestion monitoring completes,
 
 ```bash
 # 200 docs over a 2h window, local node, remove file when done:
-./send_file_to_node.sh -n 200 -d 2h
+./scripts/send_file_to_node.sh -n 200 -d 2h
 
 # Remote node, keep the file:
-./send_file_to_node.sh -a 10.0.0.5:9000 -n 500 --keep
+./scripts/send_file_to_node.sh -a 10.0.0.5:9000 -n 500 --keep
 
 # Write to a fixed path (kept automatically):
-./send_file_to_node.sh -n 1000 -o /tmp/batch.jsonl
+./scripts/send_file_to_node.sh -n 1000 -o /tmp/batch.jsonl
 
 # 20% duplicates, all-telemetry mix, 10-minute timeout:
-./send_file_to_node.sh --duplicate 0.2 -r 1.0 -n 300 --timeout 600
+./scripts/send_file_to_node.sh --duplicate 0.2 -r 1.0 -n 300 --timeout 600
 
 # Poll every 2 seconds:
-./send_file_to_node.sh -n 5000 --poll-interval 2
+./scripts/send_file_to_node.sh -n 5000 --poll-interval 2
 ```
 
 ### Exit codes
@@ -101,7 +205,7 @@ Total documents submitted = `2 × --count`.
 ### Usage
 
 ```
-./send_logs_to_node.sh [OPTIONS]
+./scripts/send_logs_to_node.sh [OPTIONS]
 ```
 
 ### Options
@@ -141,16 +245,16 @@ Because both generators run synchronously and the payload is delivered in a sing
 
 ```bash
 # 200 docs (100 mixed + 100 log) to local node:
-./send_logs_to_node.sh -n 100
+./scripts/send_logs_to_node.sh -n 100
 
 # 500 docs over a 6h window with 20% duplicates to a remote node:
-./send_logs_to_node.sh -a 10.0.0.5:9000 -n 250 -d 6h --duplicate 0.2
+./scripts/send_logs_to_node.sh -a 10.0.0.5:9000 -n 250 -d 6h --duplicate 0.2
 
 # Syslog-only log batch, pure telemetry mixed batch:
-./send_logs_to_node.sh -f syslog -r 1.0 -n 50
+./scripts/send_logs_to_node.sh -f syslog -r 1.0 -n 50
 
 # http-nginx logs for FTS / vector search testing:
-./send_logs_to_node.sh -f http-nginx -n 200
+./scripts/send_logs_to_node.sh -f http-nginx -n 200
 ```
 
 ---
@@ -166,7 +270,7 @@ Generate synthetic RFC 3164 syslog lines into a file via `bdscli generate syslog
 ### Usage
 
 ```
-./send_syslog_to_node.sh [OPTIONS]
+./scripts/send_syslog_to_node.sh [OPTIONS]
 ```
 
 ### Options
@@ -216,19 +320,19 @@ If the script exits early due to an error before ingestion monitoring completes,
 
 ```bash
 # 200 syslog lines over a 2h window, local node:
-./send_syslog_to_node.sh -n 200 -d 2h
+./scripts/send_syslog_to_node.sh -n 200 -d 2h
 
 # Keep the generated file, verify with "sshd" term:
-./send_syslog_to_node.sh -n 500 --keep -q sshd
+./scripts/send_syslog_to_node.sh -n 500 --keep -q sshd
 
 # Write to a specific path (kept automatically):
-./send_syslog_to_node.sh -n 1000 -o /tmp/test.syslog
+./scripts/send_syslog_to_node.sh -n 1000 -o /tmp/test.syslog
 
 # Poll every 2 seconds, time out after 10 minutes:
-./send_syslog_to_node.sh -n 5000 --poll-interval 2 --timeout 600
+./scripts/send_syslog_to_node.sh -n 5000 --poll-interval 2 --timeout 600
 
 # Submit to a remote node, query with "cron":
-./send_syslog_to_node.sh -a 10.0.0.5:9000 -n 300 -q cron
+./scripts/send_syslog_to_node.sh -a 10.0.0.5:9000 -n 300 -q cron
 ```
 
 ### Exit codes
@@ -254,7 +358,7 @@ End-to-end correctness test for LDA topic analysis.  Builds `bdscli` from source
 ### Usage
 
 ```bash
-./verify_analysis.sh [path/to/bds.hjson]
+./scripts/verify_analysis.sh [path/to/bds.hjson]
 ```
 
 The config file defaults to `./bds.hjson` when not provided.
@@ -301,7 +405,7 @@ End-to-end correctness test for the core ingestion pipeline: record storage, pri
 ### Usage
 
 ```bash
-./verify_ingestion.sh [path/to/bds.hjson]
+./scripts/verify_ingestion.sh [path/to/bds.hjson]
 ```
 
 The config file defaults to `./bds.hjson` when not provided.
@@ -351,7 +455,7 @@ End-to-end correctness test for the full log ingestion and search pipeline: sysl
 ### Usage
 
 ```bash
-./verify_logs.sh [path/to/bds.hjson]
+./scripts/verify_logs.sh [path/to/bds.hjson]
 ```
 
 The config file defaults to `./bds.hjson` when not provided.
@@ -398,19 +502,22 @@ Colour-coded `PASS` / `FAIL` lines.  Exits with code `1` on first failure; print
 
 | Tool | Used by |
 |---|---|
-| `bdscli` | `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
+| `bdscli` | all scripts |
+| `bdscmd` | `fill-store.sh` |
 | `curl` | `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
-| `jq` | `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
+| `jq` | `fill-store.sh`, `send_file_to_node.sh`, `send_logs_to_node.sh`, `send_syslog_to_node.sh` |
 | `cargo` | `verify_*.sh` |
 | `python3` | `verify_ingestion.sh`, `verify_logs.sh` |
 
 ### BDSCLI environment variable
 
-`send_file_to_node.sh`, `send_logs_to_node.sh`, and `send_syslog_to_node.sh` respect the `BDSCLI` environment variable as an alternative to `--bdscli`:
+All scripts respect the `BDSCLI` environment variable as an alternative to `--bdscli` / `--config`:
 
 ```bash
-BDSCLI=/usr/local/bin/bdscli ./send_syslog_to_node.sh -n 200
+BDSCLI=/usr/local/bin/bdscli ./scripts/send_syslog_to_node.sh -n 200
 ```
+
+`fill-store.sh` additionally respects `BDSCMD` for the bdscmd binary path.
 
 ### Config file (verify scripts)
 
@@ -418,8 +525,8 @@ All three `verify_*.sh` scripts accept an optional positional argument pointing 
 
 ```bash
 # Use default ./bds.hjson:
-./verify_logs.sh
+./scripts/verify_logs.sh
 
 # Use a custom path:
-./verify_logs.sh /etc/bdslib/production.hjson
+./scripts/verify_logs.sh /etc/bdslib/production.hjson
 ```
