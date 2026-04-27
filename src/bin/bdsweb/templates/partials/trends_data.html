@@ -1,0 +1,94 @@
+{% if !has_data %}
+<div class="text-center py-12 text-slate-500 text-sm">
+  No telemetry data found for key <span class="text-slate-300">"{{ key }}"</span> in the last <strong>{{ duration }}</strong>.
+</div>
+{% else %}
+
+<!-- Stats grid -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+  <div class="card rounded-lg p-4 text-center">
+    <div class="text-xs text-slate-500 mb-1">Samples</div>
+    <div class="text-xl font-bold text-white">{{ stats.n }}</div>
+  </div>
+  <div class="card rounded-lg p-4 text-center">
+    <div class="text-xs text-slate-500 mb-1">Mean</div>
+    <div class="text-xl font-bold text-blue-300">{{ stats.mean }}</div>
+  </div>
+  <div class="card rounded-lg p-4 text-center">
+    <div class="text-xs text-slate-500 mb-1">Std Dev</div>
+    <div class="text-xl font-bold text-slate-200">{{ stats.std_dev }}</div>
+  </div>
+  <div class="card rounded-lg p-4 text-center">
+    <div class="text-xs text-slate-500 mb-1">Variability</div>
+    <div class="text-xl font-bold text-slate-200">{{ stats.variability }}</div>
+  </div>
+</div>
+
+<div class="grid grid-cols-3 gap-3 mb-6">
+  <div class="card rounded-lg p-4 flex justify-between items-center">
+    <span class="text-xs text-slate-500">Min</span>
+    <span class="font-mono text-sm text-green-400">{{ stats.min }}</span>
+  </div>
+  <div class="card rounded-lg p-4 flex justify-between items-center">
+    <span class="text-xs text-slate-500">Median</span>
+    <span class="font-mono text-sm text-slate-200">{{ stats.median }}</span>
+  </div>
+  <div class="card rounded-lg p-4 flex justify-between items-center">
+    <span class="text-xs text-slate-500">Max</span>
+    <span class="font-mono text-sm text-red-400">{{ stats.max }}</span>
+  </div>
+</div>
+
+{% if stats.anomalies > 0 || stats.breakouts > 0 %}
+<div class="flex gap-3 mb-6">
+  {% if stats.anomalies > 0 %}
+  <div class="card rounded-lg px-4 py-2 flex items-center gap-2">
+    <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
+    <span class="text-sm text-orange-300 font-medium">{{ stats.anomalies }} anomalies detected</span>
+  </div>
+  {% endif %}
+  {% if stats.breakouts > 0 %}
+  <div class="card rounded-lg px-4 py-2 flex items-center gap-2">
+    <span class="w-2 h-2 rounded-full bg-red-400 inline-block"></span>
+    <span class="text-sm text-red-300 font-medium">{{ stats.breakouts }} breakouts detected</span>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- uPlot time-series chart -->
+<div class="card rounded-lg p-5">
+  <div class="text-xs text-slate-500 uppercase tracking-wide mb-4">
+    Time Series — <span class="text-blue-300 font-mono">{{ key }}</span> ({{ duration }})
+  </div>
+  <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.31/dist/uPlot.min.css">
+  <div id="uplot-container"></div>
+</div>
+
+<script src="https://unpkg.com/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+<script>
+(function() {
+  const raw = {{ uplot_data_json|safe }};
+  if (!raw || !raw[0] || raw[0].length === 0) return;
+
+  const container = document.getElementById('uplot-container');
+  const W = Math.max(container.clientWidth || 0, 400);
+
+  new uPlot({
+    width:  W,
+    height: 260,
+    scales: { x: { time: true }, y: { auto: true } },
+    axes: [
+      { stroke: "#64748b", ticks: { stroke: "#1e2535" }, grid: { stroke: "#1e2535" } },
+      { stroke: "#64748b", ticks: { stroke: "#1e2535" }, grid: { stroke: "#1e2535" },
+        label: "{{ key }}", labelSize: 12, labelFont: "11px monospace" }
+    ],
+    series: [
+      {},
+      { label: "{{ key }}", stroke: "#3b82f6", fill: "rgba(59,130,246,0.07)",
+        width: 1.5, points: { show: raw[0].length <= 200 } }
+    ]
+  }, raw, container);
+})();
+</script>
+{% endif %}

@@ -1,4 +1,4 @@
-use bdslib::{EmbeddingEngine, ShardsManager};
+e bdslib::{EmbeddingEngine, ShardsManager};
 use fastembed::EmbeddingModel;
 use serde_json::json;
 use std::sync::OnceLock;
@@ -8,17 +8,14 @@ use uuid::Uuid;
 static ENGINE: OnceLock<EmbeddingEngine> = OnceLock::new();
 
 fn get_engine() -> &'static EmbeddingEngine {
-    ENGINE.get_or_init(|| {
-        EmbeddingEngine::new(EmbeddingModel::AllMiniLML6V2, None).unwrap()
-    })
+    ENGINE.get_or_init(|| EmbeddingEngine::new(EmbeddingModel::AllMiniLML6V2, None).unwrap())
 }
 
 fn write_config(dir: &TempDir, duration: &str) -> String {
     let config_path = dir.path().join("config.hjson");
     let dbpath = dir.path().join("db").to_str().unwrap().to_string();
-    let content = format!(
-        "{{\n  dbpath: \"{dbpath}\"\n  shard_duration: \"{duration}\"\n  pool_size: 4\n}}"
-    );
+    let content =
+        format!("{{\n  dbpath: \"{dbpath}\"\n  shard_duration: \"{duration}\"\n  pool_size: 4\n}}");
     std::fs::write(&config_path, content).unwrap();
     config_path.to_str().unwrap().to_string()
 }
@@ -26,8 +23,7 @@ fn write_config(dir: &TempDir, duration: &str) -> String {
 fn tmp_manager(duration: &str) -> (TempDir, ShardsManager) {
     let dir = TempDir::new().unwrap();
     let config_path = write_config(&dir, duration);
-    let mgr =
-        ShardsManager::with_embedding(&config_path, get_engine().clone()).unwrap();
+    let mgr = ShardsManager::with_embedding(&config_path, get_engine().clone()).unwrap();
     (dir, mgr)
 }
 
@@ -52,10 +48,8 @@ fn test_new_reads_config() {
 
 #[test]
 fn test_new_missing_config() {
-    let result = ShardsManager::with_embedding(
-        "/nonexistent/path/config.hjson",
-        get_engine().clone(),
-    );
+    let result =
+        ShardsManager::with_embedding("/nonexistent/path/config.hjson", get_engine().clone());
     assert!(result.is_err());
     let msg = result.err().unwrap().to_string();
     assert!(msg.contains("cannot read config"));
@@ -66,10 +60,7 @@ fn test_new_invalid_hjson() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("bad.hjson");
     std::fs::write(&config_path, "not { valid hjson :::").unwrap();
-    let result = ShardsManager::with_embedding(
-        config_path.to_str().unwrap(),
-        get_engine().clone(),
-    );
+    let result = ShardsManager::with_embedding(config_path.to_str().unwrap(), get_engine().clone());
     assert!(result.is_err());
     let msg = result.err().unwrap().to_string();
     assert!(msg.contains("invalid config"));
@@ -80,10 +71,7 @@ fn test_new_missing_required_field() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("incomplete.hjson");
     std::fs::write(&config_path, "{ shard_duration: \"1h\" }").unwrap();
-    let result = ShardsManager::with_embedding(
-        config_path.to_str().unwrap(),
-        get_engine().clone(),
-    );
+    let result = ShardsManager::with_embedding(config_path.to_str().unwrap(), get_engine().clone());
     assert!(result.is_err());
 }
 
@@ -97,8 +85,7 @@ fn test_new_similarity_threshold_respected() {
     );
     std::fs::write(&config_path, content).unwrap();
     let mgr =
-        ShardsManager::with_embedding(config_path.to_str().unwrap(), get_engine().clone())
-            .unwrap();
+        ShardsManager::with_embedding(config_path.to_str().unwrap(), get_engine().clone()).unwrap();
     // High threshold means every record is primary — two different docs are primaries.
     let id1 = mgr.add(doc("cpu.usage", "value 10")).unwrap();
     let id2 = mgr.add(doc("cpu.usage", "value 11")).unwrap();
@@ -136,8 +123,10 @@ fn test_add_routes_to_correct_shard() {
     // Two timestamps in different hours → two shards.
     let ts1: u64 = 1_748_001_600; // exact 1-hour boundary
     let ts2: u64 = 1_748_005_200; // next hour boundary
-    mgr.add(json!({ "timestamp": ts1, "key": "a", "data": "x" })).unwrap();
-    mgr.add(json!({ "timestamp": ts2, "key": "b", "data": "y" })).unwrap();
+    mgr.add(json!({ "timestamp": ts1, "key": "a", "data": "x" }))
+        .unwrap();
+    mgr.add(json!({ "timestamp": ts2, "key": "b", "data": "y" }))
+        .unwrap();
     assert_eq!(mgr.cache().cached_count(), 2);
 }
 
@@ -241,7 +230,8 @@ fn test_update_cross_shard() {
 #[test]
 fn test_search_fts_finds_added_record() {
     let (_dir, mgr) = tmp_manager("1h");
-    mgr.add(doc("conn.pool", "connection timeout exceeded")).unwrap();
+    mgr.add(doc("conn.pool", "connection timeout exceeded"))
+        .unwrap();
 
     let results = mgr.search_fts("1h", "timeout").unwrap();
     assert!(
@@ -295,10 +285,7 @@ fn test_search_vector_finds_added_record() {
 
     let query = json!({ "key": "memory", "data": "heap allocation failure" });
     let results = mgr.search_vector("1h", &query).unwrap();
-    assert!(
-        !results.is_empty(),
-        "expected vector hit, got none"
-    );
+    assert!(!results.is_empty(), "expected vector hit, got none");
 }
 
 #[test]
@@ -329,7 +316,12 @@ fn test_search_vector_sorted_by_score_desc() {
         .filter_map(|d| d.get("_score").and_then(|v| v.as_f64()))
         .collect();
     for w in scores.windows(2) {
-        assert!(w[0] >= w[1], "scores must be non-increasing: {} < {}", w[0], w[1]);
+        assert!(
+            w[0] >= w[1],
+            "scores must be non-increasing: {} < {}",
+            w[0],
+            w[1]
+        );
     }
 }
 

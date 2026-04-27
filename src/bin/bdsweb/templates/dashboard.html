@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · bdsnode{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-semibold text-slate-200 mb-6">Dashboard</h1>
+
+<!-- Status cards -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Node ID</div>
+    <div class="text-sm font-mono text-blue-300 truncate" title="{{ node_id }}">{{ node_id }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Hostname</div>
+    <div class="text-sm font-medium text-slate-200">{{ hostname }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Uptime</div>
+    <div class="text-sm font-medium text-green-400">{{ uptime_secs }}s</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Total Records</div>
+    <div class="text-2xl font-bold text-white">{{ total_count }}</div>
+  </div>
+</div>
+
+<!-- Timeline + queue row -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-3 uppercase tracking-wide">Data Timeline</div>
+    <div class="flex justify-between text-xs text-slate-400 mb-1">
+      <span>Oldest event</span><span>Newest event</span>
+    </div>
+    <div class="flex justify-between text-sm font-mono">
+      <span class="text-slate-300">{{ min_ts }}</span>
+      <span class="text-slate-300">{{ max_ts }}</span>
+    </div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-3 uppercase tracking-wide">Ingest Queues</div>
+    <div class="space-y-2 text-sm">
+      <div class="flex justify-between">
+        <span class="text-slate-400">Log records</span>
+        <span class="{% if logs_queue > 0 %}text-yellow-400{% else %}text-green-400{% endif %} font-mono">{{ logs_queue }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">JSON file queue</span>
+        <span class="{% if json_file_queue > 0 %}text-yellow-400{% else %}text-green-400{% endif %} font-mono">{{ json_file_queue }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-slate-400">Syslog file queue</span>
+        <span class="{% if syslog_file_queue > 0 %}text-yellow-400{% else %}text-green-400{% endif %} font-mono">{{ syslog_file_queue }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Shard bar chart -->
+<div class="card rounded-lg p-6 mb-8">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Telemetry Records per Shard</h2>
+    <span class="text-xs text-slate-500">{{ shards.len() }} shards</span>
+  </div>
+  {% if !shards.is_empty() %}
+  <div style="position:relative; height:260px;">
+    <canvas id="shardChart"></canvas>
+  </div>
+  {% else %}
+  <div class="text-center py-12 text-slate-500 text-sm">No shards found. Ingest some data to see this chart.</div>
+  {% endif %}
+</div>
+
+<!-- Shard table -->
+{% if !shards.is_empty() %}
+<div class="card rounded-lg overflow-hidden">
+  <div class="px-4 py-3 border-b border-slate-800">
+    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Shard Details</h2>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Shard Start</th><th class="text-right">Primary Records</th><th class="text-right">Secondary Records</th><th class="text-right">Total</th></tr>
+    </thead>
+    <tbody>
+      {% for s in shards %}
+      <tr>
+        <td class="font-mono text-blue-300 text-xs">{{ s.label }}</td>
+        <td class="text-right text-slate-200 font-mono">{{ s.primary_count }}</td>
+        <td class="text-right text-slate-400 font-mono">{{ s.secondary_count }}</td>
+        <td class="text-right text-white font-mono font-medium">{{ s.primary_count + s.secondary_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block page_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const canvas = document.getElementById('shardChart');
+  if (!canvas) return;
+  const labels  = {{ shard_labels_json|safe }};
+  const primary = {{ shard_primary_json|safe }};
+  const secondary = {{ shard_secondary_json|safe }};
+  new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Primary',
+          data: primary,
+          backgroundColor: 'rgba(59,130,246,0.75)',
+          borderColor: 'rgba(59,130,246,1)',
+          borderWidth: 1,
+          borderRadius: 3,
+        },
+        {
+          label: 'Secondary',
+          data: secondary,
+          backgroundColor: 'rgba(100,116,139,0.5)',
+          borderColor: 'rgba(100,116,139,0.8)',
+          borderWidth: 1,
+          borderRadius: 3,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+        tooltip: { backgroundColor: '#1e293b', titleColor: '#94a3b8', bodyColor: '#e2e8f0' }
+      },
+      scales: {
+        x: {
+          stacked: false,
+          ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 30 },
+          grid:  { color: '#1e2535' }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: '#64748b', font: { size: 11 } },
+          grid:  { color: '#1e2535' }
+        }
+      }
+    }
+  });
+})();
+</script>
+{% endblock %}
