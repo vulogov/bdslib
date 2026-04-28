@@ -1,3 +1,5 @@
+![bdslib logo](logo.jpeg)
+
 # bdslib — BUND Data Storage
 
 A Rust library (Edition 2024) for multifunctional programmatic data storage.
