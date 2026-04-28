@@ -56,6 +56,8 @@ async fn main() {
         .route("/search/results", get(routes::search::results))
         .route("/trends",         get(routes::trends::page))
         .route("/trends/results", get(routes::trends::results))
+        .route("/rca",            get(routes::rca::page))
+        .route("/rca/results",    get(routes::rca::results))
         .route("/bund",           get(routes::bund::page))
         .route("/bund/eval",      post(routes::bund::eval))
         .layer(CompressionLayer::new())
