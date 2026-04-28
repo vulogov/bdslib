@@ -4,6 +4,7 @@ use bundcore::bundcore::Bund;
 use easy_error::Error;
 
 pub mod db_add;
+pub mod db_aggregation_search;
 pub mod db_fulltext;
 pub mod db_search;
 pub mod db_sync;
@@ -20,6 +21,7 @@ pub mod doc_update;
 pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
     // telemetry / shard DB words
     db_add::init_stdlib(vm)?;
+    db_aggregation_search::init_stdlib(vm)?;
     db_search::init_stdlib(vm)?;
     db_fulltext::init_stdlib(vm)?;
     db_sync::init_stdlib(vm)?;

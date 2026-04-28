@@ -2,7 +2,7 @@
 
 Reference for every BUND word provided by `src/vm/stdlib/db`. Words are split into two groups:
 
-- **Shard DB** (`db.*`) — telemetry/event storage: vector search and full-text search over time-windowed shards.
+- **Shard DB** (`db.*`) — telemetry/event storage: vector search, full-text search, and aggregated cross-store search over time-windowed shards.
 - **Document Store** (`doc.*`) — persistent document store: add, update, delete, retrieve, and search documents by text, JSON, or pre-computed embedding vectors.
 
 **Stack-effect notation:** `( before -- after )` where the top of the stack is on the right.  
@@ -15,14 +15,15 @@ A trailing `.` on a word name means the word reads from and writes to the **work
 
 1. [Shard DB — Ingest](#1-shard-db--ingest)
 2. [Shard DB — Search](#2-shard-db--search)
-3. [Shard DB — Sync](#3-shard-db--sync)
-4. [Document Store — Add](#4-document-store--add)
-5. [Document Store — Update & Store Vectors](#5-document-store--update--store-vectors)
-6. [Document Store — Delete](#6-document-store--delete)
-7. [Document Store — Retrieve](#7-document-store--retrieve)
-8. [Document Store — Search (full results)](#8-document-store--search-full-results)
-9. [Document Store — Search (fingerprint strings)](#9-document-store--search-fingerprint-strings)
-10. [Document Store — Sync & Reindex](#10-document-store--sync--reindex)
+3. [Shard DB — Aggregation Search](#3-shard-db--aggregation-search)
+4. [Shard DB — Sync](#4-shard-db--sync)
+5. [Document Store — Add](#5-document-store--add)
+6. [Document Store — Update & Store Vectors](#6-document-store--update--store-vectors)
+7. [Document Store — Delete](#7-document-store--delete)
+8. [Document Store — Retrieve](#8-document-store--retrieve)
+9. [Document Store — Search (full results)](#9-document-store--search-full-results)
+10. [Document Store — Search (fingerprint strings)](#10-document-store--search-fingerprint-strings)
+11. [Document Store — Sync & Reindex](#11-document-store--sync--reindex)
 
 ---
 
@@ -76,7 +77,44 @@ Full-text (Tantivy) search over shards within the given time window. `query` is 
 
 ---
 
-## 3. Shard DB — Sync
+## 3. Shard DB — Aggregation Search
+
+### `db.aggregation.search` / `db.aggregation.search.`
+
+```
+( query:STRING  duration:STRING -- result:MAP )
+( W:query:STRING  W:duration:STRING -- W:result:MAP )
+```
+
+Runs a telemetry vector search and a document-store semantic search **concurrently** (via Rayon) using the same plain-text `query`, then merges both result sets into a single MAP with two keys:
+
+| Key | Type | Contents |
+|---|---|---|
+| `"observability"` | LIST of MAPs | Telemetry records from the shard DB, vector-ranked by `_score` descending. Each record includes a `"_score"` field and an embedded `"secondaries"` array. |
+| `"documents"` | LIST of MAPs | Document-store hits from the semantic search (up to 10). Each hit carries `id`, `metadata`, `document`, and `score`. |
+
+`duration` is a lookback window for the telemetry side only (e.g. `"1h"`, `"30min"`, `"7days"`). The document-store search is global — it is not filtered by time.
+
+The query string is fingerprinted and embedded with the shared `AllMiniLML6V2` model before being passed to the HNSW indexes on both sides. If either search returns an error the word raises an error and nothing is pushed.
+
+```bund
+"connection pool exhaustion" "1h" db.aggregation.search
+// stack: {
+//   "observability": [ { "_score": 0.92, "host": "web01", … }, … ],
+//   "documents":     [ { "id": "d2b4…", "score": 0.87, … }, … ]
+// }
+```
+
+Workbench variant — useful in pipelines that pass results directly to other `.`-suffixed words:
+
+```bund
+"nginx upstream timeout" "6h" db.aggregation.search.
+// workbench holds the result MAP
+```
+
+---
+
+## 4. Shard DB — Sync
 
 ### `db.sync`
 
@@ -92,7 +130,7 @@ db.sync drop   // flush and discard the confirmation flag
 
 ---
 
-## 4. Document Store — Add
+## 5. Document Store — Add
 
 ### `doc.add` / `doc.add.`
 
@@ -149,7 +187,7 @@ doc.add.vec
 
 ---
 
-## 5. Document Store — Update & Store Vectors
+## 6. Document Store — Update & Store Vectors
 
 ### `doc.update.metadata` / `doc.update.metadata.`
 
@@ -206,7 +244,7 @@ Stores a pre-computed content embedding vector for document `id` without touchin
 
 ---
 
-## 6. Document Store — Delete
+## 7. Document Store — Delete
 
 ### `doc.delete` / `doc.delete.`
 
@@ -223,7 +261,7 @@ Permanently removes document `id` from all stores (metadata, content, vectors). 
 
 ---
 
-## 7. Document Store — Retrieve
+## 8. Document Store — Retrieve
 
 ### `doc.get.metadata` / `doc.get.metadata.`
 
@@ -254,7 +292,7 @@ Retrieves the raw content bytes for document `id`, decoded as UTF-8, and pushes 
 
 ---
 
-## 8. Document Store — Search (full results)
+## 9. Document Store — Search (full results)
 
 All search words in this section return a **LIST of MAPs** — each MAP is the full stored JSON document record for a matching document.
 
@@ -299,7 +337,7 @@ Performs HNSW search using a pre-computed embedding vector. `query_vec` is a LIS
 
 ---
 
-## 9. Document Store — Search (fingerprint strings)
+## 10. Document Store — Search (fingerprint strings)
 
 These words return a **LIST of STRINGs** — the raw fingerprint string for each matching document — instead of full result MAPs. Useful for lightweight lookups or deduplication pipelines.
 
@@ -344,7 +382,7 @@ Pre-computed vector → HNSW search → list of fingerprint strings.
 
 ---
 
-## 10. Document Store — Sync & Reindex
+## 11. Document Store — Sync & Reindex
 
 ### `doc.sync`
 
@@ -380,6 +418,7 @@ doc.reindex println   // prints number of indexed documents
 | `db.add` | `( doc -- id )` | Ingest document into shard DB |
 | `db.search` | `( query duration -- results )` | Vector search over time window |
 | `db.fulltext` | `( query duration -- results )` | Full-text search over time window |
+| `db.aggregation.search` | `( query duration -- result )` | Parallel telemetry + doc-store search, merged MAP |
 | `db.sync` | `( -- true )` | Flush shard DB to disk |
 | `doc.add` | `( meta content -- id )` | Add document, auto-embed |
 | `doc.add.file` | `( path name slice overlap -- id )` | Add document from file |
@@ -400,4 +439,4 @@ doc.reindex println   // prints number of indexed documents
 | `doc.sync` | `( -- true )` | Flush HNSW index to disk |
 | `doc.reindex` | `( -- count )` | Rebuild HNSW index from persisted vectors |
 
-Every word except `db.sync`, `doc.sync` has a `.`-suffixed workbench variant with identical semantics.
+Every word except `db.sync` and `doc.sync` has a `.`-suffixed workbench variant with identical semantics.
