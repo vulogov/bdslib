@@ -16,10 +16,12 @@ fn default_duration() -> String { "1h".to_owned() }
 
 #[derive(Debug)]
 pub struct LogRow {
-    pub timestamp: String,
-    pub key:       String,
-    pub message:   String,
-    pub score:     String,
+    pub timestamp:         String,
+    pub key:               String,
+    pub message:           String,
+    pub score:             String,
+    pub secondaries_count: usize,
+    pub secondaries_json:  String,
 }
 
 fn to_rows(results: &serde_json::Value) -> Vec<LogRow> {
@@ -39,11 +41,18 @@ fn hit_to_row(v: &serde_json::Value) -> LogRow {
     let score = v.get("_score").and_then(|x| x.as_f64())
                  .map(|f| format!("{f:.3}"))
                  .unwrap_or_else(|| "—".to_owned());
+    let secs = v.get("secondaries").and_then(|x| x.as_array());
+    let secondaries_count = secs.map(|a| a.len()).unwrap_or(0);
+    let secondaries_json = secs
+        .map(|a| serde_json::to_string(a).unwrap_or_else(|_| "[]".to_owned()))
+        .unwrap_or_else(|| "[]".to_owned());
     LogRow {
         timestamp: fmt_ts(ts),
         key:       v.get("key").and_then(|x| x.as_str()).unwrap_or("—").to_owned(),
         message:   truncate(&message, 160),
         score,
+        secondaries_count,
+        secondaries_json,
     }
 }
 

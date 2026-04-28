@@ -17,6 +17,7 @@
         <th style="width:120px">Key</th>
         <th>Message</th>
         <th style="width:58px" class="text-right">Score</th>
+        <th style="width:38px" class="text-right">Sec</th>
       </tr>
     </thead>
     <tbody>
@@ -26,6 +27,17 @@
         <td class="font-mono text-xs text-blue-300" style="overflow-wrap:break-word;word-break:break-all">{{ r.key }}</td>
         <td class="text-xs text-slate-300" style="overflow-wrap:break-word;word-break:break-all;white-space:pre-wrap">{{ r.message }}</td>
         <td class="text-right font-mono text-xs text-green-400">{{ r.score }}</td>
+        <td class="text-right">
+          {% if r.secondaries_count > 0 %}
+          <button class="sec-badge"
+                  data-secs="{{ r.secondaries_json }}"
+                  data-key="{{ r.key }}"
+                  data-ts="{{ r.timestamp }}"
+                  onclick="openSecs(this)">{{ r.secondaries_count }}</button>
+          {% else %}
+          <span class="text-slate-700">—</span>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

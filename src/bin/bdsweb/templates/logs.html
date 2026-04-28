@@ -18,8 +18,52 @@
   flex-direction: column;
   transform: translateX(100%);
   transition: transform 0.22s ease-in-out;
+  overflow: hidden;   /* contains the abs-positioned sec-panel */
 }
 #results-panel.open { transform: translateX(0); }
+
+/* Secondary records sub-panel — slides over #results inside the main panel */
+#sec-panel {
+  position: absolute;
+  inset: 0;
+  background: #0e1520;
+  border-left: 1px solid #1e2535;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.2s ease-in-out;
+  z-index: 10;
+}
+#sec-panel.open { transform: translateX(0); }
+
+.sec-badge {
+  display: inline-block;
+  min-width: 1.4rem;
+  padding: 0 0.3rem;
+  border-radius: 9999px;
+  background: #1e3a5f;
+  color: #60a5fa;
+  font-size: 0.65rem;
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  line-height: 1.4rem;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s;
+}
+.sec-badge:hover { background: #2563eb; color: #fff; }
+
+#sec-body table { width: 100%; border-collapse: collapse; }
+#sec-body th {
+  color: #64748b; font-size: 0.7rem; text-transform: uppercase;
+  padding: 0.5rem 0.75rem; border-bottom: 1px solid #1e2535; text-align: left;
+}
+#sec-body td {
+  padding: 0.55rem 0.75rem; border-bottom: 1px solid #131927;
+  font-size: 0.8125rem; vertical-align: top;
+}
+#sec-body tr:hover td { background: #1a2030; }
 </style>
 {% endblock %}
 
@@ -122,23 +166,105 @@
     {% endif %}
   </div>
 
-</div>
+  <!-- ── Secondary records sub-panel ────────────────────────────────────── -->
+  <div id="sec-panel">
+
+    <!-- Sub-panel header -->
+    <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+         style="border-bottom:1px solid #1e2535; background:#090e18;">
+      <div class="flex items-center gap-3 min-w-0">
+        <button onclick="closeSecs()"
+                class="text-slate-400 hover:text-slate-200 transition-colors text-sm shrink-0"
+                title="Back to results">← Back</button>
+        <span id="sec-label" class="text-xs text-slate-300 truncate"></span>
+      </div>
+      <button onclick="closePanel()"
+              class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1 shrink-0"
+              title="Close">✕</button>
+    </div>
+
+    <!-- Secondary rows -->
+    <div id="sec-body" class="flex-1 overflow-y-auto"></div>
+
+  </div><!-- /#sec-panel -->
+
+</div><!-- /#results-panel -->
 
 <script>
-// Open panel whenever HTMX drops content into #results
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtTs(unixSecs) {
+  if (!unixSecs) return '—';
+  const d = new Date(Number(unixSecs) * 1000);
+  return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+}
+
+function openSecs(btn) {
+  const secs = JSON.parse(btn.getAttribute('data-secs'));
+  const key  = btn.getAttribute('data-key');
+  const ts   = btn.getAttribute('data-ts');
+
+  const count = secs.length;
+  document.getElementById('sec-label').textContent =
+    key + ' · ' + ts + ' — ' + count + ' secondary record' + (count === 1 ? '' : 's');
+
+  let html = '<table style="table-layout:fixed;width:100%"><thead><tr>' +
+    '<th style="width:145px">Timestamp</th>' +
+    '<th style="width:120px">Key</th>' +
+    '<th>Data</th>' +
+    '</tr></thead><tbody>';
+
+  for (const s of secs) {
+    const rts  = fmtTs(s.timestamp);
+    const rkey = s.key || '—';
+    let   rdata = '';
+    if (s.data !== undefined && s.data !== null) {
+      rdata = typeof s.data === 'string' ? s.data : JSON.stringify(s.data);
+      if (rdata.length > 200) rdata = rdata.slice(0, 200) + '…';
+    }
+    html += '<tr>' +
+      '<td class="font-mono text-xs text-slate-400 whitespace-nowrap">' + escHtml(rts)  + '</td>' +
+      '<td class="font-mono text-xs text-blue-300" style="overflow-wrap:break-word;word-break:break-all">' + escHtml(rkey)  + '</td>' +
+      '<td class="text-xs text-slate-300" style="white-space:pre-wrap;overflow-wrap:break-word;word-break:break-all">' + escHtml(rdata) + '</td>' +
+      '</tr>';
+  }
+  html += '</tbody></table>';
+
+  document.getElementById('sec-body').innerHTML = html;
+  document.getElementById('sec-panel').classList.add('open');
+}
+
+function closeSecs() {
+  document.getElementById('sec-panel').classList.remove('open');
+}
+
+// Open results panel whenever HTMX drops content; also close sec-panel on new results
 document.body.addEventListener('htmx:afterSwap', function(e) {
   if (e.detail.target.id === 'results') {
+    closeSecs();
     document.getElementById('results-panel').classList.add('open');
   }
 });
 
 function closePanel() {
+  closeSecs();
   document.getElementById('results-panel').classList.remove('open');
 }
 
-// Esc key closes the panel
+// Esc closes sec-panel first, then the main panel
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closePanel();
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('sec-panel').classList.contains('open')) {
+    closeSecs();
+  } else {
+    closePanel();
+  }
 });
 
 // Re-open if the page loaded with a query already set
