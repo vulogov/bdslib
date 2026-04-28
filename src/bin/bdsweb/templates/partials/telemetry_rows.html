@@ -13,10 +13,10 @@
   <table>
     <thead>
       <tr>
-        <th style="width:160px">Timestamp</th>
-        <th style="width:200px">Key</th>
+        <th style="width:160px" class="sortable" data-col="timestamp" onclick="sortResults(this)">Timestamp<span class="sort-ind">⇅</span></th>
+        <th style="width:200px" class="sortable" data-col="key"       onclick="sortResults(this)">Key<span class="sort-ind">⇅</span></th>
         <th>Data</th>
-        <th style="width:70px" class="text-right">Score</th>
+        <th style="width:70px" class="text-right sortable" data-col="score" onclick="sortResults(this)">Score<span class="sort-ind">⇅</span></th>
       </tr>
     </thead>
     <tbody>

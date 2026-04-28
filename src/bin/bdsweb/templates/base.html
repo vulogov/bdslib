@@ -47,6 +47,12 @@
     .htmx-indicator { opacity: 0; transition: opacity 200ms; }
     .htmx-request .htmx-indicator,
     .htmx-request.htmx-indicator { opacity: 1; }
+    /* ── sortable column headers ── */
+    th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    th.sortable:hover { color: #cbd5e1; }
+    .sort-ind { font-size: 0.6rem; opacity: 0.35; margin-left: 0.2rem; }
+    th.sortable[data-sort-dir="asc"] .sort-ind,
+    th.sortable[data-sort-dir="desc"] .sort-ind { opacity: 1; color: #60a5fa; }
   </style>
 </head>
 <body class="min-h-full">
@@ -109,6 +115,49 @@
     {% block content %}{% endblock %}
   </main>
 
+  <script>
+  // ── Shared table sorting ──────────────────────────────────────────────────
+  function sortResults(th) {
+    var table = th.closest('table');
+    var tbody = table.querySelector('tbody');
+    var ths   = Array.from(table.querySelectorAll('thead th'));
+    var idx   = ths.indexOf(th);
+    var col   = th.dataset.col;
+    var isNum = col === 'score';
+
+    var prevDir = th.dataset.sortDir || '';
+    var dir = prevDir === 'asc' ? 'desc' : 'asc';
+
+    // Clear all sort indicators
+    ths.forEach(function(h) {
+      h.dataset.sortDir = '';
+      var ind = h.querySelector('.sort-ind');
+      if (ind) ind.textContent = '⇅'; // ⇅
+    });
+
+    th.dataset.sortDir = dir;
+    var ind = th.querySelector('.sort-ind');
+    if (ind) ind.textContent = dir === 'asc' ? '▲' : '▼'; // ▲ ▼
+
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort(function(a, b) {
+      var av = _cellVal(a, idx, isNum);
+      var bv = _cellVal(b, idx, isNum);
+      if (isNum) return dir === 'asc' ? av - bv : bv - av;
+      return dir === 'asc'
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
+    });
+    rows.forEach(function(r) { tbody.appendChild(r); });
+  }
+
+  function _cellVal(row, idx, isNum) {
+    var cell = row.cells[idx];
+    var text = cell ? cell.textContent.trim() : '';
+    if (isNum) { var f = parseFloat(text); return isNaN(f) ? -1 : f; }
+    return text;
+  }
+  </script>
   {% block page_scripts %}{% endblock %}
 </body>
 </html>

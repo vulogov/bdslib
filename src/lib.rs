@@ -1,5 +1,6 @@
 extern crate log;
 
+pub mod ai;
 pub mod analysis;
 pub mod common;
 pub mod datastorage;
