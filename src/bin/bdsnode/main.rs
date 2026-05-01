@@ -67,6 +67,9 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise database")?;
 
+    jsonrpc::chat_ollama::init(cli.config.as_deref())
+        .context("failed to initialise Ollama config")?;
+
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;

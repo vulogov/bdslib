@@ -23,6 +23,7 @@ pub use analysis::{
     TelemetryTrend, TopicSummary,
 };
 pub use common::generator::{Generator, LogFormat};
+pub use common::jsonfingerprint::json_fingerprint;
 pub use common::pipe;
 pub use common::uuid::timestamp_from_v7;
 pub use datastorage::{BlobStorage, JsonStorage, JsonStorageConfig};

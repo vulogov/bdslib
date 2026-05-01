@@ -1,5 +1,6 @@
 mod add;
 mod add_batch;
+pub mod chat_ollama;
 mod aggregationsearch;
 mod add_file;
 mod add_file_syslog;
@@ -86,6 +87,7 @@ pub fn build_module() -> RpcModule<()> {
     search::register(&mut module);
     search_get::register(&mut module);
     rca::register(&mut module);
+    chat_ollama::register(&mut module);
     status::register(&mut module);
     topics::register(&mut module);
     topics_all::register(&mut module);

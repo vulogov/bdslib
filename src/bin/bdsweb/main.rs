@@ -23,9 +23,33 @@ struct Args {
     #[arg(short, long, env = "BDSNODE_URL", default_value = "http://127.0.0.1:9000")]
     node: String,
 
+    /// Path to bds.hjson config file (reads ollama_model for the Chat UI)
+    #[arg(short, long, env = "BDS_CONFIG")]
+    config: Option<String>,
+
     /// Log verbosity (0=warn, 1=info, 2=debug)
     #[arg(long, default_value_t = 1)]
     verbose: u8,
+}
+
+fn ollama_model_from_config(config_path: Option<&str>) -> String {
+    let path = match config_path {
+        Some(p) => p,
+        None => return "llama3.2".to_owned(),
+    };
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return "llama3.2".to_owned(),
+    };
+    let val: serde_hjson::Value = match serde_hjson::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return "llama3.2".to_owned(),
+    };
+    val.as_object()
+       .and_then(|o| o.get("ollama_model"))
+       .and_then(|v| v.as_str())
+       .unwrap_or("llama3.2")
+       .to_owned()
 }
 
 #[tokio::main]
@@ -39,7 +63,8 @@ async fn main() {
     };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
 
-    let state = AppState::new(args.node.clone());
+    let ollama_model = ollama_model_from_config(args.config.as_deref());
+    let state = AppState::new(args.node.clone(), ollama_model);
 
     let app = Router::new()
         .route("/",               get(routes::dashboard::handler))
@@ -58,6 +83,10 @@ async fn main() {
         .route("/trends/results", get(routes::trends::results))
         .route("/rca",            get(routes::rca::page))
         .route("/rca/results",    get(routes::rca::results))
+        .route("/chat",           get(routes::chat::page))
+        .route("/chat/query",     post(routes::chat::query))
+        .route("/chat/new",       post(routes::chat::new_session))
+        .route("/chat/reset",     get(routes::chat::reset))
         .route("/bund",           get(routes::bund::page))
         .route("/bund/eval",      post(routes::bund::eval))
         .layer(CompressionLayer::new())

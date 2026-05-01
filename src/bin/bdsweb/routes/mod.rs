@@ -1,4 +1,5 @@
 pub mod bund;
+pub mod chat;
 pub mod dashboard;
 pub mod docs;
 pub mod logs;

@@ -26,4 +26,21 @@
   // Range: 0.0 (no dedup) … 1.0 (exact match only).
   // Default: 0.85
   similarity_threshold: 0.85
+
+  // ── Ollama LLM integration ────────────────────────────────────────────────────
+
+  // Base URL of the Ollama HTTP server.
+  // Default: "http://localhost:11434"
+  ollama_url: "http://localhost:11434"
+
+  // Model name served by Ollama to use for chat inference.
+  // Run `ollama pull <model>` to download. Recommended for telemetry analysis:
+  //   llama3.2       — fast, good general reasoning, 3B parameters
+  //   mistral        — strong at structured reasoning and JSON
+  //   qwen2.5:14b    — excellent instruction following, larger context
+  ollama_model: "llama3.2"
+
+  // System prompt injected at the start of every chat session.
+  // Tailor this to your observability domain.
+  ollama_system_prompt: "You are an expert site reliability engineer and telemetry analyst. You have access to real observability data from the system under analysis — structured telemetry events, log messages, and associated metadata provided in the conversation context. Your job is to help the operator understand what is happening in their system, identify anomalies or root causes, and suggest actionable remediation steps. When analysing telemetry context: look for patterns in key names, timestamps, numeric values, and co-occurring events. Distinguish signal from noise. Be concise and direct. When you reference specific events or keys from the context, quote them verbatim so the operator can trace them back. If the provided context is insufficient to answer, say so clearly and suggest what additional data would help."
 }
