@@ -1,3 +1,4 @@
+use crate::common::drain::DrainParser;
 use crate::common::error::{err_msg, Result};
 use crate::common::time::{extract_timestamp, lookback_window};
 use crate::documentstorage::DocumentStorage;
@@ -6,6 +7,7 @@ use crate::shardscache::ShardsCache;
 use crate::EmbeddingEngine;
 use fastembed::EmbeddingModel;
 use serde_json::Value as JsonValue;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -14,6 +16,8 @@ struct ManagerConfig {
     shard_duration: String,
     pool_size: u32,
     similarity_threshold: Option<f32>,
+    drain_enabled: bool,
+    drain_load_duration: String,
 }
 
 fn parse_config(raw: &str) -> Result<ManagerConfig> {
@@ -46,11 +50,24 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         .and_then(|v| v.as_f64())
         .map(|f| f as f32);
 
+    let drain_enabled = obj
+        .get("drain_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let drain_load_duration = obj
+        .get("drain_load_duration")
+        .and_then(|v| v.as_str())
+        .unwrap_or("24h")
+        .to_string();
+
     Ok(ManagerConfig {
         dbpath,
         shard_duration,
         pool_size,
         similarity_threshold,
+        drain_enabled,
+        drain_load_duration,
     })
 }
 
@@ -68,13 +85,17 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
 /// | `shard_duration` | string | yes | Shard width (`"1h"`, `"1day"`, …) |
 /// | `pool_size` | integer | no (default 4) | DuckDB connection-pool size |
 /// | `similarity_threshold` | float | no (default 0.85) | Deduplication threshold |
+/// | `drain_enabled` | bool | no (default false) | Mine log templates on every `add()` / `add_batch()` |
+/// | `drain_load_duration` | string | no (default `"24h"`) | Lookback window for seeding drain from stored templates at startup |
 ///
-/// `ShardsManager` is `Clone`; all clones share the same underlying shard cache
-/// and document store.
+/// `ShardsManager` is `Clone`; all clones share the same underlying shard cache,
+/// document store, and drain parser.
 #[derive(Clone)]
 pub struct ShardsManager {
     pub(crate) cache: ShardsCache,
     pub(crate) docstore: DocumentStorage,
+    /// Shared drain parser; `Some` only when `drain_enabled = true` in the config.
+    pub(crate) drain: Option<Arc<Mutex<DrainParser>>>,
 }
 
 impl ShardsManager {
@@ -117,7 +138,15 @@ impl ShardsManager {
             embedding,
             obs_config,
         )?;
-        Ok(Self { cache, docstore })
+
+        let mut manager = Self { cache, docstore, drain: None };
+
+        if cfg.drain_enabled {
+            let parser = manager.drain_load(&cfg.drain_load_duration)?;
+            manager.drain = Some(Arc::new(Mutex::new(parser)));
+        }
+
+        Ok(manager)
     }
 
     // ── writes ────────────────────────────────────────────────────────────────
@@ -126,7 +155,20 @@ impl ShardsManager {
     ///
     /// The document must contain a numeric `"timestamp"` field (Unix seconds).
     /// Returns the UUIDv7 assigned to the stored record.
+    ///
+    /// When `drain_enabled` is set in the configuration, the document's log
+    /// string is also parsed by the drain3 algorithm and any newly discovered or
+    /// updated templates are stored in the shard's tplstorage.  Drain errors
+    /// (e.g. the document has no `"data"` field) are non-fatal and do not
+    /// prevent the document from being stored.
     pub fn add(&self, doc: JsonValue) -> Result<Uuid> {
+        if let Some(drain) = &self.drain {
+            if let Ok(mut parser) = drain.lock() {
+                let _ = parser.parse_json_with_callback(&doc, |meta, body| {
+                    self.tpl_add(meta, &body)
+                });
+            }
+        }
         let ts = extract_timestamp(&doc)?;
         self.cache.shard(ts)?.add(doc)
     }
@@ -147,6 +189,18 @@ impl ShardsManager {
     pub fn add_batch(&self, docs: Vec<JsonValue>) -> Result<Vec<Uuid>> {
         if docs.is_empty() {
             return Ok(vec![]);
+        }
+
+        // Run drain on all docs before shard routing. Lock is held for the
+        // whole batch (parsing is CPU-only, no I/O under the lock).
+        if let Some(drain) = &self.drain {
+            if let Ok(mut parser) = drain.lock() {
+                for doc in &docs {
+                    let _ = parser.parse_json_with_callback(doc, |meta, body| {
+                        self.tpl_add(meta, &body)
+                    });
+                }
+            }
         }
 
         let shard_dur = self.cache.shard_duration();

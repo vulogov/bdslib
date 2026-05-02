@@ -277,37 +277,39 @@ impl DrainParser {
         self.traverse_to_leaf(&template, log_len).push(idx);
     }
 
-    /// Parse a JSON document and persist any new or updated drain templates to
-    /// the global [`ShardsManager`].
+    /// Parse a JSON document; call `store_fn` for any new or updated template.
+    ///
+    /// This is the low-level variant used by both [`parse_json`][Self::parse_json]
+    /// (global DB) and [`ShardsManager::drain_parse_json`] (instance-scoped).
     ///
     /// # Content extraction
     ///
-    /// The log string is extracted from the document in this order:
-    /// 1. `doc["data"]` — if it is a plain string, use it directly.
-    /// 2. `doc["data"]["value"]` — if `data` is an object with a `"value"` key.
-    /// 3. `doc["data"]["message"]` — if `data` is an object with a `"message"` key.
-    ///
-    /// Returns an error if none of the above paths yields a non-empty string.
+    /// The log string is extracted from `doc` in this order:
+    /// 1. `doc["data"]` — plain string.
+    /// 2. `doc["data"]["value"]` — object with a `"value"` key.
+    /// 3. `doc["data"]["message"]` — object with a `"message"` key.
     ///
     /// # Timestamp
     ///
-    /// The timestamp is extracted via [`crate::common::time::extract_timestamp`].
-    /// If the field is absent or not a valid integer, the current wall-clock time
-    /// is used instead.
+    /// Extracted from `doc["timestamp"]` (Unix seconds).  Falls back to `now`
+    /// if the field is absent or invalid.
     ///
     /// # Storage
     ///
-    /// For [`ChangeType::New`] and [`ChangeType::Updated`] results the cluster
-    /// template is written to the global `ShardsManager` via `tpl_add`.  The
-    /// stored metadata has the shape:
+    /// For [`ChangeType::New`] and [`ChangeType::Updated`] results `store_fn` is
+    /// called with `(metadata, body_bytes)`.  The metadata has the shape:
     /// ```json
-    /// { "name": "<template string>", "type": "drain_template",
-    ///   "cluster_id": <n>, "timestamp": <unix_secs>, "created_at": <unix_secs> }
+    /// { "name": "<template>", "type": "drain_template",
+    ///   "cluster_id": <n>, "timestamp": <unix>, "created_at": <unix> }
     /// ```
-    pub fn parse_json(
+    pub fn parse_json_with_callback<F>(
         &mut self,
         doc: &serde_json::Value,
-    ) -> crate::common::error::Result<ParseJsonResult> {
+        store_fn: F,
+    ) -> crate::common::error::Result<ParseJsonResult>
+    where
+        F: FnOnce(serde_json::Value, Vec<u8>) -> crate::common::error::Result<uuid::Uuid>,
+    {
         // Extract log string.
         let content = match doc.get("data") {
             Some(serde_json::Value::String(s)) => s.clone(),
@@ -332,7 +334,7 @@ impl DrainParser {
             return Err(crate::common::error::err_msg("extracted log string is empty"));
         }
 
-        // Timestamp: best-effort from doc, fallback to now.
+        // Timestamp: best-effort, fallback to now.
         let ts_secs = match crate::common::time::extract_timestamp(doc) {
             Ok(t) => t
                 .duration_since(std::time::UNIX_EPOCH)
@@ -341,7 +343,6 @@ impl DrainParser {
             Err(_) => crate::common::time::now_secs(),
         };
 
-        // Parse.
         let result = self.parse(&content);
         let owned = ParseJsonResult {
             cluster_id: result.cluster.id,
@@ -351,7 +352,6 @@ impl DrainParser {
         };
         drop(result);
 
-        // Persist new / updated clusters.
         if owned.change_type == ChangeType::New || owned.change_type == ChangeType::Updated {
             let template_str = owned.template.join(" ");
             let metadata = serde_json::json!({
@@ -362,28 +362,42 @@ impl DrainParser {
                 "created_at": crate::common::time::now_secs(),
             });
             let body = template_str.into_bytes();
-            crate::globals::get_db()?.tpl_add(metadata, &body)?;
+            store_fn(metadata, body)?;
         }
 
         Ok(owned)
     }
 
-    /// Build a [`DrainParser`] pre-seeded with all drain templates stored in the
-    /// global [`ShardsManager`] for the given lookback `duration`.
+    /// Parse a JSON document and persist any new or updated templates to the
+    /// global [`ShardsManager`].
     ///
-    /// `duration` is a human-readable string such as `"1h"` or `"7days"`.
-    /// Each stored template body (a space-separated token string) is injected
-    /// via [`seed_cluster`][Self::seed_cluster].
-    pub fn load_templates(duration: &str) -> crate::common::error::Result<Self> {
+    /// Delegates to [`parse_json_with_callback`][Self::parse_json_with_callback].
+    /// For instance-scoped storage use [`ShardsManager::drain_parse_json`].
+    pub fn parse_json(
+        &mut self,
+        doc: &serde_json::Value,
+    ) -> crate::common::error::Result<ParseJsonResult> {
+        self.parse_json_with_callback(doc, |meta, body| {
+            crate::globals::get_db()?.tpl_add(meta, &body)
+        })
+    }
+
+    /// Build a [`DrainParser`] pre-seeded from a list of `(id, metadata)` pairs
+    /// previously returned by [`ShardsManager::tpl_list`].
+    ///
+    /// Only entries whose metadata has `"type": "drain_template"` are imported.
+    /// The template string is read from the `"name"` field and split on whitespace
+    /// to reconstruct the token sequence.
+    pub fn from_tpl_list(
+        entries: Vec<(uuid::Uuid, serde_json::Value)>,
+    ) -> crate::common::error::Result<Self> {
         let mut parser = DrainParserBuilder::new()
             .build()
             .map_err(|e| crate::common::error::err_msg(format!("failed to build parser: {e}")))?;
-        let entries = crate::globals::get_db()?.tpl_list(duration)?;
         for (_id, meta) in entries {
             if meta.get("type").and_then(|v| v.as_str()) != Some("drain_template") {
                 continue;
             }
-            // Body is the space-separated template string; read it back via metadata["name"].
             if let Some(tpl_str) = meta.get("name").and_then(|v| v.as_str()) {
                 let tokens: Vec<String> = tpl_str.split_whitespace().map(str::to_owned).collect();
                 if !tokens.is_empty() {
@@ -392,6 +406,16 @@ impl DrainParser {
             }
         }
         Ok(parser)
+    }
+
+    /// Build a [`DrainParser`] pre-seeded with all drain templates stored in the
+    /// global [`ShardsManager`] for the given lookback `duration`.
+    ///
+    /// Delegates to [`from_tpl_list`][Self::from_tpl_list].
+    /// For instance-scoped loading use [`ShardsManager::drain_load`].
+    pub fn load_templates(duration: &str) -> crate::common::error::Result<Self> {
+        let entries = crate::globals::get_db()?.tpl_list(duration)?;
+        Self::from_tpl_list(entries)
     }
 
     // ── Persistence ───────────────────────────────────────────────────────────

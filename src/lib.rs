@@ -15,6 +15,7 @@ pub mod shardsinfo;
 pub mod shardsmanager;
 pub mod shardsmanager_aggregationsearch;
 pub mod shardsmanager_docstore;
+pub mod shardsmanager_drain;
 pub mod shardsmanager_tplstorage;
 pub mod storageengine;
 pub mod vectorengine;

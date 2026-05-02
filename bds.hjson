@@ -27,6 +27,21 @@
   // Default: 0.85
   similarity_threshold: 0.85
 
+  // ── Drain3 log-template mining ────────────────────────────────────────────────
+
+  // Set to true to automatically mine log templates on every add() / add_batch().
+  // Templates are stored in the per-shard tplstorage and can be retrieved later
+  // via tpl_list(), tpl_search_text(), etc.
+  // Default: false
+  drain_enabled: false
+
+  // How far back to look when loading previously discovered templates at startup.
+  // Templates discovered during a previous run (within this window) are loaded
+  // into the drain parser so it continues from known state rather than starting
+  // from scratch.
+  // Default: "24h"
+  drain_load_duration: "24h"
+
   // ── Ollama LLM integration ────────────────────────────────────────────────────
 
   // Base URL of the Ollama HTTP server.
