@@ -1,11 +1,12 @@
 use crate::common::error::{err_msg, Result};
+use crate::common::time::{extract_timestamp, lookback_window};
 use crate::documentstorage::DocumentStorage;
 use crate::observability::ObservabilityStorageConfig;
 use crate::shardscache::ShardsCache;
 use crate::EmbeddingEngine;
 use fastembed::EmbeddingModel;
 use serde_json::Value as JsonValue;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 struct ManagerConfig {
@@ -579,21 +580,3 @@ impl ShardsManager {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn extract_timestamp(doc: &JsonValue) -> Result<SystemTime> {
-    let secs = doc
-        .get("timestamp")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| err_msg("document must contain a numeric 'timestamp' field"))?;
-    Ok(UNIX_EPOCH + Duration::from_secs(secs))
-}
-
-fn lookback_window(duration: &str) -> Result<(SystemTime, SystemTime)> {
-    let dur = humantime::parse_duration(duration)
-        .map_err(|e| err_msg(format!("invalid duration '{duration}': {e}")))?;
-    let now = SystemTime::now();
-    let start = now.checked_sub(dur).unwrap_or(UNIX_EPOCH);
-    let end = now + Duration::from_secs(1);
-    Ok((start, end))
-}

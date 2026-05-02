@@ -21,29 +21,10 @@
 //! [`ShardsManager::search_fts`] and related methods.
 
 use crate::common::error::{err_msg, Result};
+use crate::common::time::{extract_timestamp, lookback_window};
 use crate::shardsmanager::ShardsManager;
 use serde_json::Value as JsonValue;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn extract_timestamp(metadata: &JsonValue) -> Result<SystemTime> {
-    let secs = metadata
-        .get("timestamp")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| err_msg("template metadata must contain a numeric 'timestamp' field"))?;
-    Ok(UNIX_EPOCH + Duration::from_secs(secs))
-}
-
-fn lookback_window(duration: &str) -> Result<(SystemTime, SystemTime)> {
-    let dur = humantime::parse_duration(duration)
-        .map_err(|e| err_msg(format!("invalid duration '{duration}': {e}")))?;
-    let now = SystemTime::now();
-    let start = now.checked_sub(dur).unwrap_or(UNIX_EPOCH);
-    let end = now + Duration::from_secs(1);
-    Ok((start, end))
-}
 
 // ── ShardsManager impl ────────────────────────────────────────────────────────
 
