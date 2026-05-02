@@ -1,4 +1,5 @@
 use crate::common::error::{err_msg, Result};
+use crate::documentstorage::DocumentStorage;
 use crate::fts::FTSEngine;
 use crate::observability::{ObservabilityStorage, ObservabilityStorageConfig};
 use crate::vectorengine::{json_fingerprint, VectorEngine};
@@ -34,6 +35,8 @@ pub struct Shard {
     observability: ObservabilityStorage,
     fts: Arc<FTSEngine>,
     vector: VectorEngine,
+    /// Template store for this shard's time interval; lives at `{path}/tplstorage`.
+    pub(crate) tplstorage: DocumentStorage,
 }
 
 impl Shard {
@@ -65,16 +68,19 @@ impl Shard {
         let obs_path = format!("{path}/obs.db");
         let fts_path = format!("{path}/fts");
         let vec_path = format!("{path}/vec");
+        let tpl_path = format!("{path}/tplstorage");
 
         let observability =
             ObservabilityStorage::with_config(&obs_path, pool_size, embedding.clone(), config)?;
         let fts = FTSEngine::new(&fts_path)?;
-        let vector = VectorEngine::with_embedding(&vec_path, embedding)?;
+        let vector = VectorEngine::with_embedding(&vec_path, embedding.clone())?;
+        let tplstorage = DocumentStorage::with_embedding(&tpl_path, embedding)?;
 
         Ok(Self {
             observability,
             fts: Arc::new(fts),
             vector,
+            tplstorage,
         })
     }
 
@@ -171,16 +177,78 @@ impl Shard {
         self.observability.get_primaries_by_key(key)
     }
 
-    /// Flush all three engines to disk.
+    /// Flush all engines to disk.
     ///
     /// Calls `ObservabilityStorage::sync` (DuckDB CHECKPOINT),
-    /// `FTSEngine::sync` (Tantivy commit + reload), and
-    /// `VectorEngine::sync` (HNSW save) in that order.
+    /// `FTSEngine::sync` (Tantivy commit + reload), `VectorEngine::sync`
+    /// (HNSW save), and `DocumentStorage::sync` (tplstorage HNSW save).
     pub fn sync(&self) -> Result<()> {
         self.observability.sync()?;
         self.fts.sync()?;
         self.vector.sync()?;
+        self.tplstorage.sync()?;
         Ok(())
+    }
+
+    // ── template storage ──────────────────────────────────────────────────────
+
+    /// Store a template in this shard's tplstorage and index it.
+    ///
+    /// `metadata` should carry at least `"name"` and `"timestamp"` fields.
+    /// The body is stored as UTF-8 bytes and both metadata and body are
+    /// embedded automatically via the shared [`EmbeddingEngine`].
+    /// Returns the UUIDv7 assigned to the template.
+    pub fn tpl_add(&self, metadata: JsonValue, body: &[u8]) -> Result<Uuid> {
+        self.tplstorage.add_document(metadata, body)
+    }
+
+    /// Return the JSON metadata for template `id`, or `None`.
+    pub fn tpl_get_metadata(&self, id: Uuid) -> Result<Option<JsonValue>> {
+        self.tplstorage.get_metadata(id)
+    }
+
+    /// Return the raw body bytes for template `id`, or `None`.
+    pub fn tpl_get_body(&self, id: Uuid) -> Result<Option<Vec<u8>>> {
+        self.tplstorage.get_content(id)
+    }
+
+    /// Replace the metadata for template `id` and re-embed it.
+    pub fn tpl_update_metadata(&self, id: Uuid, metadata: JsonValue) -> Result<()> {
+        self.tplstorage.update_metadata(id, metadata)?;
+        self.tplstorage.reembed_document(id)
+    }
+
+    /// Replace the body for template `id` and re-embed it.
+    pub fn tpl_update_body(&self, id: Uuid, body: &[u8]) -> Result<()> {
+        self.tplstorage.update_content(id, body)?;
+        self.tplstorage.reembed_document(id)
+    }
+
+    /// Remove template `id` from all sub-stores of tplstorage.
+    pub fn tpl_delete(&self, id: Uuid) -> Result<()> {
+        self.tplstorage.delete_document(id)
+    }
+
+    /// Return all `(id, metadata)` pairs stored in this shard's tplstorage.
+    pub fn tpl_list(&self) -> Result<Vec<(Uuid, JsonValue)>> {
+        self.tplstorage.list_all()
+    }
+
+    /// Semantic search over templates in this shard by plain-text query.
+    pub fn tpl_search_text(&self, query: &str, limit: usize) -> Result<Vec<JsonValue>> {
+        self.tplstorage.search_document_text(query, limit)
+    }
+
+    /// Semantic search over templates in this shard by JSON query.
+    pub fn tpl_search_json(&self, query: &JsonValue, limit: usize) -> Result<Vec<JsonValue>> {
+        self.tplstorage.search_document_json(query, limit)
+    }
+
+    /// Rebuild the tplstorage vector index from persisted metadata and blobs.
+    ///
+    /// Returns the number of templates re-indexed.
+    pub fn tpl_reindex(&self) -> Result<usize> {
+        self.tplstorage.reindex()
     }
 
     // ── passthrough accessors ─────────────────────────────────────────────────

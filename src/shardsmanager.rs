@@ -105,6 +105,7 @@ impl ShardsManager {
 
         // Clone the engine before handing ownership to the cache; both the
         // shard cache and the document store share the same underlying Arc.
+        // Template storage lives inside each Shard at {shard_path}/tplstorage.
         let docstore_path = format!("{}/docstore", cfg.dbpath);
         let docstore = DocumentStorage::with_embedding(&docstore_path, embedding.clone())?;
 

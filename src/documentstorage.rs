@@ -442,6 +442,32 @@ impl DocumentStorage {
         self.vectors.sync()
     }
 
+    /// Return all `(id, metadata)` pairs stored in this DocumentStorage.
+    ///
+    /// Results are returned in undefined order.  Useful for listing contents
+    /// or building external indexes.
+    pub fn list_all(&self) -> Result<Vec<(Uuid, JsonValue)>> {
+        self.meta.list_all()
+    }
+
+    /// Re-embed and re-index the stored metadata and content for a single
+    /// document, updating both the `":meta"` and `":content"` HNSW slots.
+    ///
+    /// Call this after [`update_metadata`](Self::update_metadata) or
+    /// [`update_content`](Self::update_content) to keep the vector index in
+    /// sync.  Silently succeeds if no embedding engine is present.
+    pub fn reembed_document(&self, id: Uuid) -> Result<()> {
+        let id_str = id.to_string();
+        if let Some(metadata) = self.meta.get_json(id)? {
+            self.vectors.store_document(&format!("{id_str}:meta"), metadata)?;
+        }
+        if let Some(bytes) = self.blobs.get_blob(id)? {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            self.vectors.store_document(&format!("{id_str}:content"), serde_json::json!(text))?;
+        }
+        Ok(())
+    }
+
     /// Rebuild the vector index from the DuckDB metadata and blob stores.
     ///
     /// Iterates every record in `metadata.db`, embeds the JSON metadata
