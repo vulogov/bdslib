@@ -1,4 +1,4 @@
-e bdslib::{EmbeddingEngine, ShardsManager};
+use bdslib::{EmbeddingEngine, ShardsManager};
 use fastembed::EmbeddingModel;
 use serde_json::json;
 use std::sync::OnceLock;

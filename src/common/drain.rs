@@ -504,7 +504,14 @@ pub struct DrainParserBuilder {
 impl Default for DrainParserBuilder {
     fn default() -> Self {
         Self {
-            depth: 4,
+            // depth=3 → route only on tokens[0] (the category/verb prefix).
+            // This ensures that all log lines with the same leading word share
+            // the same leaf and are similarity-compared regardless of how many
+            // distinct values appear at later token positions.  depth=4 (route
+            // on tokens[0] + tokens[1]) requires max_children distinct second
+            // tokens before the wildcard bucket is used — unhelpful on small
+            // datasets where variable positions sit at tokens[1].
+            depth: 3,
             sim_threshold: 0.5,
             max_children: 100,
             mask_patterns: vec![

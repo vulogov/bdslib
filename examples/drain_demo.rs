@@ -1,11 +1,17 @@
 /// drain_demo — Automatic log-template discovery via drain3 inside ShardsManager.
 ///
+/// 108 synthetic log entries are ingested across 9 structural template families.
+/// Each family uses 8–15 distinct variable values so the drain3 similarity
+/// search reliably converges to the canonical template (e.g.
+/// "user <*> logged in from <*>") after the second distinct value at a variable
+/// position.
+///
 /// Sections:
-///   1. Setup — write a temp hjson config with drain_enabled=true
-///   2. Ingest — add 108 synthetic log entries (single-doc and batch)
-///   3. Discovery — list and print every discovered drain template
-///   4. Search   — semantic search over the template store
-///   5. Reload   — demonstrate drain_load() pre-seeding a fresh parser
+///   1. Setup   — temp hjson config with drain_enabled = true
+///   2. Ingest  — 108 docs via add() and add_batch()
+///   3. Discover — list every discovered template, sorted by cluster id
+///   4. Search  — semantic search over the template store
+///   5. Reload  — drain_load() seeds a fresh parser; parse an unseen line
 use bdslib::common::error::Result;
 use bdslib::common::time::now_secs;
 use bdslib::embedding::Model;
@@ -13,8 +19,6 @@ use bdslib::shardsmanager::ShardsManager;
 use bdslib::EmbeddingEngine;
 use serde_json::{json, Value};
 use tempfile::TempDir;
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 fn ts_ago(secs: u64) -> u64 {
     now_secs().saturating_sub(secs)
@@ -24,115 +28,129 @@ fn doc(key: &str, data: &str, timestamp: u64) -> Value {
     json!({ "key": key, "data": data, "timestamp": timestamp })
 }
 
-// ── log-line templates with variable slots ────────────────────────────────────
-
-/// Generate a batch of realistic SRE-style log lines with injected variable values.
+/// Build 108 log lines covering 9 structural templates.
+///
+/// Variable slots use enough distinct values that drain3 collapses each family
+/// into a single wildcard template after the first few observations.
 fn generate_logs(base_ts: u64) -> Vec<Value> {
     let mut logs: Vec<Value> = Vec::new();
-    let step = 30u64; // 30 seconds between records
+    let step = 20u64;
+    macro_rules! ts { () => { base_ts + logs.len() as u64 * step } }
 
-    // Template A — "user <name> logged in from <ip>"
-    let users = ["alice", "bob", "carol", "dave", "eve"];
-    let ips = ["10.0.0.1", "10.0.0.2", "192.168.1.10", "172.16.0.5"];
-    for (i, u) in users.iter().enumerate() {
-        let ip = ips[i % ips.len()];
-        logs.push(doc("auth", &format!("user {u} logged in from {ip}"),
-            base_ts + logs.len() as u64 * step));
+    // ── Template 1: "user <*> logged in from <*>"
+    // 12 distinct usernames × 1 line each
+    for name in ["alice","bob","carol","dave","eve","frank","grace","hank","ivan","judy","karl","lena"] {
+        let ip = format!("10.0.0.{}", logs.len() % 254 + 1);
+        logs.push(doc("auth", &format!("user {name} logged in from {ip}"), ts!()));
     }
 
-    // Template B — "connection to <host>:<port> established"
-    for (host, port) in [("db1", 5432u16), ("db2", 5432), ("cache1", 6379), ("cache2", 6379)] {
-        logs.push(doc("network", &format!("connection to {host}:{port} established"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template C — "request <method> <path> completed in <n> ms"
-    let requests = [
-        ("GET", "/api/v1/status", 12), ("POST", "/api/v1/ingest", 87),
-        ("GET", "/api/v1/search", 45), ("DELETE", "/api/v1/record/123", 9),
-        ("GET", "/api/v1/status", 15), ("POST", "/api/v1/ingest", 102),
-    ];
-    for (method, path, ms) in requests {
-        logs.push(doc("http", &format!("request {method} {path} completed in {ms} ms"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template D — "disk usage on <volume> is <n>%"
-    for (vol, pct) in [("/dev/sda1", 72), ("/dev/sdb1", 45), ("/dev/sda1", 75), ("/dev/sdb1", 46)] {
-        logs.push(doc("disk", &format!("disk usage on {vol} is {pct}%"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template E — "worker <id> started processing job <job_id>"
-    for (wid, jid) in [(1u32, 1001u32), (2, 1002), (3, 1003), (1, 1004), (2, 1005)] {
-        logs.push(doc("worker", &format!("worker {wid} started processing job {jid}"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template F — "shard <name> opened at path <path>"
-    for (name, path) in [("alpha", "/data/alpha"), ("beta", "/data/beta"), ("gamma", "/data/gamma")] {
-        logs.push(doc("storage", &format!("shard {name} opened at path {path}"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template G — "error code <n> on service <svc>: <msg>"
-    for (code, svc, msg) in [
-        (500u32, "auth", "internal server error"),
-        (503, "ingest", "upstream unavailable"),
-        (429, "api", "rate limit exceeded"),
-        (500, "auth", "database timeout"),
+    // ── Template 2: "connection to <*> on port <*> established"
+    // 10 distinct host:port combinations
+    for (host, port) in [
+        ("db-primary", 5432u16), ("db-replica-1", 5432), ("db-replica-2", 5432),
+        ("cache-a", 6379), ("cache-b", 6379), ("cache-c", 6379),
+        ("queue-1", 5672), ("queue-2", 5672),
+        ("search-1", 9200), ("search-2", 9200),
     ] {
-        logs.push(doc("error", &format!("error code {code} on service {svc}: {msg}"),
-            base_ts + logs.len() as u64 * step));
+        logs.push(doc("network", &format!("connection to {host} on port {port} established"), ts!()));
     }
 
-    // Template H — "cache hit ratio for key prefix <prefix> is <ratio>"
-    for (prefix, ratio) in [("session:", "0.92"), ("user:", "0.87"), ("session:", "0.91")] {
-        logs.push(doc("cache", &format!("cache hit ratio for key prefix {prefix} is {ratio}"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template I — "backup of <db> completed in <n> seconds"
-    for (db, secs) in [("postgres", 42u32), ("redis", 7), ("postgres", 44)] {
-        logs.push(doc("backup", &format!("backup of {db} completed in {secs} seconds"),
-            base_ts + logs.len() as u64 * step));
-    }
-
-    // Template J — "alert: <metric> crossed threshold <val> on host <host>"
-    for (metric, val, host) in [
-        ("cpu_usage", "90%", "host-01"), ("mem_usage", "85%", "host-02"),
-        ("cpu_usage", "93%", "host-01"), ("latency_p99", "500ms", "host-03"),
+    // ── Template 3: "HTTP <*> <*> returned <*> in <*> ms"
+    // 12 request variants
+    for (method, path, status, ms) in [
+        ("GET",  "/api/health",          200u16, 4u32),
+        ("GET",  "/api/v1/users",        200,    23),
+        ("POST", "/api/v1/users",        201,    45),
+        ("GET",  "/api/v1/records",      200,    67),
+        ("POST", "/api/v1/records",      201,    88),
+        ("DELETE","/api/v1/records/123", 204,    12),
+        ("GET",  "/api/v1/search",       200,    134),
+        ("GET",  "/api/health",          200,    5),
+        ("GET",  "/api/v1/users",        200,    19),
+        ("POST", "/api/v1/ingest",       202,    9),
+        ("GET",  "/api/v1/metrics",      200,    31),
+        ("PUT",  "/api/v1/config",       200,    7),
     ] {
-        logs.push(doc("alert", &format!("alert: {metric} crossed threshold {val} on host {host}"),
-            base_ts + logs.len() as u64 * step));
+        logs.push(doc("http", &format!("HTTP {method} {path} returned {status} in {ms} ms"), ts!()));
     }
 
-    // Repeats to grow cluster sizes and confirm merging
-    for u in ["frank", "grace", "hank", "ivan", "judy"] {
-        logs.push(doc("auth", &format!("user {u} logged in from 10.0.0.3"),
-            base_ts + logs.len() as u64 * step));
-    }
-    for (host, port) in [("db3", 5432u16), ("cache3", 6379), ("db4", 5432), ("cache4", 6379)] {
-        logs.push(doc("network", &format!("connection to {host}:{port} established"),
-            base_ts + logs.len() as u64 * step));
-    }
-    for (wid, jid) in [(4u32, 1006u32), (5, 1007), (1, 1008), (2, 1009), (3, 1010)] {
-        logs.push(doc("worker", &format!("worker {wid} started processing job {jid}"),
-            base_ts + logs.len() as u64 * step));
-    }
-    for (code, svc, msg) in [
-        (500u32, "search", "index unavailable"),
-        (503, "api", "backend timeout"),
-        (429, "ingest", "rate limit exceeded"),
+    // ── Template 4: "disk <*> usage <*>% on volume <*>"
+    // 10 variants
+    for (label, pct, vol) in [
+        ("read",  72u8, "/dev/sda1"), ("write", 45,  "/dev/sda1"),
+        ("read",  80,   "/dev/sdb1"), ("write", 60,  "/dev/sdb1"),
+        ("read",  55,   "/dev/sdc1"), ("write", 30,  "/dev/sdc1"),
+        ("read",  90,   "/dev/sdd1"), ("write", 70,  "/dev/sdd1"),
+        ("read",  62,   "/dev/sde1"), ("write", 48,  "/dev/sde1"),
     ] {
-        logs.push(doc("error", &format!("error code {code} on service {svc}: {msg}"),
-            base_ts + logs.len() as u64 * step));
+        logs.push(doc("disk", &format!("disk {label} usage {pct}% on volume {vol}"), ts!()));
+    }
+
+    // ── Template 5: "worker <*> picked up job <*> from queue <*>"
+    // 12 variants
+    for (wid, jid, queue) in [
+        (1u8, 1001u32, "ingest"), (2, 1002, "ingest"), (3, 1003, "ingest"),
+        (4, 1004, "search"), (5, 1005, "search"), (1, 1006, "ingest"),
+        (2, 1007, "ingest"), (3, 1008, "search"), (4, 1009, "ingest"),
+        (5, 1010, "search"), (1, 1011, "ingest"), (2, 1012, "search"),
+    ] {
+        logs.push(doc("worker", &format!("worker {wid} picked up job {jid} from queue {queue}"), ts!()));
+    }
+
+    // ── Template 6: "service <*> restarted after <*> seconds"
+    // 8 variants
+    for (svc, secs) in [
+        ("api-gateway", 3u32), ("auth-service", 5), ("ingest-worker", 2),
+        ("search-node", 4), ("api-gateway", 3), ("cache-proxy", 6),
+        ("auth-service", 5), ("queue-consumer", 1),
+    ] {
+        logs.push(doc("ops", &format!("service {svc} restarted after {secs} seconds"), ts!()));
+    }
+
+    // ── Template 7: "error <*> in module <*>: <*>"
+    // 10 variants — note the colon makes the last part a single token
+    for (code, module, msg) in [
+        (500u16, "auth",    "token_expired"),
+        (503,    "ingest",  "upstream_unavailable"),
+        (429,    "api",     "rate_limit_exceeded"),
+        (500,    "search",  "index_unavailable"),
+        (503,    "queue",   "broker_timeout"),
+        (500,    "auth",    "db_connection_lost"),
+        (503,    "ingest",  "disk_full"),
+        (429,    "api",     "quota_exceeded"),
+        (500,    "search",  "shard_unavailable"),
+        (503,    "cache",   "eviction_storm"),
+    ] {
+        logs.push(doc("error", &format!("error {code} in module {module}: {msg}"), ts!()));
+    }
+
+    // ── Template 8: "metric <*> value <*> threshold <*>"
+    // 12 variants
+    for (metric, val, thresh) in [
+        ("cpu_user",     88.4f32, 85.0f32), ("cpu_system",  12.1, 10.0),
+        ("mem_rss",      7200.0,  8192.0),  ("mem_cached",  1024.0, 2048.0),
+        ("net_rx_mbps",  450.0,   1000.0),  ("net_tx_mbps", 380.0,  800.0),
+        ("disk_iops",    1200.0,  2000.0),  ("disk_lat_ms",   4.2,    5.0),
+        ("cpu_user",     91.0,    85.0),    ("mem_rss",     7800.0,  8192.0),
+        ("net_rx_mbps",  520.0,   1000.0),  ("disk_lat_ms",   6.1,    5.0),
+    ] {
+        logs.push(doc("metric", &format!("metric {metric} value {val:.1} threshold {thresh:.1}"), ts!()));
+    }
+
+    // ── Template 9: "backup job <*> for dataset <*> completed in <*>s"
+    // 10 variants
+    for (job, dataset, secs) in [
+        ("daily-001", "postgres-main",    42u32), ("daily-002", "postgres-replica", 38),
+        ("daily-003", "redis-sessions",    7),    ("daily-004", "redis-cache",        5),
+        ("weekly-001","postgres-main",   310),   ("weekly-002","postgres-replica",  290),
+        ("daily-005", "postgres-main",    45),   ("daily-006", "redis-sessions",      6),
+        ("weekly-003","redis-cache",      18),   ("daily-007", "postgres-main",      41),
+    ] {
+        logs.push(doc("backup", &format!("backup job {job} for dataset {dataset} completed in {secs}s"), ts!()));
     }
 
     logs
 }
-
-// ── main ──────────────────────────────────────────────────────────────────────
 
 fn run() -> Result<()> {
     let _ = env_logger::try_init();
@@ -162,67 +180,74 @@ fn run() -> Result<()> {
         .map_err(|e| bdslib::common::error::err_msg(format!("{e}")))?;
     let manager = ShardsManager::with_embedding(cfg_path.to_str().unwrap(), embedding)?;
 
-    println!("ShardsManager created with drain_enabled=true");
-    println!("  dbpath: {}", dbpath.display());
+    println!("drain_enabled  = true");
+    println!("drain depth    = 3  (routes on tokens[0] only → all lines in a");
+    println!("                     category share one leaf → proper merging)");
 
     // ── Section 2: Ingest ────────────────────────────────────────────────────
 
     println!("\n=== Section 2: Ingest ===");
 
-    let base_ts = ts_ago(1800); // 30 minutes ago so all docs fit in the lookback
+    let base_ts = ts_ago(1800);
     let logs = generate_logs(base_ts);
     let total = logs.len();
-    println!("Generated {total} log documents");
+    println!("Generated {total} log documents across 9 template families");
 
-    // Add first 20 one-by-one (exercises add())
-    let single_count = 20.min(total);
-    for doc in logs[..single_count].iter().cloned() {
-        manager.add(doc)?;
+    // First 30 one-by-one to exercise add()
+    let single_n = 30.min(total);
+    for d in logs[..single_n].iter().cloned() {
+        manager.add(d)?;
     }
-    println!("  add()       → {single_count} docs");
+    println!("  add()       → {single_n} docs");
 
-    // Add the rest as a batch (exercises add_batch())
-    let batch = logs[single_count..].to_vec();
-    let batch_count = batch.len();
+    // Remainder as a batch
+    let batch = logs[single_n..].to_vec();
+    let batch_n = batch.len();
     manager.add_batch(batch)?;
-    println!("  add_batch() → {batch_count} docs");
+    println!("  add_batch() → {batch_n} docs");
+    println!("Total ingested: {total}");
 
-    println!("Total ingested: {}", single_count + batch_count);
-
-    // ── Section 3: Discovery ─────────────────────────────────────────────────
+    // ── Section 3: Discover ──────────────────────────────────────────────────
 
     println!("\n=== Section 3: Discovered templates ===");
 
-    let templates = manager.tpl_list("2h")?;
-    println!("Templates found: {}", templates.len());
+    let mut templates = manager.tpl_list("2h")?;
+    // Sort by cluster_id so we see templates in discovery order
+    templates.sort_by_key(|(_, m)| m.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(u64::MAX));
+
+    // Deduplicate: keep only the latest version of each cluster_id (Updated
+    // events create a new tplstorage entry; cluster_id stays the same)
+    let mut seen_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut deduped: Vec<_> = Vec::new();
+    for entry in templates.iter().rev() {
+        let cid = entry.1.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+        if seen_ids.insert(cid) {
+            deduped.push(entry);
+        }
+    }
+    deduped.sort_by_key(|(_, m)| m.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(u64::MAX));
+
+    println!("Distinct templates discovered: {}", deduped.len());
     println!();
-
-    let mut sorted = templates.clone();
-    sorted.sort_by_key(|(_, m)| {
-        m.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0)
-    });
-
-    for (id, meta) in &sorted {
-        let name = meta.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    for (_, meta) in &deduped {
         let cid  = meta.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let name = meta.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         println!("  [{cid:>2}] {name}");
-        println!("       uuid={id}");
     }
 
-    // ── Section 4: Semantic search ────────────────────────────────────────────
+    // ── Section 4: Semantic search ───────────────────────────────────────────
 
-    println!("\n=== Section 4: Semantic search ===");
+    println!("\n=== Section 4: Semantic search over template store ===");
 
-    let queries = [
-        ("database connection", 3),
-        ("user authentication login", 3),
-        ("cpu memory alert threshold", 3),
-        ("disk storage capacity", 3),
-    ];
-
-    for (query, limit) in queries {
+    for (query, limit) in [
+        ("database connection established", 2usize),
+        ("user login authentication",       2),
+        ("error failure service module",    2),
+        ("disk storage io usage",           2),
+        ("backup completed dataset",        2),
+    ] {
         let results = manager.tpl_search_text("2h", query, limit)?;
-        println!("\nQuery: {:?}  (top {limit})", query);
+        println!("\nQuery: {:?}", query);
         for r in &results {
             let name  = r.get("metadata").and_then(|m| m.get("name")).and_then(|v| v.as_str()).unwrap_or("?");
             let score = r.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -230,23 +255,30 @@ fn run() -> Result<()> {
         }
     }
 
-    // ── Section 5: Reload ─────────────────────────────────────────────────────
+    // ── Section 5: Reload ────────────────────────────────────────────────────
 
-    println!("\n=== Section 5: Reload — drain_load() ===");
+    println!("\n=== Section 5: Reload parser from stored templates ===");
 
-    let mut reloaded = manager.drain_load("2h")?;
-    println!("Seeded a fresh DrainParser from stored templates");
-    println!("  clusters in reloaded parser: {}", reloaded.clusters().len());
+    let mut fresh = manager.drain_load("2h")?;
+    println!("Loaded {} clusters into fresh parser", fresh.clusters().len());
 
-    // Parse a new line with the reloaded parser (no global DB — uses instance API)
-    let new_doc = doc("auth", "user ivan logged in from 10.0.1.50", now_secs());
-    let result = manager.drain_parse_json(&mut reloaded, &new_doc)?;
-    println!("\nParsed new log line with reloaded parser:");
-    println!("  template : {}", result.template.join(" "));
-    println!("  change   : {:?}", result.change_type);
-    println!("  cluster  : id={} size={}", result.cluster_id, result.cluster_size);
+    let test_lines = [
+        ("auth",    "user zara logged in from 10.0.5.99"),
+        ("network", "connection to db-primary on port 5432 established"),
+        ("error",   "error 404 in module routing: path_not_found"),
+        ("worker",  "worker 7 picked up job 2050 from queue ingest"),
+    ];
 
-    println!("\nDone.");
+    println!();
+    for (key, line) in test_lines {
+        let d = doc(key, line, now_secs());
+        let r = manager.drain_parse_json(&mut fresh, &d)?;
+        println!("  input   : {line}");
+        println!("  template: {}  [{:?} cluster={}]", r.template.join(" "), r.change_type, r.cluster_id);
+        println!();
+    }
+
+    println!("Done.");
     Ok(())
 }
 
