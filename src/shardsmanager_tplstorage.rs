@@ -24,6 +24,7 @@ use crate::common::error::{err_msg, Result};
 use crate::common::time::{extract_timestamp, lookback_window};
 use crate::shardsmanager::ShardsManager;
 use serde_json::Value as JsonValue;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 // ── ShardsManager impl ────────────────────────────────────────────────────────
@@ -193,5 +194,101 @@ impl ShardsManager {
             total += shard.tpl_reindex()?;
         }
         Ok(total)
+    }
+
+    // ── frequency-tracking queries ────────────────────────────────────────────
+
+    /// Return the full template record for `id`, scanning all registered shards.
+    ///
+    /// The returned JSON object has three keys:
+    /// - `"id"`: the UUID string
+    /// - `"metadata"`: the stored template metadata
+    /// - `"body"`: the template content decoded as UTF-8
+    ///
+    /// Returns `None` if no shard contains a template with that UUID.
+    /// Returns `Err` if `id` is not a valid UUID string.
+    pub fn template_by_id(&self, id: &str) -> Result<Option<JsonValue>> {
+        let uuid = Uuid::parse_str(id)
+            .map_err(|e| err_msg(format!("invalid template id '{id}': {e}")))?;
+        for info in self.cache.info().list_all()? {
+            let shard = self.cache.shard(info.start_time)?;
+            if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
+                let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
+                let body_str = String::from_utf8_lossy(&body).into_owned();
+                return Ok(Some(serde_json::json!({
+                    "id":       id,
+                    "metadata": metadata,
+                    "body":     body_str,
+                })));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Return all templates whose FrequencyTracking observation falls in the
+    /// inclusive interval `[start, end]` (Unix seconds).
+    ///
+    /// Each shard's `tplstorage` FrequencyTracking is queried for template
+    /// UUIDs in the time range; those UUIDs are then resolved to full template
+    /// records with `"id"`, `"metadata"`, and `"body"` fields.  Results are
+    /// deduplicated by UUID across shards.
+    pub fn templates_by_timestamp(&self, start: u64, end: u64) -> Result<Vec<JsonValue>> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for info in self.cache.info().list_all()? {
+            let shard = self.cache.shard(info.start_time)?;
+            for id_str in shard.tplstorage.frequencytracking_time_range(start, end)? {
+                if !seen.insert(id_str.clone()) {
+                    continue;
+                }
+                if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                    if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
+                        let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
+                        let body_str = String::from_utf8_lossy(&body).into_owned();
+                        out.push(serde_json::json!({
+                            "id":       id_str,
+                            "metadata": metadata,
+                            "body":     body_str,
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Return all templates added within the humantime `duration` window.
+    ///
+    /// Queries each shard's `tplstorage` FrequencyTracking with
+    /// [`recent`](crate::FrequencyTracking::recent) to collect template UUIDs
+    /// seen in `[now − duration, now]`, then resolves each UUID to a full
+    /// template record with `"id"`, `"metadata"`, and `"body"` fields.
+    /// Results are deduplicated by UUID across shards.
+    ///
+    /// `duration` is any string accepted by
+    /// [`humantime::parse_duration`]: `"30s"`, `"5min"`, `"1h"`, `"7days"`.
+    pub fn templates_recent(&self, duration: &str) -> Result<Vec<JsonValue>> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for info in self.cache.info().list_all()? {
+            let shard = self.cache.shard(info.start_time)?;
+            for id_str in shard.tplstorage.frequencytracking_recent(duration)? {
+                if !seen.insert(id_str.clone()) {
+                    continue;
+                }
+                if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                    if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
+                        let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
+                        let body_str = String::from_utf8_lossy(&body).into_owned();
+                        out.push(serde_json::json!({
+                            "id":       id_str,
+                            "metadata": metadata,
+                            "body":     body_str,
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 }
