@@ -41,6 +41,7 @@ cargo run --example <name>
 |---|---|---|
 | [StorageEngine](storage_engine_demo.md) | `storage_engine_demo.rs` | Low-level DuckDB SQL engine with R2D2 pool and rust_dynamic type bridge |
 | [DataStorage](datastorage_demo.md) | `datastorage_demo.rs` | `BlobStorage` and `JsonStorage` with key-based deduplication |
+| [FrequencyTracking](frequencytracking_demo.md) | `frequencytracking_demo.rs` | `FrequencyTracking`: record `(timestamp, id)` observations; query by id, exact timestamp, time range, and humantime lookback duration |
 | [DocumentStorage](documentstorage_demo.md) | `documentstorage_demo.rs` | `DocumentStorage`: metadata + blob + unified HNSW vector store — add, search, update, delete, string output, persistence |
 | [LargeDocument](large_document_demo.md) | `large_document_demo.rs` | `add_document_from_file`: file chunking, overlap inspection, RAG context-window expansion, semantic chunk search via `EmbeddingEngine` |
 | [ObservabilityStorage](observability_demo.md) | `observability_demo.rs` | redb-backed dedup, primary/secondary classification, time-range queries |

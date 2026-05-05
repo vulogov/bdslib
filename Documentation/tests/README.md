@@ -31,6 +31,7 @@ cargo test <test_function_name> -- --show-output
 |---|---|---|
 | [storageengine_test](storageengine_test.md) | `tests/storageengine_test.rs` | Low-level DuckDB SQL engine: CRUD, all DuckDB types, sync, 100-thread concurrency |
 | [datastorage_test](datastorage_test.md) | `tests/datastorage_test.rs` | `BlobStorage` and `JsonStorage`: CRUD, key-based dedup, nested paths, SQL safety |
+| [frequencytrackingstorage_test](frequencytrackingstorage_test.md) | `tests/frequencytrackingstorage_test.rs` | `FrequencyTracking`: all read/write methods, duplicate events, DISTINCT semantics, ordering, humantime durations, SQL safety, clone sharing, sync, persistence |
 | [documentstorage_test](documentstorage_test.md) | `tests/documentstorage_test.rs` | `DocumentStorage`: combined metadata/blob/vector store — add, get, update, delete, unified vector search, `results_to_strings`, persistence |
 | [observability_test](observability_test.md) | `tests/observability_test.rs` | `ObservabilityStorage`: dedup, primary/secondary split, time-range queries, metadata |
 
