@@ -1,7 +1,9 @@
 use crate::common::error::{err_msg, Result};
 use crate::common::jsonfingerprint::json_fingerprint;
+use crate::common::time::now_secs;
 use crate::common::uuid::generate_v7;
 use crate::datastorage::{BlobStorage, JsonStorage, JsonStorageConfig};
+use crate::frequencytrackingstorage::FrequencyTracking;
 use crate::EmbeddingEngine;
 use crate::VectorEngine;
 use serde_json::Value as JsonValue;
@@ -56,9 +58,10 @@ use uuid::Uuid;
 /// [`search_document`]: DocumentStorage::search_document
 #[derive(Clone)]
 pub struct DocumentStorage {
-    meta:    JsonStorage,
-    blobs:   BlobStorage,
-    vectors: VectorEngine,
+    meta:      JsonStorage,
+    blobs:     BlobStorage,
+    vectors:   VectorEngine,
+    frequency: FrequencyTracking,
 }
 
 impl DocumentStorage {
@@ -71,9 +74,10 @@ impl DocumentStorage {
     pub fn new(root: &str) -> Result<Self> {
         let paths = Paths::from(root)?;
         Ok(Self {
-            meta:    JsonStorage::new(&paths.metadata_db, 4, meta_config())?,
-            blobs:   BlobStorage::new(&paths.blobs_db, 4)?,
-            vectors: VectorEngine::new(&paths.vec)?,
+            meta:      JsonStorage::new(&paths.metadata_db, 4, meta_config())?,
+            blobs:     BlobStorage::new(&paths.blobs_db, 4)?,
+            vectors:   VectorEngine::new(&paths.vec)?,
+            frequency: FrequencyTracking::new(&paths.frequency_db, 4)?,
         })
     }
 
@@ -88,9 +92,10 @@ impl DocumentStorage {
     pub fn with_embedding(root: &str, engine: EmbeddingEngine) -> Result<Self> {
         let paths = Paths::from(root)?;
         Ok(Self {
-            meta:    JsonStorage::new(&paths.metadata_db, 4, meta_config())?,
-            blobs:   BlobStorage::new(&paths.blobs_db, 4)?,
-            vectors: VectorEngine::with_embedding(&paths.vec, engine)?,
+            meta:      JsonStorage::new(&paths.metadata_db, 4, meta_config())?,
+            blobs:     BlobStorage::new(&paths.blobs_db, 4)?,
+            vectors:   VectorEngine::with_embedding(&paths.vec, engine)?,
+            frequency: FrequencyTracking::new(&paths.frequency_db, 4)?,
         })
     }
 
@@ -114,8 +119,11 @@ impl DocumentStorage {
         self.blobs.add_blob_with_key(id, content)?;
 
         let content_text = String::from_utf8_lossy(content).into_owned();
-        self.vectors.store_document(&format!("{id_str}:meta"), metadata)?;
+        self.vectors.store_document(&format!("{id_str}:meta"), metadata.clone())?;
         self.vectors.store_document(&format!("{id_str}:content"), serde_json::json!(content_text))?;
+
+        let ts = metadata.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_secs);
+        self.frequency.add_with_timestamp(ts, &id_str)?;
 
         Ok(id)
     }
@@ -139,8 +147,11 @@ impl DocumentStorage {
 
         self.meta.add_json_with_id(id, metadata.clone())?;
         self.blobs.add_blob_with_key(id, content)?;
-        self.vectors.store_vector(&format!("{id_str}:meta"), meta_vec, Some(metadata))?;
+        self.vectors.store_vector(&format!("{id_str}:meta"), meta_vec, Some(metadata.clone()))?;
         self.vectors.store_vector(&format!("{id_str}:content"), content_vec, None)?;
+
+        let ts = metadata.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_secs);
+        self.frequency.add_with_timestamp(ts, &id_str)?;
 
         Ok(id)
     }
@@ -192,7 +203,35 @@ impl DocumentStorage {
         self.blobs.drop_blob(id)?;
         self.vectors.delete_vector(&format!("{id_str}:meta"))?;
         self.vectors.delete_vector(&format!("{id_str}:content"))?;
+        self.frequency.delete(&id_str)?;
         Ok(())
+    }
+
+    // ── frequency tracking reads ──────────────────────────────────────────────
+
+    /// All timestamps (Unix seconds, ascending) at which the document with
+    /// `id` was added.
+    pub fn frequencytracking_by_id(&self, id: &str) -> Result<Vec<u64>> {
+        self.frequency.by_id(id)
+    }
+
+    /// Distinct document IDs that were added at the given exact Unix-seconds
+    /// timestamp.
+    pub fn frequencytracking_by_timestamp(&self, timestamp: u64) -> Result<Vec<String>> {
+        self.frequency.by_timestamp(timestamp)
+    }
+
+    /// Distinct document IDs with at least one addition in the inclusive range
+    /// `[start, end]` (both Unix seconds).
+    pub fn frequencytracking_time_range(&self, start: u64, end: u64) -> Result<Vec<String>> {
+        self.frequency.time_range(start, end)
+    }
+
+    /// Distinct document IDs added in the lookback window `[now − duration, now]`.
+    ///
+    /// `duration` is a human-readable string such as `"30s"`, `"5min"`, `"1h"`.
+    pub fn frequencytracking_recent(&self, duration: &str) -> Result<Vec<String>> {
+        self.frequency.recent(duration)
     }
 
     // ── reads ─────────────────────────────────────────────────────────────────
@@ -793,9 +832,10 @@ fn meta_config() -> JsonStorageConfig {
 }
 
 struct Paths {
-    metadata_db: String,
-    blobs_db:    String,
-    vec:         String,
+    metadata_db:  String,
+    blobs_db:     String,
+    vec:          String,
+    frequency_db: String,
 }
 
 impl Paths {
@@ -806,9 +846,10 @@ impl Paths {
         std::fs::create_dir_all(root.join("vectors"))
             .map_err(|e| err_msg(format!("cannot create vectors dir: {e}")))?;
         Ok(Self {
-            metadata_db: root.join("metadata.db").to_string_lossy().into_owned(),
-            blobs_db:    root.join("blobs.db").to_string_lossy().into_owned(),
-            vec:         root.join("vectors").to_string_lossy().into_owned(),
+            metadata_db:  root.join("metadata.db").to_string_lossy().into_owned(),
+            blobs_db:     root.join("blobs.db").to_string_lossy().into_owned(),
+            vec:          root.join("vectors").to_string_lossy().into_owned(),
+            frequency_db: root.join("frequency.db").to_string_lossy().into_owned(),
         })
     }
 }

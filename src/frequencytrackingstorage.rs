@@ -174,6 +174,18 @@ impl FrequencyTracking {
         self.time_range(s, e)
     }
 
+    // ── deletes ───────────────────────────────────────────────────────────────
+
+    /// Remove all tracking rows for `id`.
+    ///
+    /// Returns `Ok(())` even if `id` has never been recorded.
+    pub fn delete(&self, id: &str) -> Result<()> {
+        self.engine.execute(&format!(
+            "DELETE FROM frequency_tracking WHERE id = '{}'",
+            sql_escape(id),
+        ))
+    }
+
     // ── maintenance ───────────────────────────────────────────────────────────
 
     /// Flush the WAL to disk via a DuckDB `CHECKPOINT`.

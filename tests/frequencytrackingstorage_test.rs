@@ -247,6 +247,35 @@ fn test_sync_on_file_db() {
     assert_eq!(ts.len(), 1);
 }
 
+// ── delete ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_delete_removes_all_tracking_for_id() {
+    let ft = memory_ft();
+    ft.add_with_timestamp(100, "target").unwrap();
+    ft.add_with_timestamp(200, "target").unwrap();
+    ft.add_with_timestamp(100, "other").unwrap();
+    ft.delete("target").unwrap();
+    assert!(ft.by_id("target").unwrap().is_empty(), "all rows for 'target' must be gone");
+    assert_eq!(ft.by_id("other").unwrap(), vec![100u64], "'other' must be unaffected");
+}
+
+#[test]
+fn test_delete_unknown_id_is_noop() {
+    let ft = memory_ft();
+    ft.add_with_timestamp(1, "keep").unwrap();
+    ft.delete("nonexistent").unwrap();
+    assert_eq!(ft.by_id("keep").unwrap(), vec![1u64]);
+}
+
+#[test]
+fn test_delete_special_characters() {
+    let ft = memory_ft();
+    ft.add("key with 'quotes'").unwrap();
+    ft.delete("key with 'quotes'").unwrap();
+    assert!(ft.by_id("key with 'quotes'").unwrap().is_empty());
+}
+
 // ── persistence across open/close ────────────────────────────────────────────
 
 #[test]
