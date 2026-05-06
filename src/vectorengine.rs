@@ -99,6 +99,36 @@ impl VectorEngine {
             .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))
     }
 
+    /// Embed and store multiple `(id, document)` pairs in a single ONNX batch
+    /// inference pass.
+    ///
+    /// All fingerprints are embedded together, then all vectors are upserted
+    /// under one store-lock acquisition. Significantly faster than calling
+    /// [`store_document`] N times when inserting several documents at once.
+    ///
+    /// Silently skips all entries when no [`EmbeddingEngine`] is configured.
+    ///
+    /// [`store_document`]: VectorEngine::store_document
+    pub fn store_documents_batch(&self, entries: &[(&str, JsonValue)]) -> Result<()> {
+        let Some(engine) = &self.embedding else { return Ok(()); };
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let fingerprints: Vec<String> = entries.iter()
+            .map(|(_, doc)| json_fingerprint(doc))
+            .collect();
+        let fp_refs: Vec<&str> = fingerprints.iter().map(String::as_str).collect();
+        let vectors = engine.embed_batch(&fp_refs)?;
+        let mut store = self.store.lock();
+        for ((id, doc), vector) in entries.iter().zip(vectors) {
+            let meta = json_to_metadata(doc.clone());
+            store
+                .upsert(id.to_string(), vector, meta)
+                .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Remove the vector stored under `id`.
     ///
     /// Returns `Ok(())` silently if no record exists for `id`.

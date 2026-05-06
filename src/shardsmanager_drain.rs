@@ -9,6 +9,8 @@ use crate::common::drain::{DrainParser, ParseJsonResult};
 use crate::common::error::Result;
 use crate::shardsmanager::ShardsManager;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 impl ShardsManager {
     /// Parse a JSON document with `parser` and store any newly discovered or
@@ -35,7 +37,10 @@ impl ShardsManager {
     ///
     /// `duration` is a human-readable string such as `"1h"` or `"7days"`.
     /// This is the instance-scoped equivalent of [`DrainParser::load_templates`].
-    pub fn drain_load(&self, duration: &str) -> Result<DrainParser> {
+    ///
+    /// Returns `(parser, cluster_map)` where `cluster_map` maps each seeded
+    /// in-memory cluster ID to the stored template UUID.
+    pub fn drain_load(&self, duration: &str) -> Result<(DrainParser, HashMap<usize, Uuid>)> {
         let entries = self.tpl_list(duration)?;
         DrainParser::from_tpl_list(entries)
     }

@@ -44,6 +44,9 @@ pub struct ParseJsonResult {
     pub template: Vec<String>,
     pub cluster_size: usize,
     pub change_type: ChangeType,
+    /// UUID assigned by `store_fn` when a new or updated template was persisted.
+    /// `None` for `ChangeType::None` (existing template, no change).
+    pub stored_id: Option<uuid::Uuid>,
 }
 
 impl<'a> std::ops::Deref for ParseResult<'a> {
@@ -344,11 +347,12 @@ impl DrainParser {
         };
 
         let result = self.parse(&content);
-        let owned = ParseJsonResult {
+        let mut owned = ParseJsonResult {
             cluster_id: result.cluster.id,
             template: result.cluster.template.clone(),
             cluster_size: result.cluster.size,
             change_type: result.change_type.clone(),
+            stored_id: None,
         };
         drop(result);
 
@@ -362,7 +366,7 @@ impl DrainParser {
                 "created_at": crate::common::time::now_secs(),
             });
             let body = template_str.into_bytes();
-            store_fn(metadata, body)?;
+            owned.stored_id = Some(store_fn(metadata, body)?);
         }
 
         Ok(owned)
@@ -388,24 +392,32 @@ impl DrainParser {
     /// Only entries whose metadata has `"type": "drain_template"` are imported.
     /// The template string is read from the `"name"` field and split on whitespace
     /// to reconstruct the token sequence.
+    ///
+    /// Returns `(parser, cluster_map)` where `cluster_map` maps each seeded
+    /// in-memory cluster ID (0, 1, 2 …) to the stored template UUID.  The caller
+    /// can use this map to record frequency observations when the cluster is
+    /// matched later via `parse_json_with_callback`.
     pub fn from_tpl_list(
         entries: Vec<(uuid::Uuid, serde_json::Value)>,
-    ) -> crate::common::error::Result<Self> {
+    ) -> crate::common::error::Result<(Self, HashMap<usize, uuid::Uuid>)> {
         let mut parser = DrainParserBuilder::new()
             .build()
             .map_err(|e| crate::common::error::err_msg(format!("failed to build parser: {e}")))?;
-        for (_id, meta) in entries {
+        let mut cluster_map: HashMap<usize, uuid::Uuid> = HashMap::new();
+        for (uuid, meta) in entries {
             if meta.get("type").and_then(|v| v.as_str()) != Some("drain_template") {
                 continue;
             }
             if let Some(tpl_str) = meta.get("name").and_then(|v| v.as_str()) {
                 let tokens: Vec<String> = tpl_str.split_whitespace().map(str::to_owned).collect();
                 if !tokens.is_empty() {
+                    let cluster_id = parser.next_id;
                     parser.seed_cluster(tokens);
+                    cluster_map.insert(cluster_id, uuid);
                 }
             }
         }
-        Ok(parser)
+        Ok((parser, cluster_map))
     }
 
     /// Build a [`DrainParser`] pre-seeded with all drain templates stored in the
@@ -415,7 +427,8 @@ impl DrainParser {
     /// For instance-scoped loading use [`ShardsManager::drain_load`].
     pub fn load_templates(duration: &str) -> crate::common::error::Result<Self> {
         let entries = crate::globals::get_db()?.tpl_list(duration)?;
-        Self::from_tpl_list(entries)
+        let (parser, _) = Self::from_tpl_list(entries)?;
+        Ok(parser)
     }
 
     // ── Persistence ───────────────────────────────────────────────────────────

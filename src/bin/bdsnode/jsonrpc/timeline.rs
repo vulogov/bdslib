@@ -12,6 +12,10 @@ pub fn register(module: &mut RpcModule<()>) {
             let result = tokio::task::spawn_blocking(|| {
                 let db = bdslib::get_db().map_err(|e| err(-32001, e))?;
 
+                // Shards are time-partitioned and non-overlapping, so list_all()
+                // returns them sorted by start_ts ASC. The global min timestamp
+                // is always in the first non-empty shard and the global max in
+                // the last — query only those two instead of every shard.
                 let shards = db
                     .cache()
                     .info()
@@ -21,22 +25,23 @@ pub fn register(module: &mut RpcModule<()>) {
                 let mut global_min: Option<i64> = None;
                 let mut global_max: Option<i64> = None;
 
-                for info in shards {
-                    let shard = db
-                        .cache()
-                        .shard(info.start_time)
-                        .map_err(|e| err(-32003, e))?;
-
-                    let (smin, smax) = shard
-                        .observability()
-                        .timestamp_range()
-                        .map_err(|e| err(-32004, e))?;
-
-                    if let Some(v) = smin {
-                        global_min = Some(global_min.map_or(v, |cur| cur.min(v)));
+                // Find min from the oldest shard (first in list).
+                for info in &shards {
+                    let shard = db.cache().shard(info.start_time).map_err(|e| err(-32003, e))?;
+                    let (smin, _) = shard.observability().timestamp_range().map_err(|e| err(-32004, e))?;
+                    if smin.is_some() {
+                        global_min = smin;
+                        break;
                     }
-                    if let Some(v) = smax {
-                        global_max = Some(global_max.map_or(v, |cur| cur.max(v)));
+                }
+
+                // Find max from the newest shard (last in list).
+                for info in shards.iter().rev() {
+                    let shard = db.cache().shard(info.start_time).map_err(|e| err(-32003, e))?;
+                    let (_, smax) = shard.observability().timestamp_range().map_err(|e| err(-32004, e))?;
+                    if smax.is_some() {
+                        global_max = smax;
+                        break;
                     }
                 }
 

@@ -228,63 +228,66 @@ impl ShardsManager {
     /// Return all templates whose FrequencyTracking observation falls in the
     /// inclusive interval `[start, end]` (Unix seconds).
     ///
-    /// Each shard's `tplstorage` FrequencyTracking is queried for template
-    /// UUIDs in the time range; those UUIDs are then resolved to full template
-    /// records with `"id"`, `"metadata"`, and `"body"` fields.  Results are
-    /// deduplicated by UUID across shards.
+    /// Queries each shard's frequency tracking for UUIDs in the range, then
+    /// resolves them across all shards. Results are deduplicated by UUID.
     pub fn templates_by_timestamp(&self, start: u64, end: u64) -> Result<Vec<JsonValue>> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut out = Vec::new();
+        let mut ids: HashSet<String> = HashSet::new();
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             for id_str in shard.tplstorage.frequencytracking_time_range(start, end)? {
-                if !seen.insert(id_str.clone()) {
-                    continue;
-                }
-                if let Ok(uuid) = Uuid::parse_str(&id_str) {
-                    if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
-                        let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
-                        let body_str = String::from_utf8_lossy(&body).into_owned();
-                        out.push(serde_json::json!({
-                            "id":       id_str,
-                            "metadata": metadata,
-                            "body":     body_str,
-                        }));
-                    }
-                }
+                ids.insert(id_str);
             }
         }
-        Ok(out)
+        self.resolve_template_ids(ids)
     }
 
-    /// Return all templates added within the humantime `duration` window.
+    /// Return all templates observed within the humantime `duration` window.
     ///
-    /// Queries each shard's `tplstorage` FrequencyTracking with
-    /// [`recent`](crate::FrequencyTracking::recent) to collect template UUIDs
-    /// seen in `[now − duration, now]`, then resolves each UUID to a full
+    /// Queries each shard's `tplstorage` FrequencyTracking to collect template
+    /// UUIDs seen in `[now - duration, now]`, then resolves each UUID to a full
     /// template record with `"id"`, `"metadata"`, and `"body"` fields.
     /// Results are deduplicated by UUID across shards.
     ///
     /// `duration` is any string accepted by
     /// [`humantime::parse_duration`]: `"30s"`, `"5min"`, `"1h"`, `"7days"`.
     pub fn templates_recent(&self, duration: &str) -> Result<Vec<JsonValue>> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut out = Vec::new();
+        let mut ids: HashSet<String> = HashSet::new();
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             for id_str in shard.tplstorage.frequencytracking_recent(duration)? {
-                if !seen.insert(id_str.clone()) {
-                    continue;
-                }
+                ids.insert(id_str);
+            }
+        }
+        self.resolve_template_ids(ids)
+    }
+
+    /// Resolve a set of template UUID strings to full `{id, metadata, body}`
+    /// records by scanning all registered shards.
+    ///
+    /// A template's metadata lives in the shard it was first stored in, which
+    /// may differ from the shards whose FrequencyTracking recorded recent
+    /// observations of it. This method finds each UUID wherever it resides.
+    fn resolve_template_ids(&self, mut ids: HashSet<String>) -> Result<Vec<JsonValue>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut out = Vec::new();
+        for info in self.cache.info().list_all()? {
+            if ids.is_empty() {
+                break;
+            }
+            let shard = self.cache.shard(info.start_time)?;
+            let candidates: Vec<String> = ids.iter().cloned().collect();
+            for id_str in candidates {
                 if let Ok(uuid) = Uuid::parse_str(&id_str) {
                     if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
                         let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
-                        let body_str = String::from_utf8_lossy(&body).into_owned();
                         out.push(serde_json::json!({
                             "id":       id_str,
                             "metadata": metadata,
-                            "body":     body_str,
+                            "body":     String::from_utf8_lossy(&body).into_owned(),
                         }));
+                        ids.remove(&uuid.to_string());
                     }
                 }
             }

@@ -25,20 +25,12 @@ pub fn register(module: &mut RpcModule<()>) {
                     let obs = shard.observability();
 
                     let (primary_count, secondary_count) = match &window {
-                        TimeWindow::All => {
-                            let p = obs.count_primaries().map_err(|e| rpc_err(-32004, e))?;
-                            let s = obs.count_secondaries().map_err(|e| rpc_err(-32004, e))?;
-                            (p, s)
-                        }
-                        TimeWindow::Range(s, e) => {
-                            let p = obs
-                                .count_primaries_in_range(*s, *e)
-                                .map_err(|e| rpc_err(-32004, e))?;
-                            let sc = obs
-                                .count_secondaries_in_range(*s, *e)
-                                .map_err(|e| rpc_err(-32004, e))?;
-                            (p, sc)
-                        }
+                        TimeWindow::All => obs
+                            .count_primaries_and_secondaries()
+                            .map_err(|e| rpc_err(-32004, e))?,
+                        TimeWindow::Range(s, e) => obs
+                            .count_primaries_and_secondaries_in_range(*s, *e)
+                            .map_err(|e| rpc_err(-32004, e))?,
                     };
 
                     let start_ts = si

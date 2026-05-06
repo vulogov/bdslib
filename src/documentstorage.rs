@@ -119,8 +119,10 @@ impl DocumentStorage {
         self.blobs.add_blob_with_key(id, content)?;
 
         let content_text = String::from_utf8_lossy(content).into_owned();
-        self.vectors.store_document(&format!("{id_str}:meta"), metadata.clone())?;
-        self.vectors.store_document(&format!("{id_str}:content"), serde_json::json!(content_text))?;
+        self.vectors.store_documents_batch(&[
+            (&format!("{id_str}:meta"),     metadata.clone()),
+            (&format!("{id_str}:content"),  serde_json::json!(content_text)),
+        ])?;
 
         let ts = metadata.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_secs);
         self.frequency.add_with_timestamp(ts, &id_str)?;
@@ -232,6 +234,15 @@ impl DocumentStorage {
     /// `duration` is a human-readable string such as `"30s"`, `"5min"`, `"1h"`.
     pub fn frequencytracking_recent(&self, duration: &str) -> Result<Vec<String>> {
         self.frequency.recent(duration)
+    }
+
+    /// Record a frequency observation for `id` at the current wall-clock time.
+    ///
+    /// Unlike `add_document`, this does not create a new document — it only
+    /// writes a `(now, id)` entry into the FrequencyTracking table so that
+    /// `frequencytracking_recent` can find `id` in subsequent queries.
+    pub fn frequencytracking_observe(&self, id: &str) -> Result<()> {
+        self.frequency.add(id)
     }
 
     // ── reads ─────────────────────────────────────────────────────────────────

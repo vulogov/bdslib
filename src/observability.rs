@@ -865,6 +865,40 @@ impl ObservabilityStorage {
         ))
     }
 
+    /// Return `(primary_count, secondary_count)` in a single query.
+    pub fn count_primaries_and_secondaries(&self) -> Result<(u64, u64)> {
+        let rows = self.engine.select_all(
+            "SELECT COUNT(*) FILTER (WHERE is_primary = 1), \
+                    COUNT(*) FILTER (WHERE is_primary = 0) \
+             FROM telemetry",
+        )?;
+        Ok(Self::parse_two_counts(rows))
+    }
+
+    /// Return `(primary_count, secondary_count)` for records in `[start, end)`,
+    /// in a single query.
+    pub fn count_primaries_and_secondaries_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<(u64, u64)> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT COUNT(*) FILTER (WHERE is_primary = 1), \
+                    COUNT(*) FILTER (WHERE is_primary = 0) \
+             FROM telemetry WHERE ts >= {s} AND ts < {e}",
+        ))?;
+        Ok(Self::parse_two_counts(rows))
+    }
+
+    fn parse_two_counts(rows: Vec<Vec<DynamicValue>>) -> (u64, u64) {
+        let mut it = rows.into_iter().next().into_iter().flatten();
+        let a = it.next().and_then(|v| v.cast_int().ok()).unwrap_or(0).max(0) as u64;
+        let b = it.next().and_then(|v| v.cast_int().ok()).unwrap_or(0).max(0) as u64;
+        (a, b)
+    }
+
     fn count_rows(&self, sql: &str) -> Result<u64> {
         let rows = self.engine.select_all(sql)?;
         let n = rows

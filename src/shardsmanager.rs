@@ -8,6 +8,7 @@ use crate::vectorengine::json_fingerprint;
 use crate::EmbeddingEngine;
 use fastembed::EmbeddingModel;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -97,6 +98,10 @@ pub struct ShardsManager {
     pub(crate) docstore: DocumentStorage,
     /// Shared drain parser; `Some` only when `drain_enabled = true` in the config.
     pub(crate) drain: Option<Arc<Mutex<DrainParser>>>,
+    /// Maps in-memory drain cluster ID → stored tplstorage UUID.
+    /// Populated at startup from loaded templates and updated on every New/Updated parse.
+    /// Used to record frequency observations on every drain match including Unchanged.
+    pub(crate) drain_cluster_map: Arc<Mutex<HashMap<usize, Uuid>>>,
 }
 
 impl ShardsManager {
@@ -140,10 +145,18 @@ impl ShardsManager {
             obs_config,
         )?;
 
-        let mut manager = Self { cache, docstore, drain: None };
+        let mut manager = Self {
+            cache,
+            docstore,
+            drain: None,
+            drain_cluster_map: Arc::new(Mutex::new(HashMap::new())),
+        };
 
         if cfg.drain_enabled {
-            let parser = manager.drain_load(&cfg.drain_load_duration)?;
+            let (parser, cluster_map) = manager.drain_load(&cfg.drain_load_duration)?;
+            if let Ok(mut m) = manager.drain_cluster_map.lock() {
+                *m = cluster_map;
+            }
             manager.drain = Some(Arc::new(Mutex::new(parser)));
         }
 
@@ -163,15 +176,43 @@ impl ShardsManager {
     /// (e.g. the document has no `"data"` field) are non-fatal and do not
     /// prevent the document from being stored.
     pub fn add(&self, doc: JsonValue) -> Result<Uuid> {
-        if let Some(drain) = &self.drain {
+        let maybe_cluster_id: Option<usize> = if let Some(drain) = &self.drain {
             if let Ok(mut parser) = drain.lock() {
-                let _ = parser.parse_json_with_callback(&doc, |meta, body| {
+                let result = parser.parse_json_with_callback(&doc, |meta, body| {
                     self.tpl_add(meta, &body)
                 });
+                drop(parser);
+                match result {
+                    Ok(r) => {
+                        let cluster_id = r.cluster_id;
+                        if let Ok(mut map) = self.drain_cluster_map.lock() {
+                            if let Some(uuid) = r.stored_id {
+                                map.insert(cluster_id, uuid);
+                            }
+                        }
+                        Some(cluster_id)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let ts = extract_timestamp(&doc)?;
+        let shard = self.cache.shard(ts)?;
+
+        if let Some(cluster_id) = maybe_cluster_id {
+            if let Ok(map) = self.drain_cluster_map.lock() {
+                if let Some(uuid) = map.get(&cluster_id) {
+                    let _ = shard.tplstorage.frequencytracking_observe(&uuid.to_string());
+                }
             }
         }
-        let ts = extract_timestamp(&doc)?;
-        self.cache.shard(ts)?.add(doc)
+
+        shard.add(doc)
     }
 
     /// Add a batch of JSON documents, routing each to its timestamp-appropriate shard.
@@ -194,12 +235,27 @@ impl ShardsManager {
 
         // Run drain on all docs before shard routing. Lock is held for the
         // whole batch (parsing is CPU-only, no I/O under the lock).
+        let mut matched_cluster_ids: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
         if let Some(drain) = &self.drain {
+            let mut new_mappings: Vec<(usize, Uuid)> = Vec::new();
             if let Ok(mut parser) = drain.lock() {
                 for doc in &docs {
-                    let _ = parser.parse_json_with_callback(doc, |meta, body| {
+                    if let Ok(r) = parser.parse_json_with_callback(doc, |meta, body| {
                         self.tpl_add(meta, &body)
-                    });
+                    }) {
+                        if let Some(uuid) = r.stored_id {
+                            new_mappings.push((r.cluster_id, uuid));
+                        }
+                        matched_cluster_ids.insert(r.cluster_id);
+                    }
+                }
+            }
+            if !new_mappings.is_empty() {
+                if let Ok(mut map) = self.drain_cluster_map.lock() {
+                    for (cid, uuid) in new_mappings {
+                        map.insert(cid, uuid);
+                    }
                 }
             }
         }
@@ -225,6 +281,7 @@ impl ShardsManager {
 
         let mut result_ids = vec![Uuid::nil(); tagged.len()];
         let mut group_start = 0;
+        let mut first_shard: Option<crate::shard::Shard> = None;
 
         while group_start < tagged.len() {
             let current_start = tagged[group_start].shard_start;
@@ -236,6 +293,9 @@ impl ShardsManager {
 
             // Open the shard once; lock is released before any document work.
             let shard = self.cache.shard(current_start)?;
+            if first_shard.is_none() {
+                first_shard = Some(shard.clone());
+            }
 
             let group = &tagged[group_start..group_end];
             let shard_docs: Vec<JsonValue> =
@@ -247,6 +307,19 @@ impl ShardsManager {
             }
 
             group_start = group_end;
+        }
+
+        // Record "seen now" observations for every unique template matched in this batch.
+        if let Some(shard) = first_shard {
+            if !matched_cluster_ids.is_empty() {
+                if let Ok(map) = self.drain_cluster_map.lock() {
+                    for cluster_id in &matched_cluster_ids {
+                        if let Some(uuid) = map.get(cluster_id) {
+                            let _ = shard.tplstorage.frequencytracking_observe(&uuid.to_string());
+                        }
+                    }
+                }
+            }
         }
 
         Ok(result_ids)
