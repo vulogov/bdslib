@@ -2,7 +2,7 @@ use crate::common::error::{err_msg, Result};
 use crate::documentstorage::DocumentStorage;
 use crate::fts::FTSEngine;
 use crate::observability::{ObservabilityStorage, ObservabilityStorageConfig};
-use crate::vectorengine::{json_fingerprint, VectorEngine};
+use crate::vectorengine::{json_fingerprint, SearchResult, VectorEngine};
 use crate::EmbeddingEngine;
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
@@ -336,26 +336,85 @@ impl Shard {
     pub fn search_vector(&self, query: &JsonValue, limit: usize) -> Result<Vec<JsonValue>> {
         let candidate_pool = (limit * 2).max(10);
         let reranker = MMRReranker::new(0.7);
-        let neighbors =
-            self.vector
-                .search_json_reranked(query, limit, candidate_pool, &reranker)?;
+        let neighbors = self.vector.search_json_reranked(query, limit, candidate_pool, &reranker)?;
+        self.neighbors_to_docs(neighbors)
+    }
+
+    /// Like [`search_vector`] but uses a pre-computed embedding vector and
+    /// fingerprint string, avoiding a redundant ONNX inference call.
+    ///
+    /// Use this when searching across multiple shards with the same query —
+    /// embed once in the caller and pass the result here.
+    pub fn search_vector_precomputed(
+        &self,
+        query_vec: &[f32],
+        fingerprint: &str,
+        limit: usize,
+    ) -> Result<Vec<JsonValue>> {
+        let candidate_pool = (limit * 2).max(10);
+        let reranker = MMRReranker::new(0.7);
+        let neighbors = self.vector.search_reranked(
+            query_vec.to_vec(),
+            fingerprint,
+            limit,
+            candidate_pool,
+            &reranker,
+        )?;
+        self.neighbors_to_docs(neighbors)
+    }
+
+    /// Vector search returning `(uuid, unix_ts, score)` triples only — no
+    /// document body or secondaries are fetched.
+    ///
+    /// Uses a pre-computed embedding vector and fingerprint string.
+    /// Prefer this over [`search_vector_precomputed`] when the caller only
+    /// needs IDs, timestamps, and scores (e.g. for global merge + truncate).
+    pub fn search_vector_scored_precomputed(
+        &self,
+        query_vec: &[f32],
+        fingerprint: &str,
+        limit: usize,
+    ) -> Result<Vec<(Uuid, i64, f32)>> {
+        let candidate_pool = (limit * 2).max(10);
+        let reranker = MMRReranker::new(0.7);
+        let neighbors = self.vector.search_reranked(
+            query_vec.to_vec(),
+            fingerprint,
+            limit,
+            candidate_pool,
+            &reranker,
+        )?;
+        let mut results = Vec::with_capacity(neighbors.len());
+        for n in neighbors {
+            if let Ok(id) = Uuid::parse_str(&n.id) {
+                let ts = self.observability.get_ts_by_id(id)?.unwrap_or(0);
+                results.push((id, ts, n.score));
+            }
+        }
+        Ok(results)
+    }
+
+    // ── internal ──────────────────────────────────────────────────────────────
+
+    /// Batch-fetch full documents and secondaries for a list of vector search
+    /// neighbors, preserving neighbor order and attaching `_score` and
+    /// `secondaries` fields.
+    fn neighbors_to_docs(
+        &self,
+        neighbors: Vec<SearchResult>,
+    ) -> Result<Vec<JsonValue>> {
         if neighbors.is_empty() {
             return Ok(vec![]);
         }
-
         let mut id_order: Vec<Uuid> = Vec::with_capacity(neighbors.len());
         let mut score_map: HashMap<Uuid, f32> = HashMap::with_capacity(neighbors.len());
-        for neighbor in &neighbors {
-            let id = Uuid::parse_str(&neighbor.id).map_err(|e| {
-                err_msg(format!(
-                    "vector index contains invalid UUID '{}': {e}",
-                    neighbor.id
-                ))
+        for n in &neighbors {
+            let id = Uuid::parse_str(&n.id).map_err(|e| {
+                err_msg(format!("vector index contains invalid UUID '{}': {e}", n.id))
             })?;
             id_order.push(id);
-            score_map.insert(id, neighbor.score);
+            score_map.insert(id, n.score);
         }
-
         let mut doc_map: HashMap<Uuid, JsonValue> = self.observability
             .get_by_ids(&id_order)?
             .into_iter()
@@ -367,7 +426,6 @@ impl Shard {
             .collect();
         let present: Vec<Uuid> = id_order.iter().copied().filter(|id| doc_map.contains_key(id)).collect();
         let mut sec_map = self.observability.get_secondaries_batch(&present)?;
-
         let mut results = Vec::with_capacity(present.len());
         for id in id_order {
             if let Some(mut doc) = doc_map.remove(&id) {

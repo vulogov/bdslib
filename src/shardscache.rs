@@ -243,6 +243,14 @@ impl ShardsCache {
         &self.info
     }
 
+    /// Borrow the shared [`EmbeddingEngine`].
+    ///
+    /// Used by callers that want to embed a query once and pass the resulting
+    /// vector to multiple per-shard searches.
+    pub fn embedding(&self) -> &EmbeddingEngine {
+        &self.embedding
+    }
+
     /// Return the configured shard width.
     pub fn shard_duration(&self) -> Duration {
         self.shard_duration

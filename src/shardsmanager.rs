@@ -4,6 +4,7 @@ use crate::common::time::{extract_timestamp, lookback_window};
 use crate::documentstorage::DocumentStorage;
 use crate::observability::ObservabilityStorageConfig;
 use crate::shardscache::ShardsCache;
+use crate::vectorengine::json_fingerprint;
 use crate::EmbeddingEngine;
 use fastembed::EmbeddingModel;
 use serde_json::Value as JsonValue;
@@ -352,18 +353,13 @@ impl ShardsManager {
         query: &JsonValue,
         limit: usize,
     ) -> Result<Vec<(Uuid, i64, f32)>> {
+        let fingerprint = json_fingerprint(query);
+        let query_vec = self.cache.embedding().embed(&fingerprint)?;
         let (start, end) = lookback_window(duration)?;
         let mut results: Vec<(Uuid, i64, f32)> = Vec::new();
         for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            for doc in shard.search_vector(query, limit)? {
-                let id_str = doc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let id = Uuid::parse_str(id_str)
-                    .map_err(|e| err_msg(format!("invalid UUID in vector result: {e}")))?;
-                let ts = doc.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-                let score = doc.get("_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                results.push((id, ts, score));
-            }
+            results.extend(shard.search_vector_scored_precomputed(&query_vec, &fingerprint, limit)?);
         }
         results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(limit);
@@ -383,11 +379,13 @@ impl ShardsManager {
         query: &JsonValue,
         limit: usize,
     ) -> Result<Vec<JsonValue>> {
+        let fingerprint = json_fingerprint(query);
+        let query_vec = self.cache.embedding().embed(&fingerprint)?;
         let (start, end) = lookback_window(duration)?;
         let mut results: Vec<JsonValue> = Vec::new();
         for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_vector(query, limit)?);
+            results.extend(shard.search_vector_precomputed(&query_vec, &fingerprint, limit)?);
         }
         results.sort_by(|a, b| {
             let ta = a.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -404,11 +402,13 @@ impl ShardsManager {
     /// Results from all shards are merged and sorted by `_score` descending, then
     /// `timestamp` descending. No empty shards are auto-created.
     pub fn search_vector(&self, duration: &str, query: &JsonValue) -> Result<Vec<JsonValue>> {
+        let fingerprint = json_fingerprint(query);
+        let query_vec = self.cache.embedding().embed(&fingerprint)?;
         let (start, end) = lookback_window(duration)?;
         let mut results = Vec::new();
         for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_vector(query, 100)?);
+            results.extend(shard.search_vector_precomputed(&query_vec, &fingerprint, 100)?);
         }
         results.sort_by(|a, b| {
             let sa = a.get("_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
