@@ -25,6 +25,16 @@ pub fn register(module: &mut RpcModule<()>) {
                 .ok()
                 .and_then(|g| g.clone());
 
+            let (jsoncache_pct, jsoncache_len, jsoncache_capacity) =
+                match bdslib::get_db() {
+                    Ok(db) => (
+                        db.jsoncache_utilization_pct(),
+                        db.jsoncache_len() as u64,
+                        db.jsoncache_capacity() as u64,
+                    ),
+                    Err(_) => (0, 0, 0),
+                };
+
             let value = serde_json::json!({
                 "node_id":           state.node_id,
                 "hostname":          state.hostname,
@@ -35,6 +45,9 @@ pub fn register(module: &mut RpcModule<()>) {
                 "json_file_name":    json_file_name,
                 "syslog_file_queue": syslog_file_queue,
                 "syslog_file_name":  syslog_file_name,
+                "jsoncache_pct":      jsoncache_pct,
+                "jsoncache_len":      jsoncache_len,
+                "jsoncache_capacity": jsoncache_capacity,
             });
 
             log::debug!("v2/status: done");

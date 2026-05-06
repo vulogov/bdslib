@@ -239,4 +239,37 @@ impl JsonCache {
         let now = Instant::now();
         g.entries.values().filter(|e| e.expires_at <= now).count()
     }
+
+    /// Return a clone of any live entry whose id component matches, ignoring
+    /// the timestamp component of the key.
+    ///
+    /// Useful when the caller knows the id but not the timestamp (e.g. after a
+    /// search that returns UUIDs without fetching the full record).  Expired
+    /// entries matching `id` are lazily removed during this call.
+    /// Returns `None` if no live entry exists for `id`.
+    pub fn get_by_id(&self, id: &str) -> Option<JsonValue> {
+        let mut g = self.inner.lock().ok()?;
+        let now = Instant::now();
+        // Collect expired keys for this id to clean up lazily.
+        let expired: Vec<(String, u64)> = g.entries.iter()
+            .filter(|((eid, _), e)| eid == id && e.expires_at <= now)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in expired {
+            g.entries.remove(&k);
+        }
+        // Return the first live entry (a given id should have at most one
+        // live entry in normal ShardsManager usage since UUIDs are unique).
+        g.entries.iter()
+            .find(|((eid, _), e)| eid == id && e.expires_at > now)
+            .map(|(_, e)| e.value.clone())
+    }
+
+    /// Remove all entries whose id component matches, regardless of timestamp.
+    ///
+    /// Use this when only the id is known at eviction time (e.g. `delete_by_id`).
+    pub fn remove_by_id(&self, id: &str) {
+        let Ok(mut g) = self.inner.lock() else { return };
+        g.entries.retain(|(eid, _), _| eid != id);
+    }
 }

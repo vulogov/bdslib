@@ -42,6 +42,19 @@
   // Default: "24h"
   drain_load_duration: "24h"
 
+  // ── JSON record cache ─────────────────────────────────────────────────────────
+
+  // Maximum number of records held in the in-memory JSON cache.
+  // Populated on every add()/add_batch() and on FTS/vector search result fetches.
+  // Consulted before any DB round-trip. 0 disables the cache.
+  // Default: 10000
+  jsoncache_capacity: 10000
+
+  // Per-entry TTL in seconds. Entries older than this are lazily removed on
+  // access and eagerly swept by a background thread every 60 seconds.
+  // Default: 300 (5 minutes)
+  jsoncache_ttl_secs: 300
+
   // ── Ollama LLM integration ────────────────────────────────────────────────────
 
   // Base URL of the Ollama HTTP server.

@@ -25,6 +25,23 @@
   </div>
 </div>
 
+<!-- JSonCache utilization -->
+<div class="card rounded-lg p-4 mb-8">
+  <div class="text-xs text-slate-500 mb-3 uppercase tracking-wide">JSON Cache</div>
+  <div class="flex items-center gap-4">
+    <div class="flex-1">
+      <div class="flex justify-between text-xs text-slate-400 mb-1">
+        <span>{{ jsoncache_len }} / {{ jsoncache_capacity }} entries</span>
+        <span class="{% if jsoncache_pct >= 90 %}text-red-400{% elif jsoncache_pct >= 70 %}text-yellow-400{% else %}text-green-400{% endif %} font-mono font-semibold">{{ jsoncache_pct }}%</span>
+      </div>
+      <div class="w-full bg-slate-800 rounded-full h-2">
+        <div class="h-2 rounded-full {% if jsoncache_pct >= 90 %}bg-red-500{% elif jsoncache_pct >= 70 %}bg-yellow-400{% else %}bg-green-500{% endif %}"
+             style="width: {{ jsoncache_pct }}%"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Timeline + queue row -->
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
   <div class="card rounded-lg p-4">
@@ -59,8 +76,8 @@
 <!-- Shard bar chart -->
 <div class="card rounded-lg p-6 mb-8">
   <div class="flex items-center justify-between mb-4">
-    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Telemetry Records per Shard</h2>
-    <span class="text-xs text-slate-500">{{ shards.len() }} shards</span>
+    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Telemetry Records — 5 Most Recent Shards</h2>
+    <span class="text-xs text-slate-500">{{ shards.len() }} of {{ total_shards }} shards</span>
   </div>
   {% if !shards.is_empty() %}
   <div style="position:relative; height:260px;">
@@ -74,8 +91,9 @@
 <!-- Shard table -->
 {% if !shards.is_empty() %}
 <div class="card rounded-lg overflow-hidden">
-  <div class="px-4 py-3 border-b border-slate-800">
-    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Shard Details</h2>
+  <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Shard Details (5 Most Recent)</h2>
+    {% if total_shards > 5 %}<span class="text-xs text-slate-500">{{ total_shards - 5 }} older shards not shown</span>{% endif %}
   </div>
   <table>
     <thead>

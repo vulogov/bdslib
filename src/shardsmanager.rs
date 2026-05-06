@@ -1,3 +1,4 @@
+use crate::common::cache_json::JsonCache;
 use crate::common::drain::DrainParser;
 use crate::common::error::{err_msg, Result};
 use crate::common::time::{extract_timestamp, lookback_window};
@@ -10,7 +11,7 @@ use fastembed::EmbeddingModel;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 struct ManagerConfig {
@@ -20,6 +21,8 @@ struct ManagerConfig {
     similarity_threshold: Option<f32>,
     drain_enabled: bool,
     drain_load_duration: String,
+    jsoncache_capacity: usize,
+    jsoncache_ttl_secs: u64,
 }
 
 fn parse_config(raw: &str) -> Result<ManagerConfig> {
@@ -63,6 +66,18 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         .unwrap_or("24h")
         .to_string();
 
+    let jsoncache_capacity = obj
+        .get("jsoncache_capacity")
+        .and_then(|v| v.as_f64())
+        .map(|n| n as usize)
+        .unwrap_or(10_000);
+
+    let jsoncache_ttl_secs = obj
+        .get("jsoncache_ttl_secs")
+        .and_then(|v| v.as_f64())
+        .map(|n| n as u64)
+        .unwrap_or(300);
+
     Ok(ManagerConfig {
         dbpath,
         shard_duration,
@@ -70,6 +85,8 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         similarity_threshold,
         drain_enabled,
         drain_load_duration,
+        jsoncache_capacity,
+        jsoncache_ttl_secs,
     })
 }
 
@@ -89,9 +106,11 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
 /// | `similarity_threshold` | float | no (default 0.85) | Deduplication threshold |
 /// | `drain_enabled` | bool | no (default false) | Mine log templates on every `add()` / `add_batch()` |
 /// | `drain_load_duration` | string | no (default `"24h"`) | Lookback window for seeding drain from stored templates at startup |
+/// | `jsoncache_capacity` | integer | no (default 10000) | Maximum number of records held in the in-memory JSON cache |
+/// | `jsoncache_ttl_secs` | integer | no (default 300) | Per-entry TTL in seconds for the JSON cache |
 ///
 /// `ShardsManager` is `Clone`; all clones share the same underlying shard cache,
-/// document store, and drain parser.
+/// document store, drain parser, and JSON cache.
 #[derive(Clone)]
 pub struct ShardsManager {
     pub(crate) cache: ShardsCache,
@@ -99,9 +118,10 @@ pub struct ShardsManager {
     /// Shared drain parser; `Some` only when `drain_enabled = true` in the config.
     pub(crate) drain: Option<Arc<Mutex<DrainParser>>>,
     /// Maps in-memory drain cluster ID → stored tplstorage UUID.
-    /// Populated at startup from loaded templates and updated on every New/Updated parse.
-    /// Used to record frequency observations on every drain match including Unchanged.
     pub(crate) drain_cluster_map: Arc<Mutex<HashMap<usize, Uuid>>>,
+    /// In-memory LRU cache keyed by `(id, timestamp)`.  Populated on every
+    /// write and on every search result fetch; consulted before any DB round-trip.
+    pub(crate) jsoncache: JsonCache,
 }
 
 impl ShardsManager {
@@ -145,11 +165,17 @@ impl ShardsManager {
             obs_config,
         )?;
 
+        let jsoncache = JsonCache::new(
+            cfg.jsoncache_capacity,
+            Duration::from_secs(cfg.jsoncache_ttl_secs),
+        );
+
         let mut manager = Self {
             cache,
             docstore,
             drain: None,
             drain_cluster_map: Arc::new(Mutex::new(HashMap::new())),
+            jsoncache,
         };
 
         if cfg.drain_enabled {
@@ -212,7 +238,12 @@ impl ShardsManager {
             }
         }
 
-        shard.add(doc)
+        let ts_u64 = doc["timestamp"].as_u64().unwrap_or(0);
+        let mut cached_doc = doc.clone();
+        let id = shard.add(doc)?;
+        cached_doc["id"] = serde_json::json!(id.to_string());
+        self.jsoncache.insert(id.to_string(), ts_u64, cached_doc);
+        Ok(id)
     }
 
     /// Add a batch of JSON documents, routing each to its timestamp-appropriate shard.
@@ -302,8 +333,12 @@ impl ShardsManager {
                 group.iter().map(|t| t.doc.clone()).collect();
             let shard_ids = shard.add_batch(shard_docs)?;
 
-            for (t, id) in group.iter().zip(shard_ids) {
+            for (t, id) in group.iter().zip(shard_ids.iter().copied()) {
                 result_ids[t.orig_idx] = id;
+                let ts_u64 = t.doc["timestamp"].as_u64().unwrap_or(0);
+                let mut cached_doc = t.doc.clone();
+                cached_doc["id"] = serde_json::json!(id.to_string());
+                self.jsoncache.insert(id.to_string(), ts_u64, cached_doc);
             }
 
             group_start = group_end;
@@ -329,6 +364,7 @@ impl ShardsManager {
     ///
     /// Returns `Ok(())` if no shard contains the record.
     pub fn delete_by_id(&self, id: Uuid) -> Result<()> {
+        self.jsoncache.remove_by_id(&id.to_string());
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if shard.get(id)?.is_some() {
@@ -363,7 +399,14 @@ impl ShardsManager {
         let mut results = Vec::new();
         for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_fts(query, 100)?);
+            let scored = shard.search_fts_scored(query, 100)?;
+            let ids: Vec<Uuid> = scored.iter().map(|(id, _)| *id).collect();
+            let doc_map = self.resolve_records_with_cache(&shard, &ids)?;
+            for (id, _score) in &scored {
+                if let Some(doc) = doc_map.get(id) {
+                    results.push(doc.clone());
+                }
+            }
         }
         Ok(results)
     }
@@ -458,7 +501,16 @@ impl ShardsManager {
         let mut results: Vec<JsonValue> = Vec::new();
         for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_vector_precomputed(&query_vec, &fingerprint, limit)?);
+            let shard_results =
+                shard.search_vector_precomputed(&query_vec, &fingerprint, limit)?;
+            for doc in &shard_results {
+                if let (Some(id_str), Some(ts)) =
+                    (doc["id"].as_str(), doc["timestamp"].as_u64())
+                {
+                    self.jsoncache.insert(id_str.to_owned(), ts, doc.clone());
+                }
+            }
+            results.extend(shard_results);
         }
         results.sort_by(|a, b| {
             let ta = a.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -481,7 +533,16 @@ impl ShardsManager {
         let mut results = Vec::new();
         for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_vector_precomputed(&query_vec, &fingerprint, 100)?);
+            let shard_results =
+                shard.search_vector_precomputed(&query_vec, &fingerprint, 100)?;
+            for doc in &shard_results {
+                if let (Some(id_str), Some(ts)) =
+                    (doc["id"].as_str(), doc["timestamp"].as_u64())
+                {
+                    self.jsoncache.insert(id_str.to_owned(), ts, doc.clone());
+                }
+            }
+            results.extend(shard_results);
         }
         results.sort_by(|a, b| {
             let sa = a.get("_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -689,6 +750,55 @@ impl ShardsManager {
         Ok(results)
     }
 
+    // ── cache-first record resolution ─────────────────────────────────────────
+
+    /// Resolve a list of UUIDs to full JSON documents, preferring the in-memory
+    /// cache over the shard database.
+    ///
+    /// For each UUID: if a live cache entry exists it is returned immediately.
+    /// UUIDs not found in the cache are batch-fetched from `shard`'s
+    /// observability storage (including secondaries), and the result is stored
+    /// in the cache before being returned.
+    ///
+    /// Returns a `HashMap` keyed by UUID so callers can reassemble results in
+    /// their original order (e.g. FTS relevance order).
+    fn resolve_records_with_cache(
+        &self,
+        shard: &crate::shard::Shard,
+        ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, JsonValue>> {
+        let mut result: HashMap<Uuid, JsonValue> = HashMap::new();
+        let mut missed: Vec<Uuid> = Vec::new();
+
+        for &id in ids {
+            match self.jsoncache.get_by_id(&id.to_string()) {
+                Some(doc) => { result.insert(id, doc); }
+                None      => missed.push(id),
+            }
+        }
+
+        if !missed.is_empty() {
+            let obs = shard.observability();
+            let docs = obs.get_by_ids(&missed)?;
+            let mut sec_map = obs.get_secondaries_batch(&missed)?;
+
+            for mut doc in docs {
+                let uuid = doc["id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok());
+                if let Some(uuid) = uuid {
+                    let secondaries = sec_map.remove(&uuid).unwrap_or_default();
+                    doc["secondaries"] = serde_json::json!(secondaries);
+                    let ts = doc["timestamp"].as_u64().unwrap_or(0);
+                    self.jsoncache.insert(uuid.to_string(), ts, doc.clone());
+                    result.insert(uuid, doc);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].
@@ -697,13 +807,30 @@ impl ShardsManager {
     }
 
     /// Borrow the embedded [`DocumentStorage`].
-    ///
-    /// The store lives at `{dbpath}/docstore` (relative to the `dbpath` set in
-    /// the config file) and shares the same [`EmbeddingEngine`] as the shard
-    /// cache.  All `ShardsManager` clones share the same `DocumentStorage`
-    /// instance via `Arc`.
     pub fn docstore(&self) -> &DocumentStorage {
         &self.docstore
+    }
+
+    /// Number of entries currently held in the JSON cache (including stale
+    /// entries not yet swept by the background thread).
+    pub fn jsoncache_len(&self) -> usize {
+        self.jsoncache.len()
+    }
+
+    /// Maximum number of entries the JSON cache will hold before evicting.
+    pub fn jsoncache_capacity(&self) -> usize {
+        self.jsoncache.capacity()
+    }
+
+    /// Cache utilization as an integer percentage `[0, 100]`.
+    ///
+    /// Returns 0 when capacity is zero (cache disabled).
+    pub fn jsoncache_utilization_pct(&self) -> u64 {
+        let cap = self.jsoncache.capacity();
+        if cap == 0 {
+            return 0;
+        }
+        (self.jsoncache.len() * 100 / cap) as u64
     }
 }
 

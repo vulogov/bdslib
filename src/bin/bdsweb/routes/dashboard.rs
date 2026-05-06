@@ -27,11 +27,17 @@ struct DashboardTemplate {
     total_count:          u64,
     min_ts:               String,
     max_ts:               String,
+    total_shards:         usize,
     shards:               Vec<ShardRow>,
     shard_labels_json:    String,
     shard_primary_json:   String,
     shard_secondary_json: String,
+    jsoncache_pct:        u64,
+    jsoncache_len:        u64,
+    jsoncache_capacity:   u64,
 }
+
+const RECENT_SHARDS: usize = 5;
 
 pub async fn handler(State(state): State<AppState>) -> Result<Html<String>, AppError> {
     let (status_v, count_v, timeline_v, shards_v) = tokio::try_join!(
@@ -42,13 +48,21 @@ pub async fn handler(State(state): State<AppState>) -> Result<Html<String>, AppE
     )?;
 
     let shard_arr = shards_v.as_array().cloned().unwrap_or_default();
+    let total_shards = shard_arr.len();
 
-    let mut shards        = Vec::with_capacity(shard_arr.len());
-    let mut labels        = Vec::with_capacity(shard_arr.len());
-    let mut primary_cnts  = Vec::with_capacity(shard_arr.len());
-    let mut secondary_cnts = Vec::with_capacity(shard_arr.len());
+    // Show only the 5 most recent shards (last entries, chronologically newest).
+    let recent = if shard_arr.len() > RECENT_SHARDS {
+        &shard_arr[shard_arr.len() - RECENT_SHARDS..]
+    } else {
+        &shard_arr[..]
+    };
 
-    for s in &shard_arr {
+    let mut shards         = Vec::with_capacity(recent.len());
+    let mut labels         = Vec::with_capacity(recent.len());
+    let mut primary_cnts   = Vec::with_capacity(recent.len());
+    let mut secondary_cnts = Vec::with_capacity(recent.len());
+
+    for s in recent {
         let start = u64_val(s, "start_ts");
         let p     = u64_val(s, "primary_count");
         let sec   = u64_val(s, "secondary_count");
@@ -69,10 +83,14 @@ pub async fn handler(State(state): State<AppState>) -> Result<Html<String>, AppE
         total_count:          u64_val(&count_v,   "count"),
         min_ts:               fmt_ts(u64_val(&timeline_v, "min_ts")),
         max_ts:               fmt_ts(u64_val(&timeline_v, "max_ts")),
+        total_shards,
         shards,
         shard_labels_json:    serde_json::to_string(&labels)?,
         shard_primary_json:   serde_json::to_string(&primary_cnts)?,
         shard_secondary_json: serde_json::to_string(&secondary_cnts)?,
+        jsoncache_pct:        u64_val(&status_v, "jsoncache_pct"),
+        jsoncache_len:        u64_val(&status_v, "jsoncache_len"),
+        jsoncache_capacity:   u64_val(&status_v, "jsoncache_capacity"),
     };
 
     Ok(Html(tmpl.render()?))
