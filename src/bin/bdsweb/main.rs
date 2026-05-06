@@ -83,6 +83,8 @@ async fn main() {
         .route("/trends/results", get(routes::trends::results))
         .route("/rca",            get(routes::rca::page))
         .route("/rca/results",    get(routes::rca::results))
+        .route("/templates",         get(routes::templates::page))
+        .route("/templates/results", get(routes::templates::results))
         .route("/chat",           get(routes::chat::page))
         .route("/chat/query",     post(routes::chat::query))
         .route("/chat/new",       post(routes::chat::new_session))

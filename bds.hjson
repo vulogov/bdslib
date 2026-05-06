@@ -33,7 +33,7 @@
   // Templates are stored in the per-shard tplstorage and can be retrieved later
   // via tpl_list(), tpl_search_text(), etc.
   // Default: false
-  drain_enabled: false
+  drain_enabled: true
 
   // How far back to look when loading previously discovered templates at startup.
   // Templates discovered during a previous run (within this window) are loaded

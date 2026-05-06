@@ -6,4 +6,5 @@ pub mod logs;
 pub mod rca;
 pub mod search;
 pub mod telemetry;
+pub mod templates;
 pub mod trends;
