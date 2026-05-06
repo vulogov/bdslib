@@ -33,8 +33,9 @@ const INIT_SQL: &str = "
         ts BIGINT NOT NULL,
         id TEXT   NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_ft_id ON frequency_tracking (id);
-    CREATE INDEX IF NOT EXISTS idx_ft_ts ON frequency_tracking (ts);
+    CREATE INDEX IF NOT EXISTS idx_ft_id    ON frequency_tracking (id);
+    CREATE INDEX IF NOT EXISTS idx_ft_ts    ON frequency_tracking (ts);
+    CREATE INDEX IF NOT EXISTS idx_ft_id_ts ON frequency_tracking (id, ts);
 ";
 
 // ── FrequencyTracking ─────────────────────────────────────────────────────────

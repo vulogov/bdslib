@@ -5,6 +5,7 @@ use crate::observability::{ObservabilityStorage, ObservabilityStorageConfig};
 use crate::vectorengine::{json_fingerprint, VectorEngine};
 use crate::EmbeddingEngine;
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use vecstore::reranking::MMRReranker;
@@ -271,13 +272,31 @@ impl Shard {
     /// to that primary.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<JsonValue>> {
         let ids = self.fts.search(query, limit)?;
-        let mut docs = Vec::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut doc_map: HashMap<Uuid, JsonValue> = self.observability
+            .get_by_ids(&ids)?
+            .into_iter()
+            .filter_map(|doc| {
+                doc["id"].as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .map(|uuid| (uuid, doc))
+            })
+            .collect();
+        let present: Vec<Uuid> = ids.iter().copied().filter(|id| doc_map.contains_key(id)).collect();
+        let mut sec_map = self.observability.get_secondaries_batch(&present)?;
+        let mut results = Vec::with_capacity(present.len());
         for id in ids {
-            if let Some(doc) = self.observability.get_by_id(id)? {
-                docs.push(self.attach_secondaries(id, doc)?);
+            if let Some(mut doc) = doc_map.remove(&id) {
+                let secondaries = sec_map.remove(&id).unwrap_or_default();
+                if let JsonValue::Object(ref mut map) = doc {
+                    map.insert("secondaries".to_string(), json!(secondaries));
+                }
+                results.push(doc);
             }
         }
-        Ok(docs)
+        Ok(results)
     }
 
     /// Full-text search returning `(primary_id, BM25_score)` pairs only — no
@@ -320,38 +339,48 @@ impl Shard {
         let neighbors =
             self.vector
                 .search_json_reranked(query, limit, candidate_pool, &reranker)?;
+        if neighbors.is_empty() {
+            return Ok(vec![]);
+        }
 
-        let mut docs = Vec::with_capacity(neighbors.len());
-        for neighbor in neighbors {
+        let mut id_order: Vec<Uuid> = Vec::with_capacity(neighbors.len());
+        let mut score_map: HashMap<Uuid, f32> = HashMap::with_capacity(neighbors.len());
+        for neighbor in &neighbors {
             let id = Uuid::parse_str(&neighbor.id).map_err(|e| {
                 err_msg(format!(
                     "vector index contains invalid UUID '{}': {e}",
                     neighbor.id
                 ))
             })?;
-            if let Some(mut doc) = self.observability.get_by_id(id)? {
+            id_order.push(id);
+            score_map.insert(id, neighbor.score);
+        }
+
+        let mut doc_map: HashMap<Uuid, JsonValue> = self.observability
+            .get_by_ids(&id_order)?
+            .into_iter()
+            .filter_map(|doc| {
+                doc["id"].as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .map(|uuid| (uuid, doc))
+            })
+            .collect();
+        let present: Vec<Uuid> = id_order.iter().copied().filter(|id| doc_map.contains_key(id)).collect();
+        let mut sec_map = self.observability.get_secondaries_batch(&present)?;
+
+        let mut results = Vec::with_capacity(present.len());
+        for id in id_order {
+            if let Some(mut doc) = doc_map.remove(&id) {
                 if let JsonValue::Object(ref mut map) = doc {
-                    map.insert("_score".to_string(), json!(neighbor.score));
+                    if let Some(&score) = score_map.get(&id) {
+                        map.insert("_score".to_string(), json!(score));
+                    }
+                    let secondaries = sec_map.remove(&id).unwrap_or_default();
+                    map.insert("secondaries".to_string(), json!(secondaries));
                 }
-                docs.push(self.attach_secondaries(id, doc)?);
+                results.push(doc);
             }
         }
-        Ok(docs)
-    }
-
-    // ── internal ──────────────────────────────────────────────────────────────
-
-    fn attach_secondaries(&self, primary_id: Uuid, mut doc: JsonValue) -> Result<JsonValue> {
-        let secondary_ids = self.observability.list_secondaries(primary_id)?;
-        let mut secondaries = Vec::with_capacity(secondary_ids.len());
-        for sid in secondary_ids {
-            if let Some(sdoc) = self.observability.get_by_id(sid)? {
-                secondaries.push(sdoc);
-            }
-        }
-        if let JsonValue::Object(ref mut map) = doc {
-            map.insert("secondaries".to_string(), json!(secondaries));
-        }
-        Ok(doc)
+        Ok(results)
     }
 }

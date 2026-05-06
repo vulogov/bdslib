@@ -514,6 +514,62 @@ impl ObservabilityStorage {
         rows.into_iter().next().map(row_to_doc).transpose()
     }
 
+    /// Fetch multiple records by their IDs in a single `WHERE id IN (…)` query.
+    ///
+    /// Results are in an unspecified order. IDs absent from the database are
+    /// silently omitted.
+    pub fn get_by_ids(&self, ids: &[Uuid]) -> Result<Vec<JsonValue>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let list = ids.iter().map(|id| format!("'{id}'")).collect::<Vec<_>>().join(", ");
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, ts, key, data, metadata FROM telemetry WHERE id IN ({list})"
+        ))?;
+        rows.into_iter().map(row_to_doc).collect()
+    }
+
+    /// Fetch all secondaries for a batch of primary IDs in a single JOIN query.
+    ///
+    /// Returns a `HashMap` from `primary_id` → secondary docs ordered by
+    /// `primary_secondary.ts ASC`. Primary IDs that have no secondaries are
+    /// absent from the map.
+    pub fn get_secondaries_batch(
+        &self,
+        primary_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<JsonValue>>> {
+        if primary_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let list = primary_ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rows = self.engine.select_all(&format!(
+            "SELECT ps.primary_id, t.id, t.ts, t.key, t.data, t.metadata \
+             FROM primary_secondary ps \
+             JOIN telemetry t ON t.id = ps.secondary_id \
+             WHERE ps.primary_id IN ({list}) \
+             ORDER BY ps.primary_id, ps.ts ASC"
+        ))?;
+        let cast_err = |e: Box<dyn std::error::Error>| err_msg(e.to_string());
+        let mut map: HashMap<Uuid, Vec<JsonValue>> = HashMap::new();
+        for row in rows {
+            let mut it = row.into_iter();
+            let pid_str = it
+                .next()
+                .ok_or_else(|| err_msg("secondary batch row missing primary_id"))?
+                .cast_string()
+                .map_err(cast_err)?;
+            let pid = Uuid::parse_str(&pid_str)
+                .map_err(|e| err_msg(format!("invalid primary UUID in secondary batch: {e}")))?;
+            let doc = row_to_doc(it.collect())?;
+            map.entry(pid).or_default().push(doc);
+        }
+        Ok(map)
+    }
+
     /// Return the Unix-second timestamp for `id`, or `None` if not found.
     pub fn get_ts_by_id(&self, id: Uuid) -> Result<Option<i64>> {
         let rows = self.engine.select_all(&format!(

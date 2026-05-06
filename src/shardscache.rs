@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
 /// ## `shard()` lookup order
 ///
-/// 1. In-memory cache — O(n) scan over cached intervals; returns immediately on hit.
+/// 1. In-memory cache — O(1) lookup by aligned `(start, end)` key; returns immediately on hit.
 /// 2. [`ShardInfoEngine`] catalog — if the cache misses, the catalog is queried for a
 ///    shard covering the given timestamp. On a catalog hit the shard is opened from
 ///    its stored path and inserted into the cache.
@@ -108,15 +108,15 @@ impl ShardsCache {
     /// The returned `Shard` is a cheap clone that shares all underlying resources
     /// with the cached instance.
     pub fn shard(&self, timestamp: SystemTime) -> Result<Shard> {
+        // Pre-compute the aligned key so we can do an O(1) HashMap lookup
+        // instead of scanning all cached entries.
+        let (start, end) = align_to_duration(timestamp, self.shard_duration)?;
+
         let mut cache = self.cache.lock();
 
-        // 1. In-memory cache hit.
-        if let Some(shard) = cache
-            .iter()
-            .find(|((start, end), _)| *start <= timestamp && timestamp < *end)
-            .map(|(_, s)| s.clone())
-        {
-            return Ok(shard);
+        // 1. In-memory cache hit — O(1).
+        if let Some(shard) = cache.get(&(start, end)) {
+            return Ok(shard.clone());
         }
 
         // 2. Catalog lookup.
@@ -133,7 +133,6 @@ impl ShardsCache {
         }
 
         // 3. Auto-create.
-        let (start, end) = align_to_duration(timestamp, self.shard_duration)?;
         let start_secs = start
             .duration_since(UNIX_EPOCH)
             .map_err(|e| err_msg(format!("shard start predates epoch: {e}")))?
@@ -196,10 +195,14 @@ impl ShardsCache {
     ///
     /// All shards are attempted; the first error encountered is returned after
     /// the remaining shards have been synced.
+    ///
+    /// The cache lock is held only for the initial snapshot — not across the
+    /// DuckDB CHECKPOINT calls — so concurrent shard lookups are not blocked
+    /// during the flush.
     pub fn sync(&self) -> Result<()> {
-        let cache = self.cache.lock();
+        let shards: Vec<Shard> = self.cache.lock().values().cloned().collect();
         let mut first_err: Option<String> = None;
-        for shard in cache.values() {
+        for shard in &shards {
             if let Err(e) = shard.sync() {
                 first_err.get_or_insert_with(|| e.to_string());
             }
