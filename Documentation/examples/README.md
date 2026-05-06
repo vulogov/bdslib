@@ -70,6 +70,8 @@ cargo run --example <name>
 |---|---|---|
 | [TelemetryTrend](telemetrytrend_demo.md) | `telemetrytrend_demo.rs` | Statistics, S-H-ESD anomaly detection, breakout detection |
 | [RCA](rca_demo.md) | `rca_demo.rs` | Co-occurrence clustering and causal ranking for root cause analysis |
+| [RCATemplates](rca_templates_demo.md) | `rca_templates_demo.rs` | G-Forest RCA on drain3 template observations: cluster detection and causal ranking by template lead time |
+| [ShardsManagerTplFrequency](shardsmanager_tpl_frequency_demo.md) | `shardsmanager_tpl_frequency_demo.rs` | Drain3 template discovery and FrequencyTracking query API: `templates_recent`, `template_by_id`, `templates_by_timestamp` |
 
 ### Data generation and globals
 

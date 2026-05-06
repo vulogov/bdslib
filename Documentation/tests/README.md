@@ -52,6 +52,8 @@ cargo test <test_function_name> -- --show-output
 | [shardscache_test](shardscache_test.md) | `tests/shardscache_test.rs` | `ShardsCache`: auto-creation, interval alignment, LRU cache, catalog persistence, span queries |
 | [shardsmanager_test](shardsmanager_test.md) | `tests/shardsmanager_test.rs` | `ShardsManager`: config loading, timestamp routing, cross-shard FTS/vector, cross-shard update |
 | [shardsmanager_aggregationsearch_test](shardsmanager_aggregationsearch_test.md) | `tests/shardsmanager_aggregationsearch_test.rs` | `ShardsManager::aggregationsearch`: result structure, empty store, telemetry hits with `_score`, document hits with metadata/content, combined population, duration error propagation |
+| [shardsmanager_tplstorage_test](shardsmanager_tplstorage_test.md) | `tests/shardsmanager_tplstorage_test.rs` | `ShardsManager` template FrequencyTracking query API: `template_by_id` (5 tests), `templates_by_timestamp` (6 tests), `templates_recent` (7 tests) — UUID lookup, time-range filtering, cross-shard deduplication |
+| [shardsmanager_rca_templates_test](shardsmanager_rca_templates_test.md) | `tests/shardsmanager_rca_templates_test.rs` | `RcaTemplatesResult`: G-Forest co-occurrence clustering on drain3 template observations — cluster detection, causal ranking, support thresholding, max_keys cap, cross-shard span, invalid duration |
 
 ## Data generation and parsing
 

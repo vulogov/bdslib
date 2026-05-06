@@ -113,8 +113,43 @@ enum Commands {
     /// Root cause analysis
     Rca(cmd::rca::Cmd),
 
+    /// Root cause analysis on drain3 template observations
+    RcaTemplates(cmd::rca_templates::Cmd),
+
     /// Evaluate a BUND script
     Eval(cmd::eval::Cmd),
+
+    // ── template store ────────────────────────────────────────────────────────
+
+    /// Store a drain3 template document
+    TplAdd(cmd::tpl_add::Cmd),
+
+    /// Fetch a template document by UUID
+    TplGet(cmd::tpl_get::Cmd),
+
+    /// Delete a template document by UUID
+    TplDelete(cmd::tpl_delete::Cmd),
+
+    /// List template documents in a time window
+    TplList(cmd::tpl_list::Cmd),
+
+    /// Semantic search over template documents
+    TplSearch(cmd::tpl_search::Cmd),
+
+    /// Update a template document's metadata or body
+    TplUpdate(cmd::tpl_update::Cmd),
+
+    /// Rebuild the template store vector index
+    TplReindex(cmd::tpl_reindex::Cmd),
+
+    /// Fetch a template document by UUID via FrequencyTracking (cross-shard)
+    TplTemplateById(cmd::tpl_template_by_id::Cmd),
+
+    /// List templates whose FrequencyTracking observation falls in a Unix-second range
+    TplTemplatesByTimestamp(cmd::tpl_templates_by_timestamp::Cmd),
+
+    /// List templates whose FrequencyTracking observation falls in a humantime lookback window
+    TplTemplatesRecent(cmd::tpl_templates_recent::Cmd),
 
     // ── document store ────────────────────────────────────────────────────────
 
@@ -209,7 +244,18 @@ fn main() -> Result<()> {
         Commands::Topics(a)                   => cmd::topics::run(&url, &session, a),
         Commands::TopicsAll(a)                => cmd::topics_all::run(&url, &session, a),
         Commands::Rca(a)                      => cmd::rca::run(&url, &session, a),
+        Commands::RcaTemplates(a)             => cmd::rca_templates::run(&url, &session, a),
         Commands::Eval(a)                     => cmd::eval::run(&url, &session, a),
+        Commands::TplAdd(a)                   => cmd::tpl_add::run(&url, &session, a),
+        Commands::TplGet(a)                   => cmd::tpl_get::run(&url, &session, a),
+        Commands::TplDelete(a)                => cmd::tpl_delete::run(&url, &session, a),
+        Commands::TplList(a)                  => cmd::tpl_list::run(&url, &session, a),
+        Commands::TplSearch(a)                => cmd::tpl_search::run(&url, &session, a),
+        Commands::TplUpdate(a)                => cmd::tpl_update::run(&url, &session, a),
+        Commands::TplReindex(a)               => cmd::tpl_reindex::run(&url, &session, a),
+        Commands::TplTemplateById(a)          => cmd::tpl_template_by_id::run(&url, &session, a),
+        Commands::TplTemplatesByTimestamp(a)  => cmd::tpl_templates_by_timestamp::run(&url, &session, a),
+        Commands::TplTemplatesRecent(a)       => cmd::tpl_templates_recent::run(&url, &session, a),
         Commands::DocAdd(a)                   => cmd::doc_add::run(&url, &session, a),
         Commands::DocAddFile(a)               => cmd::doc_add_file::run(&url, &session, a),
         Commands::DocGet(a)                   => cmd::doc_get::run(&url, &session, a),

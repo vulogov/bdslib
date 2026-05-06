@@ -1,7 +1,7 @@
 # bdscmd — bdsnode JSON-RPC Client
 
 `bdscmd` is a full-featured command-line client for every method exposed by
-`bdsnode`'s JSON-RPC 2.0 API. Each of the 30 API methods has its own subcommand.
+`bdsnode`'s JSON-RPC 2.0 API. Each API method has its own subcommand.
 Results are printed as pretty-printed JSON; pass `--raw` for compact single-line
 output suitable for piping into `jq`.
 
@@ -49,11 +49,23 @@ output suitable for piping into `jq`.
     - [topics](#112-topics)
     - [topics-all](#113-topics-all)
     - [rca](#114-rca)
-12. [Commands — BUND VM](#12-commands--bund-vm)
-    - [eval](#121-eval)
-    - [Shebang scripts](#122-shebang-scripts)
-13. [Quick Reference](#13-quick-reference)
-14. [Exit Codes](#14-exit-codes)
+    - [rca-templates](#115-rca-templates)
+12. [Commands — Template Store](#12-commands--template-store)
+    - [tpl-add](#121-tpl-add)
+    - [tpl-get](#122-tpl-get)
+    - [tpl-delete](#123-tpl-delete)
+    - [tpl-list](#124-tpl-list)
+    - [tpl-search](#125-tpl-search)
+    - [tpl-update](#126-tpl-update)
+    - [tpl-reindex](#127-tpl-reindex)
+    - [tpl-template-by-id](#128-tpl-template-by-id)
+    - [tpl-templates-by-timestamp](#129-tpl-templates-by-timestamp)
+    - [tpl-templates-recent](#1210-tpl-templates-recent)
+13. [Commands — BUND VM](#13-commands--bund-vm)
+    - [eval](#131-eval)
+    - [Shebang scripts](#132-shebang-scripts)
+14. [Quick Reference](#14-quick-reference)
+15. [Exit Codes](#15-exit-codes)
 
 ---
 
@@ -1077,9 +1089,422 @@ bdscmd --raw rca -d 1h -f "db.connection.failed" | \
 
 ---
 
-## 12. Commands — BUND VM
+### 11.5 `rca-templates`
 
-### 12.1 `eval`
+Root cause analysis on drain3 log-template observations. Uses the same G-Forest
+co-occurrence pipeline as `rca`, but operates on drain3 template bodies (e.g.
+`"user <*> logged in from <*>"`) rather than raw event keys. Template events are
+drawn from each shard's FrequencyTracking table, which records the timestamp of
+every drain3 template store or update operation.
+
+```
+bdscmd rca-templates --duration <DUR> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window, e.g. `"1h"`, `"2h"`, `"7days"` |
+| `-f, --failure-body` | none | Exact drain3 pattern to anchor the analysis; runs global clustering when omitted |
+| `--bucket-secs` | `300` | Co-occurrence bucket width in seconds |
+| `--min-support` | `2` | Minimum distinct buckets a template must appear in |
+| `--jaccard-threshold` | `0.2` | Minimum Jaccard similarity to link two templates |
+| `--max-keys` | `200` | Maximum template bodies fed into the analysis |
+
+**Examples:**
+
+```bash
+# global template clustering over the last 2 hours
+bdscmd rca-templates -d 2h
+
+# anchor on a specific failure template (use exact drain3 pattern)
+bdscmd rca-templates -d 6h \
+  --failure-body "service <*> crashed with exit code <*>"
+
+# tighter clustering
+bdscmd rca-templates -d 24h --jaccard-threshold 0.5 --bucket-secs 60
+
+# extract probable causes
+bdscmd --raw rca-templates -d 2h \
+  --failure-body "disk <*> write error ENOSPC" | \
+  jq '.probable_causes[] | {body, avg_lead_secs}'
+```
+
+**Output:**
+
+```json
+{
+  "failure_body": "service <*> crashed with exit code <*>",
+  "start": 1745600000,
+  "end": 1745603600,
+  "n_events": 15,
+  "n_keys": 4,
+  "clusters": [
+    {
+      "id": 0,
+      "members": ["disk <*> usage <*>% warning threshold reached", "disk <*> write error ENOSPC", "service <*> crashed with exit code <*>"],
+      "support": 3,
+      "cohesion": 1.0
+    }
+  ],
+  "probable_causes": [
+    {
+      "body": "disk <*> usage <*>% warning threshold reached",
+      "co_occurrence_count": 3,
+      "jaccard": 1.0,
+      "avg_lead_secs": 120.0
+    }
+  ]
+}
+```
+
+Use `tpl-templates-recent` to discover available drain3 template body strings
+before constructing the `--failure-body` argument.
+
+---
+
+## 12. Commands — Template Store
+
+The template store (`tplstorage`) holds drain3 log-template documents: named
+pattern strings (e.g. `"user <*> logged in from <*>"`) with associated metadata
+and a vector index. Templates are created either manually via `tpl-add` or
+automatically by the drain3 miner when `drain_enabled = true` in the bdsnode
+config.
+
+Each shard has its own tplstorage, and FrequencyTracking records the Unix timestamp
+of every template observation event.  The `tpl-template-by-id`,
+`tpl-templates-by-timestamp`, and `tpl-templates-recent` commands query the
+FrequencyTracking layer across all shards.
+
+---
+
+### 12.1 `tpl-add`
+
+Store a drain3 template document manually.
+
+```
+bdscmd tpl-add --name <NAME> --body <BODY> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-n, --name` | required | Human-readable template name |
+| `-b, --body` | required | Template body text (drain3 pattern) |
+| `-t, --timestamp` | current time | Unix seconds; determines the target shard |
+| `--tag <TAG>` | none | Tag label (may be repeated) |
+| `-d, --description` | `""` | Optional description |
+
+**Example:**
+
+```bash
+bdscmd tpl-add \
+  --name "Auth login" \
+  --body "user <*> logged in from <*>" \
+  --tag auth --tag login \
+  --description "SSH/PAM login template"
+```
+
+**Output:**
+
+```json
+{ "id": "019735e2-7c1a-7000-85fd-c17a3b8f912a" }
+```
+
+---
+
+### 12.2 `tpl-get`
+
+Fetch a template document by UUID.
+
+```
+bdscmd tpl-get --id <UUID>
+```
+
+**Example:**
+
+```bash
+bdscmd tpl-get --id 019735e2-7c1a-7000-85fd-c17a3b8f912a
+```
+
+**Output:**
+
+```json
+{
+  "id": "019735e2-7c1a-7000-85fd-c17a3b8f912a",
+  "metadata": {
+    "name": "Auth login",
+    "tags": ["auth", "login"],
+    "description": "SSH/PAM login template",
+    "type": "template",
+    "timestamp": 1745600000,
+    "created_at": 1745600000
+  },
+  "body": "user <*> logged in from <*>"
+}
+```
+
+---
+
+### 12.3 `tpl-delete`
+
+Delete a template document by UUID. Idempotent.
+
+```
+bdscmd tpl-delete --id <UUID>
+```
+
+**Example:**
+
+```bash
+bdscmd tpl-delete --id 019735e2-7c1a-7000-85fd-c17a3b8f912a
+```
+
+**Output:**
+
+```json
+{ "deleted": true }
+```
+
+---
+
+### 12.4 `tpl-list`
+
+List template documents discovered within a lookback window.
+
+```
+bdscmd tpl-list [--duration <DUR>]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | `1h` | Lookback window |
+
+**Example:**
+
+```bash
+# list templates discovered in the last 2 hours
+bdscmd tpl-list -d 2h
+
+# extract just the body strings
+bdscmd --raw tpl-list -d 24h | jq '.templates[].metadata.name'
+```
+
+**Output:**
+
+```json
+{
+  "templates": [
+    {
+      "id": "019735e2-...",
+      "metadata": { "name": "Auth login", "timestamp": 1745600000, ... }
+    }
+  ]
+}
+```
+
+---
+
+### 12.5 `tpl-search`
+
+Semantic vector search over template documents.
+
+```
+bdscmd tpl-search --query <QUERY> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-q, --query` | required | Natural-language query |
+| `-d, --duration` | `1h` | Lookback window for shards to search |
+| `-l, --limit` | `10` | Maximum results |
+
+**Example:**
+
+```bash
+bdscmd tpl-search -q "disk full error" -d 24h -l 5
+```
+
+**Output:**
+
+```json
+{
+  "results": [
+    { "id": "019735e2-...", "score": 0.94, "body": "disk <*> write error ENOSPC" }
+  ]
+}
+```
+
+---
+
+### 12.6 `tpl-update`
+
+Update a template document's metadata or body in-place.
+
+```
+bdscmd tpl-update --id <UUID> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i, --id` | required | UUID v7 of the template |
+| `-n, --name` | unchanged | New name |
+| `-b, --body` | unchanged | New body text |
+| `--tag <TAG>` | unchanged | Replace tag list (repeat for multiple; omit to leave unchanged) |
+| `-d, --description` | unchanged | New description |
+
+**Example:**
+
+```bash
+bdscmd tpl-update \
+  --id 019735e2-7c1a-7000-85fd-c17a3b8f912a \
+  --name "SSH Auth login" \
+  --tag auth --tag ssh
+```
+
+**Output:**
+
+```json
+{ "updated": true }
+```
+
+---
+
+### 12.7 `tpl-reindex`
+
+Rebuild the template store vector index from persisted metadata and blobs.
+Use after unclean shutdown or bulk updates.
+
+```
+bdscmd tpl-reindex [--duration <DUR>]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | `24h` | Lookback window for shards to reindex |
+
+**Example:**
+
+```bash
+bdscmd tpl-reindex -d 7days
+```
+
+**Output:**
+
+```json
+{ "indexed": 42 }
+```
+
+---
+
+### 12.8 `tpl-template-by-id`
+
+Fetch a template document (with `id`, `metadata`, and `body`) by UUID via the
+FrequencyTracking cross-shard lookup. Scans all shards; returns `null` when the
+UUID is not found.
+
+```
+bdscmd tpl-template-by-id --id <UUID>
+```
+
+**Example:**
+
+```bash
+bdscmd tpl-template-by-id --id 019735e2-7c1a-7000-85fd-c17a3b8f912a
+```
+
+**Output:**
+
+```json
+{
+  "template": {
+    "id": "019735e2-7c1a-7000-85fd-c17a3b8f912a",
+    "metadata": { "name": "Auth login", "timestamp": 1745600000, "type": "tpl" },
+    "body": "user <*> logged in from <*>"
+  }
+}
+```
+
+---
+
+### 12.9 `tpl-templates-by-timestamp`
+
+List all template documents whose FrequencyTracking observation timestamp falls
+within an inclusive `[start_ts, end_ts]` range. Queries all shards and
+deduplicates by UUID.
+
+```
+bdscmd tpl-templates-by-timestamp --start-ts <SECS> --end-ts <SECS>
+```
+
+| Flag | Description |
+|---|---|
+| `-s, --start-ts` | Range start as Unix seconds (inclusive) |
+| `-e, --end-ts` | Range end as Unix seconds (inclusive) |
+
+**Example:**
+
+```bash
+bdscmd tpl-templates-by-timestamp --start-ts 1745600000 --end-ts 1745603600
+```
+
+**Output:**
+
+```json
+{
+  "templates": [
+    {
+      "id": "019735e2-...",
+      "metadata": { "name": "Auth login", "timestamp": 1745600100, "type": "tpl" },
+      "body": "user <*> logged in from <*>"
+    }
+  ]
+}
+```
+
+---
+
+### 12.10 `tpl-templates-recent`
+
+List all template documents whose FrequencyTracking observation falls within a
+humantime lookback window. Equivalent to `tpl-templates-by-timestamp` with
+automatically computed bounds.
+
+```
+bdscmd tpl-templates-recent [--duration <DUR>]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | `1h` | Lookback window, e.g. `"1h"`, `"30min"`, `"7days"` |
+
+**Example:**
+
+```bash
+# templates observed in the last 2 hours
+bdscmd tpl-templates-recent -d 2h
+
+# extract body strings for use with rca-templates
+bdscmd --raw tpl-templates-recent -d 6h | jq -r '.templates[].body'
+```
+
+**Output:**
+
+```json
+{
+  "templates": [
+    {
+      "id": "019735e2-...",
+      "metadata": { "name": "Auth login", "timestamp": 1745600100, "type": "tpl" },
+      "body": "user <*> logged in from <*>"
+    }
+  ]
+}
+```
+
+---
+
+## 13. Commands — BUND VM
+
+### 13.1 `eval`
 
 Compile and evaluate a BUND stack-based script in a named VM context. The result
 is the workbench stack printed as a JSON array.
@@ -1122,7 +1547,7 @@ BUND
 
 ---
 
-### 12.2 Shebang Scripts
+### 13.2 Shebang Scripts
 
 `bdscmd eval` supports the Unix shebang mechanism, allowing BUND scripts to be
 executed directly as programs. The kernel passes the script path as the first
@@ -1169,7 +1594,7 @@ generate_report.sh | bdscmd eval -c reporting
 
 ---
 
-## 13. Quick Reference
+## 14. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
 |---|---|---|
@@ -1202,11 +1627,22 @@ generate_report.sh | bdscmd eval -c reporting
 | `topics` | `v2/topics` | `-k`, `-d`, `--k`, `--iters`, `--top-n` |
 | `topics-all` | `v2/topics.all` | `-d`, `--k`, `--iters`, `--top-n` |
 | `rca` | `v2/rca` | `-d`, `-f`, `--bucket-secs`, `--jaccard-threshold` |
+| `rca-templates` | `v2/rca.templates` | `-d`, `-f`, `--bucket-secs`, `--jaccard-threshold` |
+| `tpl-add` | `v2/tpl.add` | `-n`, `-b`, `-t`, `--tag`, `-d` |
+| `tpl-get` | `v2/tpl.get` | `-i` |
+| `tpl-delete` | `v2/tpl.delete` | `-i` |
+| `tpl-list` | `v2/tpl.list` | `-d` |
+| `tpl-search` | `v2/tpl.search` | `-q`, `-d`, `-l` |
+| `tpl-update` | `v2/tpl.update` | `-i`, `-n`, `-b`, `--tag`, `-d` |
+| `tpl-reindex` | `v2/tpl.reindex` | `-d` |
+| `tpl-template-by-id` | `v2/tpl.template_by_id` | `-i` |
+| `tpl-templates-by-timestamp` | `v2/tpl.templates_by_timestamp` | `-s`, `-e` |
+| `tpl-templates-recent` | `v2/tpl.templates_recent` | `-d` |
 | `eval` | `v2/eval` | `SOURCE`, `-c` |
 
 ---
 
-## 14. Exit Codes
+## 15. Exit Codes
 
 | Code | Meaning |
 |---|---|
