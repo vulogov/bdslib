@@ -115,6 +115,8 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
 pub struct ShardsManager {
     pub(crate) cache: ShardsCache,
     pub(crate) docstore: DocumentStorage,
+    /// Signal store: emitted signals with name, severity, and timestamp metadata.
+    pub(crate) signals: DocumentStorage,
     /// Shared drain parser; `Some` only when `drain_enabled = true` in the config.
     pub(crate) drain: Option<Arc<Mutex<DrainParser>>>,
     /// Maps in-memory drain cluster ID → stored tplstorage UUID.
@@ -157,6 +159,9 @@ impl ShardsManager {
         let docstore_path = format!("{}/docstore", cfg.dbpath);
         let docstore = DocumentStorage::with_embedding(&docstore_path, embedding.clone())?;
 
+        let signals_path = format!("{}/signals", cfg.dbpath);
+        let signals = DocumentStorage::with_embedding(&signals_path, embedding.clone())?;
+
         let cache = ShardsCache::with_config(
             &cfg.dbpath,
             &cfg.shard_duration,
@@ -173,6 +178,7 @@ impl ShardsManager {
         let mut manager = Self {
             cache,
             docstore,
+            signals,
             drain: None,
             drain_cluster_map: Arc::new(Mutex::new(HashMap::new())),
             jsoncache,

@@ -191,6 +191,20 @@ enum Commands {
 
     /// Parallel telemetry vector search + document store semantic search in one call
     AggregationSearch(cmd::aggregationsearch::Cmd),
+
+    // ── signal store ──────────────────────────────────────────────────────────
+
+    /// Emit a signal with name, severity, and timestamp
+    SignalEmit(cmd::signal_emit::Cmd),
+
+    /// Replace the metadata of a signal in-place
+    SignalUpdate(cmd::signal_update::Cmd),
+
+    /// List signals observed within a humantime lookback window
+    Signals(cmd::signals::Cmd),
+
+    /// Semantic search over signals by plain-text query
+    SignalsQuery(cmd::signals_query::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -269,6 +283,10 @@ fn main() -> Result<()> {
         Commands::DocSearchJson(a)            => cmd::doc_search_json::run(&url, &session, a),
         Commands::DocSearchStrings(a)         => cmd::doc_search_strings::run(&url, &session, a),
         Commands::AggregationSearch(a)        => cmd::aggregationsearch::run(&url, &session, a),
+        Commands::SignalEmit(a)               => cmd::signal_emit::run(&url, &session, a),
+        Commands::SignalUpdate(a)             => cmd::signal_update::run(&url, &session, a),
+        Commands::Signals(a)                  => cmd::signals::run(&url, &session, a),
+        Commands::SignalsQuery(a)             => cmd::signals_query::run(&url, &session, a),
     }?;
 
     if cli.raw {
