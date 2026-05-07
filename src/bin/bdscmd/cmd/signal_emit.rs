@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +16,10 @@ pub struct Cmd {
     /// Unix-second timestamp (defaults to now)
     #[arg(short, long)]
     timestamp: Option<u64>,
+
+    /// Additional metadata as a JSON object string (e.g. '{"host":"web01"}')
+    #[arg(short, long)]
+    metadata: Option<String>,
 }
 
 pub fn run(url: &str, session: &str, args: Cmd) -> Result<Value> {
@@ -25,6 +29,19 @@ pub fn run(url: &str, session: &str, args: Cmd) -> Result<Value> {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     });
+
+    let metadata: serde_json::Map<String, Value> = match args.metadata {
+        Some(ref s) => {
+            let v: Value = serde_json::from_str(s)
+                .with_context(|| "--metadata must be a valid JSON object")?;
+            match v {
+                Value::Object(m) => m,
+                _ => anyhow::bail!("--metadata must be a JSON object, not a scalar or array"),
+            }
+        }
+        None => serde_json::Map::new(),
+    };
+
     crate::client::call(
         url,
         "v2/signal.emit",
@@ -33,6 +50,7 @@ pub fn run(url: &str, session: &str, args: Cmd) -> Result<Value> {
             "name":      args.name,
             "severity":  args.severity,
             "timestamp": ts,
+            "metadata":  metadata,
         }),
     )
 }

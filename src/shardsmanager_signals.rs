@@ -19,17 +19,22 @@ use uuid::Uuid;
 impl ShardsManager {
     /// Emit a new signal and return its UUIDv7.
     ///
-    /// The signal is stored as a document with empty content; `name`, `severity`,
-    /// and `timestamp` are stored as JSON metadata.
-    pub fn signal_emit(&self, name: &str, severity: &str, timestamp: u64) -> Result<Uuid> {
-        self.signals.add_document(
-            serde_json::json!({
-                "name":      name,
-                "severity":  severity,
-                "timestamp": timestamp,
-            }),
-            b"",
-        )
+    /// The signal is stored as a document with empty content. `name`, `severity`,
+    /// and `timestamp` are mandatory fields. `extra` may contain any additional
+    /// key/value pairs to merge into the metadata; the three mandatory fields
+    /// always take precedence over keys in `extra`.
+    pub fn signal_emit(
+        &self,
+        name:      &str,
+        severity:  &str,
+        timestamp: u64,
+        extra:     serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Uuid> {
+        let mut meta = extra;
+        meta.insert("name".to_owned(),      serde_json::json!(name));
+        meta.insert("severity".to_owned(),  serde_json::json!(severity));
+        meta.insert("timestamp".to_owned(), serde_json::json!(timestamp));
+        self.signals.add_document(serde_json::Value::Object(meta), b"")
     }
 
     /// Replace the metadata for signal `id` in-place.

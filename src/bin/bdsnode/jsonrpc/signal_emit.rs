@@ -9,6 +9,10 @@ struct SignalEmitParams {
     name:      String,
     severity:  String,
     timestamp: u64,
+    /// Optional extra fields merged into the stored metadata.
+    /// `name`, `severity`, and `timestamp` always take precedence.
+    #[serde(default)]
+    metadata:  serde_json::Map<String, serde_json::Value>,
 }
 
 pub fn register(module: &mut RpcModule<()>) {
@@ -19,7 +23,7 @@ pub fn register(module: &mut RpcModule<()>) {
             let result = tokio::task::spawn_blocking(move || {
                 let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
                 let id = db
-                    .signal_emit(&p.name, &p.severity, p.timestamp)
+                    .signal_emit(&p.name, &p.severity, p.timestamp, p.metadata)
                     .map_err(|e| rpc_err(-32011, e))?;
                 Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "id": id.to_string() }))
             })
