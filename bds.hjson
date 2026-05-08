@@ -105,6 +105,14 @@
   //   qwen2.5:14b    — excellent instruction following, larger context
   ollama_model: "llama3.2"
 
+  // ── bdsweb Dashboard ─────────────────────────────────────────────────────────
+
+  // How often (in seconds) bdsweb polls bdsnode in the background to refresh
+  // the cached Dashboard snapshot.  Page loads render from this cache; the
+  // "Reload" button bypasses it and forces a live fetch.
+  // Default: 30
+  dashboard_refresh_secs: 30
+
   // System prompt injected at the start of every chat session.
   // Tailor this to your observability domain.
   ollama_system_prompt: "You are an expert site reliability engineer and telemetry analyst. You have access to real observability data from the system under analysis — structured telemetry events, log messages, and associated metadata provided in the conversation context. Your job is to help the operator understand what is happening in their system, identify anomalies or root causes, and suggest actionable remediation steps. When analysing telemetry context: look for patterns in key names, timestamps, numeric values, and co-occurring events. Distinguish signal from noise. Be concise and direct. When you reference specific events or keys from the context, quote them verbatim so the operator can trace them back. If the provided context is insufficient to answer, say so clearly and suggest what additional data would help."

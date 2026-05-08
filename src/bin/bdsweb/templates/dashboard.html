@@ -7,13 +7,24 @@
 {% endblock %}
 
 {% block content %}
-<h1 class="text-xl font-semibold text-slate-200 mb-6">Dashboard</h1>
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-xl font-semibold text-slate-200">Dashboard</h1>
+  <button id="dashboard-reload"
+          type="button"
+          class="btn btn-primary"
+          hx-get="/dashboard/refresh"
+          hx-target="#dashboard-data"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this">
+    Reload
+  </button>
+</div>
 
 <div id="dashboard-data"
      hx-get="/dashboard/data"
-     hx-trigger="load"
+     hx-trigger="load, every {{ refresh_secs }}s"
      hx-swap="innerHTML">
-  <!-- Shown while bdsnode warms up and RPC calls complete -->
+  <!-- Initial placeholder until /dashboard/data responds -->
   <div class="flex flex-col items-center justify-center py-32 gap-5 text-slate-500">
     <svg class="animate-spin h-10 w-10 text-blue-500"
          xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -22,8 +33,30 @@
       <path class="opacity-75" fill="currentColor"
             d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
     </svg>
-    <p class="text-base font-medium text-slate-300">Starting Dashboard, please wait…</p>
-    <p class="text-xs text-slate-600">Warming up shards and querying telemetry stores</p>
+    <p class="text-base font-medium text-slate-300">Wait…</p>
+    <p class="text-xs text-slate-600">Loading cached snapshot</p>
   </div>
 </div>
+
+<script>
+  // Show a "Wait" placeholder in #dashboard-data the moment the Reload button
+  // is clicked, so the user gets immediate feedback while the live RPCs run.
+  (function () {
+    var btn = document.getElementById('dashboard-reload');
+    if (!btn) return;
+    btn.addEventListener('htmx:beforeRequest', function () {
+      var target = document.getElementById('dashboard-data');
+      if (!target) return;
+      target.innerHTML =
+        '<div class="flex flex-col items-center justify-center py-32 gap-5 text-slate-500">' +
+        '<svg class="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">' +
+        '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+        '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>' +
+        '</svg>' +
+        '<p class="text-base font-medium text-slate-300">Wait…</p>' +
+        '<p class="text-xs text-slate-600">Live refresh in progress</p>' +
+        '</div>';
+    });
+  })();
+</script>
 {% endblock %}

@@ -219,27 +219,47 @@ document.getElementById('chat-query').addEventListener('input', function() {
   this.style.height = Math.min(this.scrollHeight, 160) + 'px';
 });
 
-// Single handler on body catches swaps from both the chat form and the
-// new-session button (they target different elements / use different swap modes).
+function scrollChatToBottom() {
+  var msgs = document.getElementById('chat-messages');
+  if (!msgs) return;
+  msgs.scrollTop = msgs.scrollHeight;
+  var last = msgs.lastElementChild;
+  if (last && last.scrollIntoView) {
+    last.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }
+}
+
+function clearChatQuery() {
+  var q = document.getElementById('chat-query');
+  if (!q) return;
+  q.value = '';
+  q.style.height = '';
+}
+
+// Clear the input the instant the user submits — don't wait for the response.
+document.getElementById('chat-form').addEventListener('htmx:beforeRequest', clearChatQuery);
+
+// After any swap into chat-messages: drop empty placeholder, clear input
+// (defensive in case beforeRequest didn't fire), and scroll to the latest message.
 document.body.addEventListener('htmx:afterSwap', function(evt) {
   var target = evt.detail.target;
   if (!target || target.id !== 'chat-messages') return;
 
-  // Remove the empty-state placeholder whenever content arrives.
   var empty = document.getElementById('chat-empty');
   if (empty) empty.remove();
 
-  // Clear the query input only after a regular query submission (not new-session).
   var triggerEl = evt.detail.elt;
-  if (triggerEl && triggerEl.id === 'chat-form') {
-    var q = document.getElementById('chat-query');
-    if (q) { q.value = ''; q.style.height = 'auto'; }
-  }
+  var fromForm = triggerEl && (
+    triggerEl.id === 'chat-form' ||
+    (triggerEl.closest && triggerEl.closest('#chat-form'))
+  );
+  if (fromForm) clearChatQuery();
 
-  // Scroll to the bottom after the browser paints the new nodes.
-  requestAnimationFrame(function() {
-    target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' });
-  });
+  // Double scroll: once at next paint, once after layout settles, so that
+  // long assistant responses (markdown, code blocks) reliably end up in view
+  // even when their final height is computed asynchronously.
+  requestAnimationFrame(scrollChatToBottom);
+  setTimeout(scrollChatToBottom, 80);
 });
 </script>
 {% endblock %}

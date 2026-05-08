@@ -40,13 +40,9 @@ fn hit_to_row(v: &serde_json::Value) -> HitRow {
     HitRow {
         timestamp: fmt_ts(ts),
         key:       v.get("key").and_then(|x| x.as_str()).unwrap_or("—").to_owned(),
-        data:      truncate(&data, 120),
+        data,
         score,
     }
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n { s.to_owned() } else { format!("{}…", &s[..n]) }
 }
 
 // ── Full page ─────────────────────────────────────────────────────────────────

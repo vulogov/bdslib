@@ -32,24 +32,40 @@ struct Args {
     verbose: u8,
 }
 
-fn ollama_model_from_config(config_path: Option<&str>) -> String {
+struct WebConfig {
+    ollama_model:           String,
+    dashboard_refresh_secs: u64,
+}
+
+fn load_config(config_path: Option<&str>) -> WebConfig {
+    let defaults = WebConfig { ollama_model: "llama3.2".to_owned(), dashboard_refresh_secs: 30 };
     let path = match config_path {
         Some(p) => p,
-        None => return "llama3.2".to_owned(),
+        None => return defaults,
     };
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
-        Err(_) => return "llama3.2".to_owned(),
+        Err(_) => return defaults,
     };
     let val: serde_hjson::Value = match serde_hjson::from_str(&raw) {
         Ok(v) => v,
-        Err(_) => return "llama3.2".to_owned(),
+        Err(_) => return defaults,
     };
-    val.as_object()
-       .and_then(|o| o.get("ollama_model"))
-       .and_then(|v| v.as_str())
-       .unwrap_or("llama3.2")
-       .to_owned()
+    let obj = match val.as_object() {
+        Some(o) => o,
+        None => return defaults,
+    };
+    WebConfig {
+        ollama_model: obj.get("ollama_model")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&defaults.ollama_model)
+            .to_owned(),
+        dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u64)
+            .unwrap_or(defaults.dashboard_refresh_secs)
+            .max(1),
+    }
 }
 
 #[tokio::main]
@@ -63,12 +79,37 @@ async fn main() {
     };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
 
-    let ollama_model = ollama_model_from_config(args.config.as_deref());
-    let state = AppState::new(args.node.clone(), ollama_model);
+    let cfg = load_config(args.config.as_deref());
+    let state = AppState::new(args.node.clone(), cfg.ollama_model, cfg.dashboard_refresh_secs);
+
+    // Background poller: refreshes the cached Dashboard snapshot every N seconds.
+    {
+        let poller_state = state.clone();
+        tokio::spawn(async move {
+            let interval = std::time::Duration::from_secs(poller_state.dashboard_refresh_secs);
+            log::info!(
+                "dashboard background poller started (interval={}s)",
+                poller_state.dashboard_refresh_secs
+            );
+            loop {
+                match routes::dashboard::collect(&poller_state).await {
+                    Ok(snap) => {
+                        *poller_state.dashboard_cache.write().await = Some(snap);
+                        log::debug!("dashboard cache refreshed");
+                    }
+                    Err(e) => {
+                        log::warn!("dashboard background poll failed: {e}");
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/",                  get(routes::dashboard::page))
         .route("/dashboard/data",    get(routes::dashboard::data))
+        .route("/dashboard/refresh", get(routes::dashboard::refresh))
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))

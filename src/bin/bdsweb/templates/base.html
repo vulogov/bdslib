@@ -53,6 +53,23 @@
     .sort-ind { font-size: 0.6rem; opacity: 0.35; margin-left: 0.2rem; }
     th.sortable[data-sort-dir="asc"] .sort-ind,
     th.sortable[data-sort-dir="desc"] .sort-ind { opacity: 1; color: #60a5fa; }
+    /* ── nav dropdown groups ── */
+    .nav-group { position: relative; }
+    .nav-group-btn { background: transparent; cursor: pointer; }
+    .nav-group-btn .chev { transition: transform 120ms; opacity: 0.6; }
+    .nav-group[data-open] .nav-group-btn .chev { transform: rotate(180deg); opacity: 1; }
+    .nav-group-menu {
+      position: absolute; top: calc(100% + 0.25rem); left: 0;
+      min-width: 12rem; background: #0a0d14;
+      border: 1px solid #1a2235; border-radius: 0.5rem;
+      padding: 0.25rem; display: none; z-index: 60;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.45);
+    }
+    .nav-group[data-open] > .nav-group-menu { display: block; }
+    .nav-group-menu .nav-link {
+      display: flex; width: 100%; padding: 0.4rem 0.75rem;
+      border-radius: 0.375rem;
+    }
   </style>
 </head>
 <body class="min-h-full">
@@ -75,47 +92,83 @@
       <div style="width:1px; height:1.25rem; background:#1e2535;" class="mr-2 shrink-0"></div>
 
       <!-- Nav items -->
-      <a href="/"          class="nav-link {% block nav_dashboard %}{% endblock %}">
+      <a href="/" class="nav-link {% block nav_dashboard %}{% endblock %}">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Dashboard
       </a>
-      <a href="/telemetry" class="nav-link {% block nav_telemetry %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        Telemetry
-      </a>
-      <a href="/logs"      class="nav-link {% block nav_logs %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-        Logs
-      </a>
-      <a href="/templates" class="nav-link {% block nav_templates %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 10h16M4 14h10M4 18h7"/><circle cx="19" cy="17" r="2.5"/><path stroke-linecap="round" d="M21 19.5l1.5 1.5"/></svg>
-        Templates
-      </a>
-      <a href="/docs"      class="nav-link {% block nav_docs %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-        Documents
-      </a>
-      <a href="/search"    class="nav-link {% block nav_search %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        Agg. Search
-      </a>
-      <a href="/trends"    class="nav-link {% block nav_trends %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-        Trends
-      </a>
-      <a href="/signals"   class="nav-link {% block nav_signals %}{% endblock %}">
+
+      <!-- Telemetry dropdown -->
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-link nav-group-btn" aria-expanded="false">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Telemetry
+          <svg xmlns="http://www.w3.org/2000/svg" class="chev h-3 w-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="nav-group-menu">
+          <a href="/telemetry" class="nav-link {% block nav_telemetry %}{% endblock %}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Metrics
+          </a>
+          <a href="/logs" class="nav-link {% block nav_logs %}{% endblock %}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Logs
+          </a>
+          <a href="/templates" class="nav-link {% block nav_templates %}{% endblock %}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 10h16M4 14h10M4 18h7"/><circle cx="19" cy="17" r="2.5"/><path stroke-linecap="round" d="M21 19.5l1.5 1.5"/></svg>
+            Templates
+          </a>
+        </div>
+      </div>
+
+      <!-- Analysis dropdown -->
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-link nav-group-btn" aria-expanded="false">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Analysis
+          <svg xmlns="http://www.w3.org/2000/svg" class="chev h-3 w-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="nav-group-menu">
+          <a href="/search" class="nav-link {% block nav_search %}{% endblock %}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Agg. Search
+          </a>
+          <a href="/trends" class="nav-link {% block nav_trends %}{% endblock %}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+            Trends
+          </a>
+        </div>
+      </div>
+
+      <!-- RCA dropdown -->
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-link nav-group-btn" aria-expanded="false">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg>
+          RCA
+          <svg xmlns="http://www.w3.org/2000/svg" class="chev h-3 w-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="nav-group-menu">
+          <a href="/rca" class="nav-link {% block nav_rca %}{% endblock %}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg>
+            Telemetry RCA
+          </a>
+        </div>
+      </div>
+
+      <a href="/signals" class="nav-link {% block nav_signals %}{% endblock %}">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
         Signals
       </a>
-      <a href="/rca"       class="nav-link {% block nav_rca %}{% endblock %}">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg>
-        RCA
+
+      <a href="/docs" class="nav-link {% block nav_docs %}{% endblock %}">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+        Documents
       </a>
-      <a href="/chat"      class="nav-link {% block nav_chat %}{% endblock %}">
+
+      <a href="/chat" class="nav-link {% block nav_chat %}{% endblock %}">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
         Chat
       </a>
-      <a href="/bund"      class="nav-link {% block nav_bund %}{% endblock %}">
+      <a href="/bund" class="nav-link {% block nav_bund %}{% endblock %}">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
         Bund
       </a>
@@ -191,6 +244,49 @@
     if (isNum) { var f = parseFloat(text); return isNaN(f) ? -1 : f; }
     return text;
   }
+
+  // ── Nav dropdown groups ───────────────────────────────────────────────────
+  (function () {
+    var groups = document.querySelectorAll('[data-nav-group]');
+
+    function closeAll(except) {
+      groups.forEach(function (g) {
+        if (g === except) return;
+        g.removeAttribute('data-open');
+        var btn = g.querySelector('.nav-group-btn');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      });
+    }
+
+    groups.forEach(function (g) {
+      var btn = g.querySelector('.nav-group-btn');
+      if (!btn) return;
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var isOpen = g.hasAttribute('data-open');
+        closeAll(g);
+        if (isOpen) {
+          g.removeAttribute('data-open');
+          btn.setAttribute('aria-expanded', 'false');
+        } else {
+          g.setAttribute('data-open', '');
+          btn.setAttribute('aria-expanded', 'true');
+        }
+      });
+
+      // Highlight the parent button when one of its children is the active page.
+      if (g.querySelector('.nav-group-menu .nav-link.active')) {
+        btn.classList.add('active');
+      }
+    });
+
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest('[data-nav-group]')) closeAll(null);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeAll(null);
+    });
+  })();
   </script>
   {% block page_scripts %}{% endblock %}
 </body>
