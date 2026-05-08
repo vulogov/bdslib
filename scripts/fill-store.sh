@@ -126,7 +126,7 @@ tally "documents added:"  "$doc_ok"
 [[ $doc_fail -gt 0 ]] && tally "documents failed:" "$doc_fail"
 
 info "Rebuilding document vector index …"
-reindexed=$("$BDSCMD" "${BDSCMD_OPTS[@]}" doc-reindex 2>/dev/null | jq -r '.indexed // 0')
+reindexed=$("$BDSCMD" "${BDSCMD_OPTS[@]}" doc-reindex 2>/dev/null | jq -r '.indexed // 0') || reindexed=0
 tally "documents re-indexed:" "$reindexed"
 ok "Docstore done"
 
@@ -165,7 +165,7 @@ for key in "${!TEL_KEYS[@]}"; do
             2>/dev/null \
         | "$BDSCMD" "${BDSCMD_OPTS[@]}" add-batch 2>/dev/null \
         | jq -r '.queued // 0'
-    )
+    ) || queued=0
     (( tel_total += queued )) || true
     tally "$key ($dur):" "$queued queued"
 done
@@ -194,7 +194,7 @@ for fmt in "${!LOG_FORMATS[@]}"; do
             2>/dev/null \
         | "$BDSCMD" "${BDSCMD_OPTS[@]}" add-batch 2>/dev/null \
         | jq -r '.queued // 0'
-    )
+    ) || queued=0
     (( log_total += queued )) || true
     tally "$fmt ($dur):" "$queued queued"
 done
@@ -213,7 +213,7 @@ mixed_queued=$(
         2>/dev/null \
     | "$BDSCMD" "${BDSCMD_OPTS[@]}" add-batch 2>/dev/null \
     | jq -r '.queued // 0'
-)
+) || mixed_queued=0
 tally "mixed (8h, ratio=0.5):" "$mixed_queued queued"
 ok "Mixed done"
 
@@ -227,8 +227,8 @@ ok "Mixed done"
 # reflected accurately in the snapshot.
 step "Store summary"
 
-COUNT_JSON=$("$BDSCMD" "${BDSCMD_OPTS[@]}" count 2>/dev/null)
-TIMELINE_JSON=$("$BDSCMD" "${BDSCMD_OPTS[@]}" timeline 2>/dev/null)
+COUNT_JSON=$("$BDSCMD" "${BDSCMD_OPTS[@]}" count 2>/dev/null) || COUNT_JSON='{}'
+TIMELINE_JSON=$("$BDSCMD" "${BDSCMD_OPTS[@]}" timeline 2>/dev/null) || TIMELINE_JSON='{}'
 
 total_rec=$(printf '%s' "$COUNT_JSON"   | jq -r '.count    // "?"')
 min_ts=$(   printf '%s' "$TIMELINE_JSON" | jq -r '.min_ts  // "?"')
