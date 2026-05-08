@@ -9,6 +9,7 @@
 #
 # Options:
 #   --addr HOST:PORT      bdsnode address (default: http://127.0.0.1:9000)
+#                         Accepts both "HOST:PORT" and "http://HOST:PORT" forms.
 #   --config PATH         path to hjson config file (overrides BDS_CONFIG env var)
 #   --tel-count N         telemetry records per key (default: 200)
 #   --log-count N         log records per format (default: 300)
@@ -130,6 +131,13 @@ tally "documents re-indexed:" "$reindexed"
 ok "Docstore done"
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
+# NOTE: telemetry records are ingested ASYNCHRONOUSLY.  `bdscmd add-batch` pipes
+# each batch through v2/add.batch, which enqueues records onto an unbounded
+# crossbeam channel and returns {"queued": N} immediately — the background ingest
+# thread stores them to DuckDB/FTS/vector in parallel.  The "queued" tallies below
+# reflect records accepted for processing, not records already on disk.  A query
+# run immediately after this script may report fewer records than expected; wait a
+# few seconds for the ingest thread to flush before checking counts.
 step "Telemetry — ${TEL_COUNT} records × 10 keys"
 
 # key → lookback window (spread data across different time horizons)
@@ -165,7 +173,8 @@ done
 ok "Telemetry done  (total queued: $tel_total)"
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
-step "Logs"
+# Like telemetry, log records go through v2/add.batch and are queued asynchronously.
+step "Logs — ${LOG_COUNT} records × 4 formats"
 
 declare -A LOG_FORMATS=(
     [syslog]="24h"
@@ -209,6 +218,13 @@ tally "mixed (8h, ratio=0.5):" "$mixed_queued queued"
 ok "Mixed done"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
+# The count below is a point-in-time snapshot queried immediately after all batches
+# are queued.  Because telemetry, log, and mixed records are ingested asynchronously
+# (v2/add.batch), the ingest thread may still be writing when this runs.  The
+# reported total may be lower than the sum of queued records; re-run
+# `bdscmd count` a few seconds later for the final tally.
+# Docstore documents (v2/doc.add) are committed synchronously and are always
+# reflected accurately in the snapshot.
 step "Store summary"
 
 COUNT_JSON=$("$BDSCMD" "${BDSCMD_OPTS[@]}" count 2>/dev/null)
