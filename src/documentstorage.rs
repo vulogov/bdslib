@@ -130,6 +130,58 @@ impl DocumentStorage {
         Ok(id)
     }
 
+    /// Store metadata and body to DuckDB and frequency tracking only; skip vector
+    /// embedding.  Returns the generated UUIDv7.
+    ///
+    /// Use this inside tight loops (e.g., drain template collection) to avoid
+    /// one ONNX call per document.  After the loop, call
+    /// [`embed_documents_batch`] to embed all pending documents in one pass.
+    ///
+    /// [`embed_documents_batch`]: DocumentStorage::embed_documents_batch
+    pub fn add_document_no_embed(&self, metadata: JsonValue, content: &[u8]) -> Result<Uuid> {
+        let id = generate_v7();
+        let id_str = id.to_string();
+
+        self.meta.add_json_with_id(id, metadata.clone())?;
+        self.blobs.add_blob_with_key(id, content)?;
+
+        let ts = metadata.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_secs);
+        self.frequency.add_with_timestamp(ts, &id_str)?;
+
+        Ok(id)
+    }
+
+    /// Batch-embed and index a set of documents previously stored via
+    /// [`add_document_no_embed`].
+    ///
+    /// All 2 × N embeddings (one metadata fingerprint + one content text per
+    /// entry) are computed in a single ONNX inference pass, then written to the
+    /// vector store.  Silently no-ops when no embedding engine is configured.
+    ///
+    /// [`add_document_no_embed`]: DocumentStorage::add_document_no_embed
+    pub fn embed_documents_batch(&self, entries: &[(Uuid, JsonValue, Vec<u8>)]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        // Build id key strings first so &str refs below live long enough.
+        let keys: Vec<(String, String)> = entries
+            .iter()
+            .map(|(id, _, _)| {
+                let s = id.to_string();
+                (format!("{s}:meta"), format!("{s}:content"))
+            })
+            .collect();
+
+        let mut store_entries: Vec<(&str, JsonValue)> = Vec::with_capacity(entries.len() * 2);
+        for ((_, meta, content), (meta_key, content_key)) in entries.iter().zip(keys.iter()) {
+            let content_text = String::from_utf8_lossy(content).into_owned();
+            store_entries.push((meta_key.as_str(), meta.clone()));
+            store_entries.push((content_key.as_str(), serde_json::json!(content_text)));
+        }
+
+        self.vectors.store_documents_batch(&store_entries)
+    }
+
     /// Store a document with caller-supplied pre-computed vectors.
     ///
     /// This is the testable, embedding-free path. `meta_vec` is stored under

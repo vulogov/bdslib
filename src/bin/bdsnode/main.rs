@@ -6,6 +6,34 @@ use anyhow::Context;
 use clap::Parser;
 use jsonrpsee::server::Server;
 
+fn nofile_limit_from_config(config_path: Option<&str>) -> u64 {
+    const DEFAULT: u64 = 4096;
+    let path = match config_path {
+        Some(p) => p,
+        None => return DEFAULT,
+    };
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return DEFAULT,
+    };
+    let val: serde_hjson::Value = match serde_hjson::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return DEFAULT,
+    };
+    val.as_object()
+       .and_then(|o| o.get("nofile_limit"))
+       .and_then(|v| v.as_f64())
+       .map(|n| n as u64)
+       .unwrap_or(DEFAULT)
+}
+
+fn raise_nofile_limit(limit: u64) {
+    match rlimit::increase_nofile_limit(limit) {
+        Ok(n)  => log::info!("NOFILE soft limit raised to {n}"),
+        Err(e) => log::warn!("could not raise NOFILE limit: {e}"),
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "bdsnode", about = "BDS JSON-RPC 2.0 server")]
 struct Cli {
@@ -49,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
     status::init(node_id);
 
     bdslib::setloglevel::setloglevel(cli.debug);
+    raise_nofile_limit(nofile_limit_from_config(cli.config.as_deref()));
 
     if cli.new {
         let dbpath = bdslib::dbpath_from_config(cli.config.as_deref())

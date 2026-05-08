@@ -5,9 +5,15 @@ use crate::shard::Shard;
 use crate::shardsinfo::ShardInfoEngine;
 use crate::EmbeddingEngine;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+struct CacheInner {
+    map: HashMap<(SystemTime, SystemTime), Shard>,
+    /// Keys in most-recently-used-first order.
+    lru: VecDeque<(SystemTime, SystemTime)>,
+}
 
 /// In-memory cache of open [`Shard`] instances, keyed by their `[start, end)` time interval.
 ///
@@ -38,7 +44,10 @@ pub struct ShardsCache {
     embedding: EmbeddingEngine,
     obs_config: ObservabilityStorageConfig,
     info: ShardInfoEngine,
-    cache: Arc<Mutex<HashMap<(SystemTime, SystemTime), Shard>>>,
+    cache: Arc<Mutex<CacheInner>>,
+    /// Maximum number of shards kept open simultaneously. When exceeded, the
+    /// least-recently-used shard is synced and evicted to reclaim file descriptors.
+    max_open_shards: usize,
 }
 
 impl ShardsCache {
@@ -62,18 +71,22 @@ impl ShardsCache {
             pool_size,
             embedding,
             ObservabilityStorageConfig::default(),
+            16,
         )
     }
 
     /// Open or create a shard cache with a custom [`ObservabilityStorageConfig`].
     ///
     /// `shard_duration` uses the same human-readable format as [`new`](Self::new).
+    /// `max_open_shards` caps the number of shards held open at once; the LRU shard
+    /// is synced and evicted when the limit is reached.
     pub fn with_config(
         root_path: &str,
         shard_duration: &str,
         pool_size: u32,
         embedding: EmbeddingEngine,
         obs_config: ObservabilityStorageConfig,
+        max_open_shards: usize,
     ) -> Result<Self> {
         let duration = humantime::parse_duration(shard_duration).map_err(|e| {
             err_msg(format!(
@@ -94,7 +107,11 @@ impl ShardsCache {
             embedding,
             obs_config,
             info,
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: Arc::new(Mutex::new(CacheInner {
+                map: HashMap::new(),
+                lru: VecDeque::new(),
+            })),
+            max_open_shards: max_open_shards.max(1),
         })
     }
 
@@ -108,48 +125,64 @@ impl ShardsCache {
     /// The returned `Shard` is a cheap clone that shares all underlying resources
     /// with the cached instance.
     pub fn shard(&self, timestamp: SystemTime) -> Result<Shard> {
-        // Pre-compute the aligned key so we can do an O(1) HashMap lookup
-        // instead of scanning all cached entries.
         let (start, end) = align_to_duration(timestamp, self.shard_duration)?;
+        let key = (start, end);
 
-        let mut cache = self.cache.lock();
+        let mut state = self.cache.lock();
 
-        // 1. In-memory cache hit — O(1).
-        if let Some(shard) = cache.get(&(start, end)) {
-            return Ok(shard.clone());
+        // 1. In-memory cache hit — promote to MRU position.
+        if let Some(shard) = state.map.get(&key) {
+            let shard = shard.clone();
+            state.lru.retain(|k| k != &key);
+            state.lru.push_front(key);
+            return Ok(shard);
         }
 
         // 2. Catalog lookup.
         let infos = self.info.shards_at(timestamp)?;
-        if let Some(info) = infos.into_iter().next() {
+        let (insert_key, shard) = if let Some(info) = infos.into_iter().next() {
             let shard = Shard::with_config(
                 &info.path,
                 self.pool_size,
                 self.embedding.clone(),
                 self.obs_config.clone(),
             )?;
-            cache.insert((info.start_time, info.end_time), shard.clone());
-            return Ok(shard);
+            ((info.start_time, info.end_time), shard)
+        } else {
+            // 3. Auto-create.
+            let start_secs = start
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| err_msg(format!("shard start predates epoch: {e}")))?
+                .as_secs();
+            let end_secs = end
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| err_msg(format!("shard end predates epoch: {e}")))?
+                .as_secs();
+            let path = format!("{}/{start_secs}_{end_secs}", self.root_path);
+            let shard = Shard::with_config(
+                &path,
+                self.pool_size,
+                self.embedding.clone(),
+                self.obs_config.clone(),
+            )?;
+            self.info.add_shard(&path, start, end)?;
+            (key, shard)
+        };
+
+        state.map.insert(insert_key, shard.clone());
+        state.lru.push_front(insert_key);
+
+        // Evict LRU shards until we're within the open-shard limit.
+        while state.map.len() > self.max_open_shards {
+            if let Some(oldest) = state.lru.pop_back() {
+                if let Some(evicted) = state.map.remove(&oldest) {
+                    let _ = evicted.sync();
+                }
+            } else {
+                break;
+            }
         }
 
-        // 3. Auto-create.
-        let start_secs = start
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| err_msg(format!("shard start predates epoch: {e}")))?
-            .as_secs();
-        let end_secs = end
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| err_msg(format!("shard end predates epoch: {e}")))?
-            .as_secs();
-        let path = format!("{}/{start_secs}_{end_secs}", self.root_path);
-        let shard = Shard::with_config(
-            &path,
-            self.pool_size,
-            self.embedding.clone(),
-            self.obs_config.clone(),
-        )?;
-        self.info.add_shard(&path, start, end)?;
-        cache.insert((start, end), shard.clone());
         Ok(shard)
     }
 
@@ -200,7 +233,7 @@ impl ShardsCache {
     /// DuckDB CHECKPOINT calls — so concurrent shard lookups are not blocked
     /// during the flush.
     pub fn sync(&self) -> Result<()> {
-        let shards: Vec<Shard> = self.cache.lock().values().cloned().collect();
+        let shards: Vec<Shard> = self.cache.lock().map.values().cloned().collect();
         let mut first_err: Option<String> = None;
         for shard in &shards {
             if let Err(e) = shard.sync() {
@@ -222,14 +255,15 @@ impl ShardsCache {
     /// released only when all clones of the evicted [`Shard`]s are dropped by
     /// callers.
     pub fn close(&self) -> Result<()> {
-        let mut cache = self.cache.lock();
+        let mut state = self.cache.lock();
         let mut first_err: Option<String> = None;
-        for shard in cache.values() {
+        for shard in state.map.values() {
             if let Err(e) = shard.sync() {
                 first_err.get_or_insert_with(|| e.to_string());
             }
         }
-        cache.clear();
+        state.map.clear();
+        state.lru.clear();
         match first_err {
             None => Ok(()),
             Some(msg) => Err(err_msg(msg)),
@@ -258,6 +292,6 @@ impl ShardsCache {
 
     /// Return the number of shards currently in the in-memory cache.
     pub fn cached_count(&self) -> usize {
-        self.cache.lock().len()
+        self.cache.lock().map.len()
     }
 }

@@ -24,6 +24,7 @@ struct ManagerConfig {
     jsoncache_capacity: usize,
     jsoncache_ttl_secs: u64,
     r2d2_thread_pool_size: usize,
+    max_open_shards: usize,
 }
 
 fn parse_config(raw: &str) -> Result<ManagerConfig> {
@@ -85,6 +86,12 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         .map(|n| n as usize)
         .unwrap_or(3);
 
+    let max_open_shards = obj
+        .get("max_open_shards")
+        .and_then(|v| v.as_f64())
+        .map(|n| n as usize)
+        .unwrap_or(16);
+
     Ok(ManagerConfig {
         dbpath,
         shard_duration,
@@ -95,6 +102,7 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         jsoncache_capacity,
         jsoncache_ttl_secs,
         r2d2_thread_pool_size,
+        max_open_shards,
     })
 }
 
@@ -180,6 +188,7 @@ impl ShardsManager {
             cfg.pool_size,
             embedding,
             obs_config,
+            cfg.max_open_shards,
         )?;
 
         let jsoncache = JsonCache::new(
@@ -282,8 +291,14 @@ impl ShardsManager {
             return Ok(vec![]);
         }
 
-        // Run drain on all docs before shard routing. Lock is held for the
-        // whole batch (parsing is CPU-only, no I/O under the lock).
+        // ── drain: fast DuckDB-only writes, no ONNX inside the lock ─────────────
+        struct PendingTpl {
+            id: Uuid,
+            shard_ts: SystemTime,
+            meta: JsonValue,
+            body: Vec<u8>,
+        }
+        let mut pending_tpls: Vec<PendingTpl> = Vec::new();
         let mut matched_cluster_ids: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
         if let Some(drain) = &self.drain {
@@ -291,7 +306,13 @@ impl ShardsManager {
             if let Ok(mut parser) = drain.lock() {
                 for doc in &docs {
                     if let Ok(r) = parser.parse_json_with_callback(doc, |meta, body| {
-                        self.tpl_add(meta, &body)
+                        // Store to DuckDB only — defer ONNX embedding to after the lock.
+                        let ts = extract_timestamp(&meta)
+                            .unwrap_or_else(|_| SystemTime::now());
+                        let shard = self.cache.shard(ts)?;
+                        let id = shard.tpl_add_no_embed(meta.clone(), &body)?;
+                        pending_tpls.push(PendingTpl { id, shard_ts: ts, meta, body });
+                        Ok(id)
                     }) {
                         if let Some(uuid) = r.stored_id {
                             new_mappings.push((r.cluster_id, uuid));
@@ -306,6 +327,27 @@ impl ShardsManager {
                         map.insert(cid, uuid);
                     }
                 }
+            }
+        }
+
+        // ── batch-embed all new templates in one ONNX pass (outside drain lock) ─
+        if !pending_tpls.is_empty() {
+            let shard_dur = self.cache.shard_duration();
+            let mut by_shard: HashMap<SystemTime, Vec<(Uuid, JsonValue, Vec<u8>)>> =
+                HashMap::new();
+            for tpl in pending_tpls {
+                let (aligned, _) =
+                    crate::common::timerange::align_to_duration(tpl.shard_ts, shard_dur)?;
+                by_shard
+                    .entry(aligned)
+                    .or_default()
+                    .push((tpl.id, tpl.meta, tpl.body));
+            }
+            for (shard_start, entries) in &by_shard {
+                let shard = self.cache.shard(*shard_start)?;
+                shard.tplstorage.embed_documents_batch(entries)?;
+                // One sync per shard (not per template).
+                shard.tplstorage.sync()?;
             }
         }
 

@@ -39,7 +39,7 @@ impl Config {
             .get("syslog_batch_size")
             .and_then(|v| v.as_f64())
             .map(|n| n as usize)
-            .unwrap_or(100)
+            .unwrap_or(500)
             .max(1);
 
         let timeout_ms = obj

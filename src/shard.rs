@@ -203,6 +203,14 @@ impl Shard {
         self.tplstorage.add_document(metadata, body)
     }
 
+    /// Store a template to DuckDB and frequency tracking without embedding.
+    ///
+    /// Pair with [`DocumentStorage::embed_documents_batch`] to amortize ONNX
+    /// overhead across an entire ingest batch rather than paying it per template.
+    pub fn tpl_add_no_embed(&self, metadata: JsonValue, body: &[u8]) -> Result<Uuid> {
+        self.tplstorage.add_document_no_embed(metadata, body)
+    }
+
     /// Return the JSON metadata for template `id`, or `None`.
     pub fn tpl_get_metadata(&self, id: Uuid) -> Result<Option<JsonValue>> {
         self.tplstorage.get_metadata(id)

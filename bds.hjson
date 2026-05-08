@@ -1,4 +1,14 @@
 {
+  // ── OS resource limits ───────────────────────────────────────────────────────
+
+  // Soft limit for open file descriptors (NOFILE) requested at startup.
+  // bdsnode opens multiple DuckDB files and vecstore indexes per shard; on
+  // systems where the default soft limit is 256 (macOS) or 1024 (Linux) this
+  // can exhaust file descriptors after a few hours of operation.
+  // The value is clamped to the process hard limit by the OS.
+  // Default: 4096
+  nofile_limit: 4096
+
   // ── Storage ──────────────────────────────────────────────────────────────────
 
   // Root directory where all time-partitioned shards are stored.
@@ -11,6 +21,13 @@
   // Common values: "1h"  "6h"  "1day"  "7days"
   // Required.
   shard_duration: "1h"
+
+  // Maximum number of shards held open simultaneously.
+  // Each open shard consumes ~12 file descriptors (obs.db + tplstorage files).
+  // When the limit is reached, the least-recently-used shard is synced and closed
+  // to reclaim file descriptors before the new shard is opened.
+  // Default: 16
+  max_open_shards: 32
 
   // ── DuckDB connection pool ────────────────────────────────────────────────────
 
@@ -62,6 +79,18 @@
   // access and eagerly swept by a background thread every 60 seconds.
   // Default: 300 (5 minutes)
   jsoncache_ttl_secs: 300
+
+  // ── Syslog file ingest ────────────────────────────────────────────────────
+
+  // Records accumulated before a batch is flushed to the shard store.
+  // Larger values amortize per-batch ONNX embedding overhead; smaller values
+  // reduce latency between file arrival and indexing.
+  // Default: 500
+  syslog_batch_size: 500
+
+  // Milliseconds of channel inactivity before a partial batch is flushed.
+  // Default: 5000
+  syslog_timeout_ms: 5000
 
   // ── Ollama LLM integration ────────────────────────────────────────────────────
 

@@ -41,9 +41,7 @@ impl ShardsManager {
     pub fn tpl_add(&self, metadata: JsonValue, body: &[u8]) -> Result<Uuid> {
         let ts = extract_timestamp(&metadata)?;
         let shard = self.cache.shard(ts)?;
-        let id = shard.tpl_add(metadata, body)?;
-        shard.tplstorage.sync()?;
-        Ok(id)
+        shard.tpl_add(metadata, body)
     }
 
     /// Replace the metadata for template `id` and re-embed it.
