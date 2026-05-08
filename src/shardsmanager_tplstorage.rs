@@ -28,7 +28,9 @@
 
 use crate::common::error::{err_msg, Result};
 use crate::common::time::{extract_timestamp, lookback_window};
+use crate::shard::Shard;
 use crate::shardsmanager::ShardsManager;
+use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::time::{Duration, UNIX_EPOCH};
@@ -152,14 +154,27 @@ impl ShardsManager {
     /// Return all templates stored in shards that overlap
     /// `[now − duration, now]`, as `(id, metadata)` pairs.
     ///
-    /// Results are merged from all matching shards.
+    /// Results are merged from all matching shards.  When the lookback window
+    /// overlaps more than one shard, the per-shard reads run in parallel via
+    /// rayon; single-shard windows take the serial path to avoid the work-pool
+    /// overhead.
     pub fn tpl_list(&self, duration: &str) -> Result<Vec<(Uuid, JsonValue)>> {
         let (start, end) = lookback_window(duration)?;
-        let mut out = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            out.extend(shard.tpl_list()?);
+        let shards = self.resolve_shards_in_range(start, end)?;
+        if shards.len() <= 1 {
+            let mut out = Vec::new();
+            for shard in shards {
+                out.extend(shard.tpl_list()?);
+            }
+            return Ok(out);
         }
+        let per_shard: Vec<Vec<(Uuid, JsonValue)>> = shards
+            .par_iter()
+            .map(|s| s.tpl_list())
+            .collect::<Result<Vec<_>>>()?;
+        let total: usize = per_shard.iter().map(|v| v.len()).sum();
+        let mut out = Vec::with_capacity(total);
+        for v in per_shard { out.extend(v); }
         Ok(out)
     }
 
@@ -167,7 +182,8 @@ impl ShardsManager {
     /// `[now − duration, now]`, using a plain-text query.
     ///
     /// Results from all matching shards are merged and sorted by score
-    /// descending, then truncated to `limit`.
+    /// descending, then truncated to `limit`.  Multi-shard windows fan out
+    /// to a parallel rayon scan; single-shard windows stay serial.
     pub fn tpl_search_text(
         &self,
         duration: &str,
@@ -175,11 +191,23 @@ impl ShardsManager {
         limit: usize,
     ) -> Result<Vec<JsonValue>> {
         let (start, end) = lookback_window(duration)?;
-        let mut results: Vec<JsonValue> = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.tpl_search_text(query, limit)?);
-        }
+        let shards = self.resolve_shards_in_range(start, end)?;
+        let mut results: Vec<JsonValue> = if shards.len() <= 1 {
+            let mut acc = Vec::new();
+            for shard in shards {
+                acc.extend(shard.tpl_search_text(query, limit)?);
+            }
+            acc
+        } else {
+            let per_shard: Vec<Vec<JsonValue>> = shards
+                .par_iter()
+                .map(|s| s.tpl_search_text(query, limit))
+                .collect::<Result<Vec<_>>>()?;
+            let total: usize = per_shard.iter().map(|v| v.len()).sum();
+            let mut acc = Vec::with_capacity(total);
+            for v in per_shard { acc.extend(v); }
+            acc
+        };
         results.sort_by(|a, b| {
             let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -193,6 +221,8 @@ impl ShardsManager {
     /// `[now − duration, now]`, using a JSON query object.
     ///
     /// Results are merged, sorted by score descending, and truncated to `limit`.
+    /// Multi-shard windows fan out to a parallel rayon scan; single-shard
+    /// windows stay serial.
     pub fn tpl_search_json(
         &self,
         duration: &str,
@@ -200,11 +230,23 @@ impl ShardsManager {
         limit: usize,
     ) -> Result<Vec<JsonValue>> {
         let (start, end) = lookback_window(duration)?;
-        let mut results: Vec<JsonValue> = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.tpl_search_json(query, limit)?);
-        }
+        let shards = self.resolve_shards_in_range(start, end)?;
+        let mut results: Vec<JsonValue> = if shards.len() <= 1 {
+            let mut acc = Vec::new();
+            for shard in shards {
+                acc.extend(shard.tpl_search_json(query, limit)?);
+            }
+            acc
+        } else {
+            let per_shard: Vec<Vec<JsonValue>> = shards
+                .par_iter()
+                .map(|s| s.tpl_search_json(query, limit))
+                .collect::<Result<Vec<_>>>()?;
+            let total: usize = per_shard.iter().map(|v| v.len()).sum();
+            let mut acc = Vec::with_capacity(total);
+            for v in per_shard { acc.extend(v); }
+            acc
+        };
         results.sort_by(|a, b| {
             let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -218,14 +260,42 @@ impl ShardsManager {
     /// `[now − duration, now]`.
     ///
     /// Returns the total number of templates re-indexed across all shards.
+    /// Multi-shard windows rebuild in parallel via rayon; single-shard
+    /// windows stay serial.
     pub fn tpl_reindex(&self, duration: &str) -> Result<usize> {
         let (start, end) = lookback_window(duration)?;
-        let mut total = 0usize;
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            total += shard.tpl_reindex()?;
+        let shards = self.resolve_shards_in_range(start, end)?;
+        if shards.len() <= 1 {
+            let mut total = 0usize;
+            for shard in shards {
+                total += shard.tpl_reindex()?;
+            }
+            return Ok(total);
         }
-        Ok(total)
+        let counts: Vec<usize> = shards
+            .par_iter()
+            .map(|s| s.tpl_reindex())
+            .collect::<Result<Vec<_>>>()?;
+        Ok(counts.into_iter().sum())
+    }
+
+    /// Resolve every shard whose `[start, end)` interval overlaps
+    /// `[start_ts, end_ts]`, in catalog order.
+    ///
+    /// `cache.shard()` is taken serially since it briefly holds the LRU mutex —
+    /// running cache lookups in parallel just contends on that mutex.  The
+    /// per-shard work that the caller does is the part worth parallelising.
+    fn resolve_shards_in_range(
+        &self,
+        start: std::time::SystemTime,
+        end: std::time::SystemTime,
+    ) -> Result<Vec<Shard>> {
+        let infos = self.cache.info().shards_in_range(start, end)?;
+        let mut out = Vec::with_capacity(infos.len());
+        for info in infos {
+            out.push(self.cache.shard(info.start_time)?);
+        }
+        Ok(out)
     }
 
     // ── frequency-tracking queries ────────────────────────────────────────────
