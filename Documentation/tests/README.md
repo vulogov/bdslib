@@ -70,6 +70,7 @@ cargo test <test_function_name> -- --show-output
 | [lda_test](lda_test.md) | `tests/lda_test.rs` | LDA topic modelling: corpus analysis, keyword invariants, k clamping, empty/numeric corpora |
 | [rca_test](rca_test.md) | `tests/rca_test.rs` | RCA: co-occurrence clustering, causal ranking, telemetry exclusion, threshold and bucket effects |
 | [textrank_test](textrank_test.md) | `tests/textrank_test.rs` | TextRank summariser: empty/single/duplicate inputs, central-topic ranking, length cap (`max_sentences`/`ratio`), unicode, log-fingerprint clustering |
+| [shardsmanager_primary_textrank_test](shardsmanager_primary_textrank_test.md) | `tests/shardsmanager_primary_textrank_test.rs` | `summary_for_recent`/`summary_for_query`: numeric exclusion, `value`/`raw` precedence, window semantics, empty-store fallbacks |
 
 ## Global singleton
 

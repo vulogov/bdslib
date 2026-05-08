@@ -17,6 +17,7 @@ pub mod shardsmanager;
 pub mod shardsmanager_aggregationsearch;
 pub mod shardsmanager_docstore;
 pub mod shardsmanager_drain;
+pub mod shardsmanager_primary_textrank;
 pub mod shardsmanager_signals;
 pub mod shardsmanager_templates_textrank;
 pub mod shardsmanager_tplstorage;

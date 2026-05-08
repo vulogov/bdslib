@@ -125,6 +125,8 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/rca`](v2_rca.md) | Root cause analysis: cluster non-telemetry events by co-occurrence and rank probable causes of a named failure key |
 | [`v2/rca.templates`](v2_rca_templates.md) | Root cause analysis on drain3 template observations: cluster template bodies by co-occurrence and rank probable causes of a named failure template |
 | [`v2/textrank.templates`](v2_textrank.templates.md) | Extractive TextRank summary of every drain3 template observed in a lookback window — fingerprints each template and returns the highest-ranked ones joined as a single string |
+| [`v2/summary_for_recent`](v2_summary_for_recent.md) | Extractive TextRank summary of text-bearing primary records observed in a lookback window — skips numeric measurements, extracts bodies from `data["value"]` or `data["raw"]` |
+| [`v2/summary_for_query`](v2_summary_for_query.md) | Extractive TextRank summary of primary records matching a vector query — same body-extraction rule as `v2/summary_for_recent`; default lookback is 365 days |
 | [`v2/tpl.template_by_id`](v2_tpl_template_by_id.md) | Fetch a single drain3 template document by UUID, scanning all shards |
 | [`v2/tpl.templates_by_timestamp`](v2_tpl_templates_by_timestamp.md) | List drain3 template documents whose FrequencyTracking observation falls within an explicit Unix-second range |
 | [`v2/tpl.templates_recent`](v2_tpl_templates_recent.md) | List drain3 template documents whose FrequencyTracking observation falls within a humantime lookback window |

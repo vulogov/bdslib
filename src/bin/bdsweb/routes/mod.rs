@@ -3,6 +3,8 @@ pub mod chat;
 pub mod dashboard;
 pub mod docs;
 pub mod logs;
+pub mod primary_query_summary;
+pub mod primary_summary;
 pub mod rca;
 pub mod rca_templates;
 pub mod search;

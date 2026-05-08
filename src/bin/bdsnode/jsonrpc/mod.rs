@@ -52,6 +52,8 @@ mod signal_update;
 mod signals;
 mod signals_query;
 mod status;
+mod summary_for_query;
+mod summary_for_recent;
 mod textrank_templates;
 mod topics;
 mod topics_all;
@@ -115,6 +117,8 @@ pub fn build_module() -> RpcModule<()> {
     rca::register(&mut module);
     rca_templates::register(&mut module);
     textrank_templates::register(&mut module);
+    summary_for_recent::register(&mut module);
+    summary_for_query::register(&mut module);
     signal_emit::register(&mut module);
     signal_update::register(&mut module);
     signals::register(&mut module);
