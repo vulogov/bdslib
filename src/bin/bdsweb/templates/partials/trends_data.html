@@ -75,6 +75,52 @@
   // with a circular marker at the breakout value, layered on top of the series.
   const breakouts = {{ breakouts_json|safe }};
 
+  // Unit identifier inferred server-side from the key name (bytes / percent /
+  // ratio / ms / secs / count / generic).  Drives both axis tick labels and
+  // tooltip values so the chart matches the formatted stats above.
+  const unitKind = "{{ unit_kind }}";
+
+  function fmtBytes(v) {
+    if (!isFinite(v)) return "—";
+    const sign = v < 0 ? "-" : "";
+    let abs = Math.abs(v), i = 0;
+    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    while (abs >= 1024 && i < units.length - 1) { abs /= 1024; i++; }
+    return sign + (i === 0 ? abs.toFixed(0) : abs.toFixed(2)) + " " + units[i];
+  }
+  function fmtMs(v) {
+    if (!isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a < 1)        return (v * 1000).toFixed(0) + " µs";
+    if (a < 1000)     return v.toFixed(2) + " ms";
+    if (a < 60000)    return (v / 1000).toFixed(2) + " s";
+    return (v / 60000).toFixed(1) + " min";
+  }
+  function fmtSecs(v) {
+    if (!isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a < 1)    return (v * 1000).toFixed(0) + " ms";
+    if (a < 60)   return v.toFixed(2) + " s";
+    if (a < 3600) return (v / 60).toFixed(1) + " min";
+    return (v / 3600).toFixed(2) + " h";
+  }
+  function fmtCount(v) {
+    if (!isFinite(v)) return "—";
+    return Math.round(v).toLocaleString("en-US");
+  }
+  function fmtValue(v) {
+    if (v == null || !isFinite(v)) return "—";
+    switch (unitKind) {
+      case "bytes":   return fmtBytes(v);
+      case "percent": return v.toFixed(2) + "%";
+      case "ratio":   return (v * 100).toFixed(2) + "%";
+      case "ms":      return fmtMs(v);
+      case "secs":    return fmtSecs(v);
+      case "count":   return fmtCount(v);
+      default:        return v.toFixed(4);
+    }
+  }
+
   const container = document.getElementById('uplot-container');
   const W = Math.max(container.clientWidth || 0, 400);
 
@@ -120,12 +166,17 @@
     axes: [
       { stroke: "#64748b", ticks: { stroke: "#1e2535" }, grid: { stroke: "#1e2535" } },
       { stroke: "#64748b", ticks: { stroke: "#1e2535" }, grid: { stroke: "#1e2535" },
-        label: "{{ key }}", labelSize: 12, labelFont: "11px monospace" }
+        label: "{{ key }}{{ unit_axis_suffix }}", labelSize: 12, labelFont: "11px monospace",
+        // Tick labels formatted in the inferred unit.
+        values: (u, vals) => vals.map(v => fmtValue(v)),
+        size: 70 }
     ],
     series: [
       {},
       { label: "{{ key }}", stroke: "#3b82f6", fill: "rgba(59,130,246,0.07)",
-        width: 1.5, points: { show: raw[0].length <= 200 } }
+        width: 1.5, points: { show: raw[0].length <= 200 },
+        // Tooltip / cursor readout uses the same formatter.
+        value: (u, v) => fmtValue(v) }
     ],
     plugins: [breakoutOverlay]
   }, raw, container);
