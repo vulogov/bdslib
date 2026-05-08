@@ -67,7 +67,8 @@ async fn main() {
     let state = AppState::new(args.node.clone(), ollama_model);
 
     let app = Router::new()
-        .route("/",               get(routes::dashboard::handler))
+        .route("/",                  get(routes::dashboard::page))
+        .route("/dashboard/data",    get(routes::dashboard::data))
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))

@@ -23,6 +23,7 @@ struct ManagerConfig {
     drain_load_duration: String,
     jsoncache_capacity: usize,
     jsoncache_ttl_secs: u64,
+    r2d2_thread_pool_size: usize,
 }
 
 fn parse_config(raw: &str) -> Result<ManagerConfig> {
@@ -78,6 +79,12 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         .map(|n| n as u64)
         .unwrap_or(300);
 
+    let r2d2_thread_pool_size = obj
+        .get("r2d2_thread_pool_size")
+        .and_then(|v| v.as_f64())
+        .map(|n| n as usize)
+        .unwrap_or(3);
+
     Ok(ManagerConfig {
         dbpath,
         shard_duration,
@@ -87,6 +94,7 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         drain_load_duration,
         jsoncache_capacity,
         jsoncache_ttl_secs,
+        r2d2_thread_pool_size,
     })
 }
 
@@ -145,6 +153,10 @@ impl ShardsManager {
             .map_err(|e| err_msg(format!("cannot read config '{config_path}': {e}")))?;
         let cfg = parse_config(&raw)
             .map_err(|e| err_msg(format!("invalid config '{config_path}': {e}")))?;
+
+        // Must be called before any StorageEngine is constructed so the shared
+        // r2d2 maintenance thread pool is sized correctly.
+        crate::storageengine::init_r2d2_thread_pool(cfg.r2d2_thread_pool_size);
 
         let obs_config = match cfg.similarity_threshold {
             Some(t) => ObservabilityStorageConfig {

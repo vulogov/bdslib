@@ -8,6 +8,20 @@ use crate::{
     state::AppState,
 };
 
+// ── Shell (instant) ───────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "dashboard.html")]
+struct DashboardShell;
+
+/// Returns the page skeleton immediately — no RPC calls.
+/// HTMX fires `/dashboard/data` on load to fetch the actual content.
+pub async fn page() -> Result<Html<String>, AppError> {
+    Ok(Html(DashboardShell {}.render()?))
+}
+
+// ── Data partial (async, potentially slow) ────────────────────────────────────
+
 #[derive(Debug)]
 pub struct ShardRow {
     pub label:           String,
@@ -16,8 +30,8 @@ pub struct ShardRow {
 }
 
 #[derive(Template)]
-#[template(path = "dashboard.html")]
-struct DashboardTemplate {
+#[template(path = "partials/dashboard_data.html")]
+struct DashboardData {
     node_id:              String,
     hostname:             String,
     uptime_secs:          u64,
@@ -39,7 +53,9 @@ struct DashboardTemplate {
 
 const RECENT_SHARDS: usize = 5;
 
-pub async fn handler(State(state): State<AppState>) -> Result<Html<String>, AppError> {
+/// Makes all four RPC calls in parallel and renders the dashboard data partial.
+/// Invoked by HTMX `hx-trigger="load"` from the shell page.
+pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppError> {
     let (status_v, count_v, timeline_v, shards_v) = tokio::try_join!(
         rpc(&state, "v2/status",   json!({})),
         rpc(&state, "v2/count",    json!({})),
@@ -50,7 +66,6 @@ pub async fn handler(State(state): State<AppState>) -> Result<Html<String>, AppE
     let shard_arr = shards_v.as_array().cloned().unwrap_or_default();
     let total_shards = shard_arr.len();
 
-    // Show only the 5 most recent shards (last entries, chronologically newest).
     let recent = if shard_arr.len() > RECENT_SHARDS {
         &shard_arr[shard_arr.len() - RECENT_SHARDS..]
     } else {
@@ -73,7 +88,7 @@ pub async fn handler(State(state): State<AppState>) -> Result<Html<String>, AppE
         shards.push(ShardRow { label, primary_count: p, secondary_count: sec });
     }
 
-    let tmpl = DashboardTemplate {
+    let tmpl = DashboardData {
         node_id:              str_val(&status_v, "node_id"),
         hostname:             str_val(&status_v, "hostname"),
         uptime_secs:          u64_val(&status_v, "uptime_secs"),

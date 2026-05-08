@@ -19,6 +19,14 @@
   // Default: 4
   pool_size: 4
 
+  // Number of worker threads in the process-wide r2d2 maintenance thread pool.
+  // A single pool is shared across all DuckDB connection pools (shards, docstore,
+  // signals, tplstorage, etc.), so this is a fixed overhead regardless of how
+  // many pools are open.  Raise only if you see r2d2 reaper lag under very high
+  // connection churn.
+  // Default: 3
+  r2d2_thread_pool_size: 3
+
   // ── Deduplication ─────────────────────────────────────────────────────────────
 
   // Cosine-similarity threshold for classifying an incoming document as a

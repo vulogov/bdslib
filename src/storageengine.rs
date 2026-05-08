@@ -2,7 +2,50 @@ use crate::common::error::{Error as EasyError, Result};
 use duckdb::{DuckdbConnectionManager, Error as DuckError, Row};
 use r2d2::Pool;
 use rust_dynamic::value::Value as DynamicValue;
+use scheduled_thread_pool::ScheduledThreadPool;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
+
+/// Process-wide shared r2d2 maintenance pool.
+///
+/// r2d2's default is to create a fresh `ScheduledThreadPool` with 3 threads
+/// per `Pool::build()` call.  With many DuckDB pools open (one per StorageEngine,
+/// many StorageEngines per Shard, many shards) that number compounds quickly and
+/// can exhaust the OS thread limit (RLIMIT_NPROC / EAGAIN).
+///
+/// By sharing a single pool we keep the r2d2 maintenance thread count constant
+/// regardless of how many connection pools are open.
+///
+/// Call [`init_r2d2_thread_pool`] once at startup (before any `StorageEngine` is
+/// constructed) to set the thread count from config.  If it has not been called
+/// by the time the first pool is needed, a fallback of 3 threads is used.
+static R2D2_THREAD_POOL: OnceLock<Arc<ScheduledThreadPool>> = OnceLock::new();
+
+/// Initialise the shared r2d2 thread pool with `num_threads` worker threads.
+///
+/// Must be called before any [`StorageEngine`] is constructed.  Subsequent calls
+/// are no-ops (the pool is already set); the first call wins.
+pub(crate) fn init_r2d2_thread_pool(num_threads: usize) {
+    let _ = R2D2_THREAD_POOL.set(Arc::new(
+        ScheduledThreadPool::builder()
+            .num_threads(num_threads.max(1))
+            .thread_name_pattern("r2d2-worker-{}")
+            .build(),
+    ));
+}
+
+fn shared_r2d2_thread_pool() -> Arc<ScheduledThreadPool> {
+    R2D2_THREAD_POOL
+        .get_or_init(|| {
+            Arc::new(
+                ScheduledThreadPool::builder()
+                    .num_threads(3)
+                    .thread_name_pattern("r2d2-worker-{}")
+                    .build(),
+            )
+        })
+        .clone()
+}
 
 pub struct StorageEngine {
     pool: Pool<DuckdbConnectionManager>,
@@ -15,6 +58,7 @@ impl StorageEngine {
 
         let pool = Pool::builder()
             .max_size(pool_size)
+            .thread_pool(shared_r2d2_thread_pool())
             .build(manager)
             .map_err(|e| EasyError::new("Failed to initialize connection pool", e))?;
 

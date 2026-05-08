@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "bdslib"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anomaly_detection",
  "anyhow",
@@ -902,6 +902,7 @@ dependencies = [
  "rust_multistackvm",
  "rusty-termcolor",
  "scan_dir",
+ "scheduled-thread-pool",
  "serde 1.0.228",
  "serde-hjson",
  "serde_cbor",

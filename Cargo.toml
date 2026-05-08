@@ -1,6 +1,6 @@
 [package]
 name = "bdslib"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 description = "Multifunctional programmatic data storage"
 license-file = "LICENSE"
@@ -14,6 +14,7 @@ redb = "3.1"
 env_logger = "0.11.*"
 duckdb = { version = "1.4.0", features = ["bundled", "modern-full", "parquet", "json", "r2d2"] }
 r2d2 = "0.8"
+scheduled-thread-pool = "0.2"
 tantivy = "0.25.0"
 vecstore = "1.*.*"
 bincode = "1.3"
