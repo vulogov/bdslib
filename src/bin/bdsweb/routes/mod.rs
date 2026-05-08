@@ -9,3 +9,4 @@ pub mod signals;
 pub mod telemetry;
 pub mod templates;
 pub mod trends;
+pub mod version;

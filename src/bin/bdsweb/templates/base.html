@@ -127,6 +127,28 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- ── Version footer ────────────────────────────────────────────────────── -->
+  <footer style="border-top:1px solid #1a2235; color:#64748b;"
+          class="max-w-screen-xl mx-auto px-6 py-3 mt-6 text-xs flex items-center justify-end gap-4">
+    <span>bdsweb <span id="bdsweb-version">…</span></span>
+    <span style="opacity:0.4;">·</span>
+    <span>bdsnode <span id="bdsnode-version">…</span></span>
+  </footer>
+  <script>
+    (function () {
+      fetch('/version', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          if (!j) return;
+          var w = document.getElementById('bdsweb-version');
+          var n = document.getElementById('bdsnode-version');
+          if (w) w.textContent = j.bdsweb  || '?';
+          if (n) n.textContent = j.bdsnode || '?';
+        })
+        .catch(function () {});
+    })();
+  </script>
+
   <script>
   // ── Shared table sorting ──────────────────────────────────────────────────
   function sortResults(th) {

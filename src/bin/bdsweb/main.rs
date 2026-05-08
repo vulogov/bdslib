@@ -94,6 +94,7 @@ async fn main() {
         .route("/chat/reset",     get(routes::chat::reset))
         .route("/bund",           get(routes::bund::page))
         .route("/bund/eval",      post(routes::bund::eval))
+        .route("/version",        get(routes::version::version))
         .layer(CompressionLayer::new())
         .with_state(state);
 

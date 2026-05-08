@@ -38,6 +38,7 @@ pub fn register(module: &mut RpcModule<()>) {
             let value = serde_json::json!({
                 "node_id":           state.node_id,
                 "hostname":          state.hostname,
+                "version":           env!("CARGO_PKG_VERSION"),
                 "uptime_secs":       uptime_secs,
                 "timestamp":         timestamp,
                 "logs_queue":        logs_queue,

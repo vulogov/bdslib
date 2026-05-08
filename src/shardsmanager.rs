@@ -8,6 +8,7 @@ use crate::shardscache::ShardsCache;
 use crate::vectorengine::json_fingerprint;
 use crate::EmbeddingEngine;
 use fastembed::EmbeddingModel;
+use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -532,10 +533,24 @@ impl ShardsManager {
         let fingerprint = json_fingerprint(query);
         let query_vec = self.cache.embedding().embed(&fingerprint)?;
         let (start, end) = lookback_window(duration)?;
-        let mut results: Vec<(Uuid, i64, f32)> = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_vector_scored_precomputed(&query_vec, &fingerprint, limit)?);
+
+        let infos = self.cache.info().shards_in_range(start, end)?;
+        let mut shards: Vec<crate::shard::Shard> = Vec::with_capacity(infos.len());
+        for info in infos {
+            shards.push(self.cache.shard(info.start_time)?);
+        }
+
+        let per_shard: Vec<Vec<(Uuid, i64, f32)>> = shards
+            .par_iter()
+            .map(|shard| {
+                shard.search_vector_scored_precomputed(&query_vec, &fingerprint, limit)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let total: usize = per_shard.iter().map(|v| v.len()).sum();
+        let mut results: Vec<(Uuid, i64, f32)> = Vec::with_capacity(total);
+        for v in per_shard {
+            results.extend(v);
         }
         results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(limit);
@@ -558,11 +573,21 @@ impl ShardsManager {
         let fingerprint = json_fingerprint(query);
         let query_vec = self.cache.embedding().embed(&fingerprint)?;
         let (start, end) = lookback_window(duration)?;
-        let mut results: Vec<JsonValue> = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            let shard_results =
-                shard.search_vector_precomputed(&query_vec, &fingerprint, limit)?;
+
+        let infos = self.cache.info().shards_in_range(start, end)?;
+        let mut shards: Vec<crate::shard::Shard> = Vec::with_capacity(infos.len());
+        for info in infos {
+            shards.push(self.cache.shard(info.start_time)?);
+        }
+
+        let per_shard: Vec<Vec<JsonValue>> = shards
+            .par_iter()
+            .map(|shard| shard.search_vector_precomputed(&query_vec, &fingerprint, limit))
+            .collect::<Result<Vec<_>>>()?;
+
+        let total: usize = per_shard.iter().map(|v| v.len()).sum();
+        let mut results: Vec<JsonValue> = Vec::with_capacity(total);
+        for shard_results in per_shard {
             for doc in &shard_results {
                 if let (Some(id_str), Some(ts)) =
                     (doc["id"].as_str(), doc["timestamp"].as_u64())
@@ -590,11 +615,21 @@ impl ShardsManager {
         let fingerprint = json_fingerprint(query);
         let query_vec = self.cache.embedding().embed(&fingerprint)?;
         let (start, end) = lookback_window(duration)?;
-        let mut results = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            let shard_results =
-                shard.search_vector_precomputed(&query_vec, &fingerprint, 100)?;
+
+        let infos = self.cache.info().shards_in_range(start, end)?;
+        let mut shards: Vec<crate::shard::Shard> = Vec::with_capacity(infos.len());
+        for info in infos {
+            shards.push(self.cache.shard(info.start_time)?);
+        }
+
+        let per_shard: Vec<Vec<JsonValue>> = shards
+            .par_iter()
+            .map(|shard| shard.search_vector_precomputed(&query_vec, &fingerprint, 100))
+            .collect::<Result<Vec<_>>>()?;
+
+        let total: usize = per_shard.iter().map(|v| v.len()).sum();
+        let mut results: Vec<JsonValue> = Vec::with_capacity(total);
+        for shard_results in per_shard {
             for doc in &shard_results {
                 if let (Some(id_str), Some(ts)) =
                     (doc["id"].as_str(), doc["timestamp"].as_u64())
