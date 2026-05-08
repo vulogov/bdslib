@@ -11,20 +11,27 @@
 //! used to route the record to the correct [`Shard`] via [`ShardsCache`],
 //! matching the behaviour of [`ShardsManager::add`].
 //!
-//! **Point reads / deletes** (`tpl_get_*`, `tpl_delete`) scan all registered
-//! shards in catalog order until the record is found (equivalent to
-//! [`ShardsManager::delete_by_id`]).
+//! **Point reads / deletes** (`tpl_get_*`, `tpl_delete`) first try a direct
+//! shard lookup derived from the UUIDv7 creation timestamp (O(1)), then fall
+//! back to a full catalog scan if the direct hit misses (e.g. backdated
+//! ingestion where the document timestamp differs from wall-clock time).
 //!
 //! **Range queries** (`tpl_list`, `tpl_search_text`, `tpl_search_json`,
 //! `tpl_reindex`) accept a `duration` lookback window and query only the
 //! shards that overlap `[now − duration, now]`, mirroring
 //! [`ShardsManager::search_fts`] and related methods.
+//!
+//! **Frequency-tracking queries** (`templates_recent`, `templates_by_timestamp`)
+//! only scan shards that overlap the requested time window for the observation
+//! phase, since `frequencytracking_observe` always writes to the current-time
+//! shard.
 
 use crate::common::error::{err_msg, Result};
 use crate::common::time::{extract_timestamp, lookback_window};
 use crate::shardsmanager::ShardsManager;
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
+use std::time::{Duration, UNIX_EPOCH};
 use uuid::Uuid;
 
 // ── ShardsManager impl ────────────────────────────────────────────────────────
@@ -46,10 +53,15 @@ impl ShardsManager {
 
     /// Replace the metadata for template `id` and re-embed it.
     ///
-    /// Scans all registered shards to locate `id`.  Returns an error if the
-    /// template is not found.  The updated metadata must still carry the
-    /// original `"timestamp"` so the record remains in the correct shard.
+    /// Tries a direct shard lookup via the UUIDv7 creation timestamp before
+    /// falling back to a full catalog scan.  Returns an error if the template
+    /// is not found in any shard.
     pub fn tpl_update_metadata(&self, id: Uuid, metadata: JsonValue) -> Result<()> {
+        if let Some(shard) = self.shard_for_uuid(id) {
+            if shard.tpl_get_metadata(id)?.is_some() {
+                return shard.tpl_update_metadata(id, metadata);
+            }
+        }
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if shard.tpl_get_metadata(id)?.is_some() {
@@ -61,8 +73,13 @@ impl ShardsManager {
 
     /// Replace the body of template `id` and re-embed it.
     ///
-    /// Scans all registered shards to locate `id`.
+    /// Tries a direct shard lookup before falling back to a full catalog scan.
     pub fn tpl_update_body(&self, id: Uuid, body: &[u8]) -> Result<()> {
+        if let Some(shard) = self.shard_for_uuid(id) {
+            if shard.tpl_get_metadata(id)?.is_some() {
+                return shard.tpl_update_body(id, body);
+            }
+        }
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if shard.tpl_get_metadata(id)?.is_some() {
@@ -76,6 +93,11 @@ impl ShardsManager {
     ///
     /// Returns `Ok(())` if no shard contains the record.
     pub fn tpl_delete(&self, id: Uuid) -> Result<()> {
+        if let Some(shard) = self.shard_for_uuid(id) {
+            if shard.tpl_get_metadata(id)?.is_some() {
+                return shard.tpl_delete(id);
+            }
+        }
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if shard.tpl_get_metadata(id)?.is_some() {
@@ -87,10 +109,16 @@ impl ShardsManager {
 
     // ── reads ─────────────────────────────────────────────────────────────────
 
-    /// Return the JSON metadata for template `id`, scanning all shards.
+    /// Return the JSON metadata for template `id`.
     ///
+    /// Tries a direct shard lookup before falling back to a full catalog scan.
     /// Returns `None` if no shard contains a template with that UUID.
     pub fn tpl_get_metadata(&self, id: Uuid) -> Result<Option<JsonValue>> {
+        if let Some(shard) = self.shard_for_uuid(id) {
+            if let Some(meta) = shard.tpl_get_metadata(id)? {
+                return Ok(Some(meta));
+            }
+        }
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if let Some(meta) = shard.tpl_get_metadata(id)? {
@@ -100,10 +128,16 @@ impl ShardsManager {
         Ok(None)
     }
 
-    /// Return the raw body bytes for template `id`, scanning all shards.
+    /// Return the raw body bytes for template `id`.
     ///
+    /// Tries a direct shard lookup before falling back to a full catalog scan.
     /// Returns `None` if no shard contains a template with that UUID.
     pub fn tpl_get_body(&self, id: Uuid) -> Result<Option<Vec<u8>>> {
+        if let Some(shard) = self.shard_for_uuid(id) {
+            if shard.tpl_get_metadata(id)?.is_some() {
+                return shard.tpl_get_body(id);
+            }
+        }
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if shard.tpl_get_metadata(id)?.is_some() {
@@ -208,15 +242,24 @@ impl ShardsManager {
     pub fn template_by_id(&self, id: &str) -> Result<Option<JsonValue>> {
         let uuid = Uuid::parse_str(id)
             .map_err(|e| err_msg(format!("invalid template id '{id}': {e}")))?;
+        if let Some(shard) = self.shard_for_uuid(uuid) {
+            if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
+                let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
+                return Ok(Some(serde_json::json!({
+                    "id":       id,
+                    "metadata": metadata,
+                    "body":     String::from_utf8_lossy(&body).into_owned(),
+                })));
+            }
+        }
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
             if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
                 let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
-                let body_str = String::from_utf8_lossy(&body).into_owned();
                 return Ok(Some(serde_json::json!({
                     "id":       id,
                     "metadata": metadata,
-                    "body":     body_str,
+                    "body":     String::from_utf8_lossy(&body).into_owned(),
                 })));
             }
         }
@@ -226,11 +269,14 @@ impl ShardsManager {
     /// Return all templates whose FrequencyTracking observation falls in the
     /// inclusive interval `[start, end]` (Unix seconds).
     ///
-    /// Queries each shard's frequency tracking for UUIDs in the range, then
-    /// resolves them across all shards. Results are deduplicated by UUID.
+    /// Only queries shards that overlap `[start, end]` — since observations
+    /// are always written to the current-time shard, old shards cannot contain
+    /// observations in a future time window.
     pub fn templates_by_timestamp(&self, start: u64, end: u64) -> Result<Vec<JsonValue>> {
+        let start_st = UNIX_EPOCH + Duration::from_secs(start);
+        let end_st   = UNIX_EPOCH + Duration::from_secs(end);
         let mut ids: HashSet<String> = HashSet::new();
-        for info in self.cache.info().list_all()? {
+        for info in self.cache.info().shards_in_range(start_st, end_st)? {
             let shard = self.cache.shard(info.start_time)?;
             for id_str in shard.tplstorage.frequencytracking_time_range(start, end)? {
                 ids.insert(id_str);
@@ -241,55 +287,97 @@ impl ShardsManager {
 
     /// Return all templates observed within the humantime `duration` window.
     ///
-    /// Queries each shard's `tplstorage` FrequencyTracking to collect template
-    /// UUIDs seen in `[now - duration, now]`, then resolves each UUID to a full
-    /// template record with `"id"`, `"metadata"`, and `"body"` fields.
-    /// Results are deduplicated by UUID across shards.
-    ///
-    /// `duration` is any string accepted by
-    /// [`humantime::parse_duration`]: `"30s"`, `"5min"`, `"1h"`, `"7days"`.
+    /// Only queries shards that overlap `[now - duration, now]` for the
+    /// frequency-tracking phase — observations are written to the current-time
+    /// shard, so old shards can never contain recent observations.  Template
+    /// metadata is then resolved via the UUIDv7 creation timestamp (O(1) per
+    /// template) with a full-catalog fallback for backdated ingestion.
     pub fn templates_recent(&self, duration: &str) -> Result<Vec<JsonValue>> {
+        let (start, end) = lookback_window(duration)?;
+        let s = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let e = end.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let mut ids: HashSet<String> = HashSet::new();
-        for info in self.cache.info().list_all()? {
+        for info in self.cache.info().shards_in_range(start, end)? {
             let shard = self.cache.shard(info.start_time)?;
-            for id_str in shard.tplstorage.frequencytracking_recent(duration)? {
+            for id_str in shard.tplstorage.frequencytracking_time_range(s, e)? {
                 ids.insert(id_str);
             }
         }
         self.resolve_template_ids(ids)
     }
 
-    /// Resolve a set of template UUID strings to full `{id, metadata, body}`
-    /// records by scanning all registered shards.
+    /// Resolve a set of template UUID strings to full `{id, metadata, body}` records.
     ///
-    /// A template's metadata lives in the shard it was first stored in, which
-    /// may differ from the shards whose FrequencyTracking recorded recent
-    /// observations of it. This method finds each UUID wherever it resides.
-    fn resolve_template_ids(&self, mut ids: HashSet<String>) -> Result<Vec<JsonValue>> {
+    /// For each UUID, first attempts a direct shard lookup using the creation
+    /// timestamp embedded in the UUIDv7 (O(1)).  Any IDs not found that way
+    /// (e.g. from backdated ingestion where wall-clock ≠ document timestamp)
+    /// are resolved via a full catalog scan with early termination.
+    fn resolve_template_ids(&self, ids: HashSet<String>) -> Result<Vec<JsonValue>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
         let mut out = Vec::new();
-        for info in self.cache.info().list_all()? {
-            if ids.is_empty() {
-                break;
-            }
-            let shard = self.cache.shard(info.start_time)?;
-            let candidates: Vec<String> = ids.iter().cloned().collect();
-            for id_str in candidates {
-                if let Ok(uuid) = Uuid::parse_str(&id_str) {
-                    if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
+        let mut not_found: HashSet<String> = HashSet::new();
+
+        for id_str in &ids {
+            let uuid = match Uuid::parse_str(id_str) {
+                Ok(u) => u,
+                Err(_) => { not_found.insert(id_str.clone()); continue; }
+            };
+            let found = if let Some(shard) = self.shard_for_uuid(uuid) {
+                match shard.tpl_get_metadata(uuid)? {
+                    Some(metadata) => {
                         let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
                         out.push(serde_json::json!({
                             "id":       id_str,
                             "metadata": metadata,
                             "body":     String::from_utf8_lossy(&body).into_owned(),
                         }));
-                        ids.remove(&uuid.to_string());
+                        true
+                    }
+                    None => false,
+                }
+            } else {
+                false
+            };
+            if !found {
+                not_found.insert(id_str.clone());
+            }
+        }
+
+        if !not_found.is_empty() {
+            for info in self.cache.info().list_all()? {
+                if not_found.is_empty() { break; }
+                let shard = self.cache.shard(info.start_time)?;
+                let candidates: Vec<String> = not_found.iter().cloned().collect();
+                for id_str in candidates {
+                    if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                        if let Some(metadata) = shard.tpl_get_metadata(uuid)? {
+                            let body = shard.tpl_get_body(uuid)?.unwrap_or_default();
+                            out.push(serde_json::json!({
+                                "id":       id_str,
+                                "metadata": metadata,
+                                "body":     String::from_utf8_lossy(&body).into_owned(),
+                            }));
+                            not_found.remove(&uuid.to_string());
+                        }
                     }
                 }
             }
         }
+
         Ok(out)
     }
+
+    /// Attempt a direct shard lookup for a UUIDv7 using its embedded creation timestamp.
+    ///
+    /// Returns `None` if the UUID has no v7 timestamp or if `cache.shard()` fails
+    /// (e.g. the computed shard interval is not in the catalog).
+    fn shard_for_uuid(&self, id: Uuid) -> Option<crate::shard::Shard> {
+        let ts = id.get_timestamp()?;
+        let (secs, _) = ts.to_unix();
+        let t = UNIX_EPOCH + Duration::from_secs(secs);
+        self.cache.shard(t).ok()
+    }
 }
+

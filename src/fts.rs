@@ -9,26 +9,44 @@ use uuid::Uuid;
 
 const WRITER_HEAP_BYTES: usize = 50_000_000;
 
-/// Thread-safe full-text search engine backed by Tantivy.
-///
-/// Every document is assigned a UUIDv7 at insertion time. All three
-/// operations (`add_document`, `drop_document`, `search`) are immediately
-/// consistent: a commit + reader reload is issued after every write.
-pub struct FTSEngine {
+struct FTSState {
     index: Index,
-    writer: Mutex<IndexWriter<TantivyDocument>>,
+    writer: IndexWriter<TantivyDocument>,
     reader: IndexReader,
     id_field: Field,
     body_field: Field,
 }
 
+/// Thread-safe full-text search engine backed by Tantivy.
+///
+/// Every document is assigned a UUIDv7 at insertion time. All three
+/// operations (`add_document`, `drop_document`, `search`) are immediately
+/// consistent: a commit + reader reload is issued after every write.
+///
+/// The underlying Tantivy index (50 MB writer heap) is opened lazily on the
+/// first FTS read or write, so shards opened for pure DuckDB or template
+/// queries pay no Tantivy initialisation cost.
+pub struct FTSEngine {
+    path: String,
+    state: Mutex<Option<FTSState>>,
+}
+
 impl FTSEngine {
-    /// Create or open an FTS index.
+    /// Create an FTS engine rooted at `path`.
     ///
     /// Pass `":memory:"` for a RAM-only index (lost on drop).
-    /// Any other value is treated as a filesystem directory path;
-    /// it is created if it does not exist.
+    /// Any other value is treated as a filesystem directory path.
+    ///
+    /// The Tantivy index is NOT opened here — it is initialised lazily on the
+    /// first read or write operation.
     pub fn new(path: &str) -> Result<Self> {
+        Ok(Self {
+            path: path.to_string(),
+            state: Mutex::new(None),
+        })
+    }
+
+    fn open_state(path: &str) -> Result<FTSState> {
         let mut builder = Schema::builder();
         let id_field = builder.add_text_field("id", STRING | STORED);
         let body_field = builder.add_text_field("body", TEXT | STORED);
@@ -40,7 +58,6 @@ impl FTSEngine {
             let dir = Path::new(path);
             std::fs::create_dir_all(dir)
                 .map_err(|e| err_msg(format!("Cannot create index directory: {e}")))?;
-            // Open the existing index if one is present; create otherwise.
             if dir.join("meta.json").exists() {
                 Index::open_in_dir(dir)
                     .map_err(|e| err_msg(format!("Cannot open index at {path}: {e}")))?
@@ -60,36 +77,34 @@ impl FTSEngine {
             .try_into()
             .map_err(|e| err_msg(format!("Cannot create index reader: {e}")))?;
 
-        Ok(Self {
-            index,
-            writer: Mutex::new(writer),
-            reader,
-            id_field,
-            body_field,
-        })
+        Ok(FTSState { index, writer, reader, id_field, body_field })
+    }
+
+    fn ensure<'a>(guard: &'a mut Option<FTSState>, path: &str) -> Result<&'a mut FTSState> {
+        if guard.is_none() {
+            *guard = Some(Self::open_state(path)?);
+        }
+        Ok(guard.as_mut().unwrap())
     }
 
     /// Index `text` and return its assigned UUIDv7.
     pub fn add_document(&self, text: &str) -> Result<Uuid> {
         let id = Uuid::now_v7();
+        let mut guard = self.state.lock();
+        let s = Self::ensure(&mut guard, &self.path)?;
+
         let mut doc = TantivyDocument::default();
-        doc.add_text(self.id_field, id.to_string());
-        doc.add_text(self.body_field, text);
-
-        {
-            let mut writer = self.writer.lock();
-            writer
-                .add_document(doc)
-                .map_err(|e| err_msg(format!("Failed to stage document: {e}")))?;
-            writer
-                .commit()
-                .map_err(|e| err_msg(format!("Failed to commit add: {e}")))?;
-        }
-
-        self.reader
+        doc.add_text(s.id_field, id.to_string());
+        doc.add_text(s.body_field, text);
+        s.writer
+            .add_document(doc)
+            .map_err(|e| err_msg(format!("Failed to stage document: {e}")))?;
+        s.writer
+            .commit()
+            .map_err(|e| err_msg(format!("Failed to commit add: {e}")))?;
+        s.reader
             .reload()
             .map_err(|e| err_msg(format!("Failed to reload reader after add: {e}")))?;
-
         Ok(id)
     }
 
@@ -97,33 +112,30 @@ impl FTSEngine {
     ///
     /// Succeeds silently if the UUID does not exist.
     pub fn drop_document(&self, id: Uuid) -> Result<()> {
-        let term = Term::from_field_text(self.id_field, &id.to_string());
+        let mut guard = self.state.lock();
+        let s = Self::ensure(&mut guard, &self.path)?;
 
-        {
-            let mut writer = self.writer.lock();
-            writer.delete_term(term);
-            writer
-                .commit()
-                .map_err(|e| err_msg(format!("Failed to commit delete: {e}")))?;
-        }
-
-        self.reader
+        let term = Term::from_field_text(s.id_field, &id.to_string());
+        s.writer.delete_term(term);
+        s.writer
+            .commit()
+            .map_err(|e| err_msg(format!("Failed to commit delete: {e}")))?;
+        s.reader
             .reload()
             .map_err(|e| err_msg(format!("Failed to reload reader after delete: {e}")))?;
-
         Ok(())
     }
 
     /// Flush all pending changes to the on-disk index directory and reload the reader.
     ///
-    /// For in-memory indexes this is a no-op in terms of persistence but still safe to call.
-    /// Mirrors the `StorageEngine::sync` / DuckDB CHECKPOINT pattern.
+    /// No-op when the index has never been opened (no FTS writes have occurred).
     pub fn sync(&self) -> Result<()> {
-        self.writer
-            .lock()
+        let mut guard = self.state.lock();
+        let Some(s) = guard.as_mut() else { return Ok(()); };
+        s.writer
             .commit()
             .map_err(|e| err_msg(format!("Sync commit failed: {e}")))?;
-        self.reader
+        s.reader
             .reload()
             .map_err(|e| err_msg(format!("Failed to reload reader after sync: {e}")))?;
         Ok(())
@@ -132,66 +144,54 @@ impl FTSEngine {
     /// Index `text` under a caller-supplied `id`, replacing any existing entry for that id.
     ///
     /// Unlike [`add_document`], which generates a fresh UUIDv7, this method stores the
-    /// document under the UUID you provide. If a document with the same `id` is already
-    /// in the index it is deleted and re-inserted atomically within a single commit.
+    /// document under the UUID you provide.
     ///
     /// [`add_document`]: FTSEngine::add_document
     pub fn add_document_with_id(&self, id: Uuid, text: &str) -> Result<()> {
-        let term = Term::from_field_text(self.id_field, &id.to_string());
+        let mut guard = self.state.lock();
+        let s = Self::ensure(&mut guard, &self.path)?;
+
+        let term = Term::from_field_text(s.id_field, &id.to_string());
         let mut doc = TantivyDocument::default();
-        doc.add_text(self.id_field, id.to_string());
-        doc.add_text(self.body_field, text);
-
-        {
-            let mut writer = self.writer.lock();
-            writer.delete_term(term);
-            writer
-                .add_document(doc)
-                .map_err(|e| err_msg(format!("Failed to stage document {id}: {e}")))?;
-            writer
-                .commit()
-                .map_err(|e| err_msg(format!("Failed to commit add_document_with_id: {e}")))?;
-        }
-
-        self.reader
+        doc.add_text(s.id_field, id.to_string());
+        doc.add_text(s.body_field, text);
+        s.writer.delete_term(term);
+        s.writer
+            .add_document(doc)
+            .map_err(|e| err_msg(format!("Failed to stage document {id}: {e}")))?;
+        s.writer
+            .commit()
+            .map_err(|e| err_msg(format!("Failed to commit add_document_with_id: {e}")))?;
+        s.reader
             .reload()
             .map_err(|e| err_msg(format!("Failed to reload reader after add_document_with_id: {e}")))?;
-
         Ok(())
     }
 
     /// Index multiple `(id, text)` pairs in a single commit + reader reload.
     ///
-    /// Each entry follows the same delete-then-add semantics as
-    /// [`add_document_with_id`], but all staging happens inside one mutex
-    /// critical section and a single commit is issued at the end. This is
-    /// significantly faster than calling [`add_document_with_id`] N times when
-    /// inserting a batch of primary documents.
-    ///
     /// No-op when `docs` is empty.
-    ///
-    /// [`add_document_with_id`]: FTSEngine::add_document_with_id
     pub fn add_documents_batch(&self, docs: &[(Uuid, String)]) -> Result<()> {
         if docs.is_empty() {
             return Ok(());
         }
-        {
-            let mut writer = self.writer.lock();
-            for (id, text) in docs {
-                let term = Term::from_field_text(self.id_field, &id.to_string());
-                let mut doc = TantivyDocument::default();
-                doc.add_text(self.id_field, id.to_string());
-                doc.add_text(self.body_field, text);
-                writer.delete_term(term);
-                writer
-                    .add_document(doc)
-                    .map_err(|e| err_msg(format!("Failed to stage document {id}: {e}")))?;
-            }
-            writer
-                .commit()
-                .map_err(|e| err_msg(format!("Failed to commit batch add: {e}")))?;
+        let mut guard = self.state.lock();
+        let s = Self::ensure(&mut guard, &self.path)?;
+
+        for (id, text) in docs {
+            let term = Term::from_field_text(s.id_field, &id.to_string());
+            let mut doc = TantivyDocument::default();
+            doc.add_text(s.id_field, id.to_string());
+            doc.add_text(s.body_field, text);
+            s.writer.delete_term(term);
+            s.writer
+                .add_document(doc)
+                .map_err(|e| err_msg(format!("Failed to stage document {id}: {e}")))?;
         }
-        self.reader
+        s.writer
+            .commit()
+            .map_err(|e| err_msg(format!("Failed to commit batch add: {e}")))?;
+        s.reader
             .reload()
             .map_err(|e| err_msg(format!("Failed to reload reader after batch add: {e}")))?;
         Ok(())
@@ -211,8 +211,16 @@ impl FTSEngine {
     /// Search the index and return up to `limit` `(UUID, BM25-score)` pairs,
     /// ordered by descending relevance score.
     pub fn search_with_scores(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
-        let searcher = self.reader.searcher();
-        let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
+        // Acquire the lock only long enough to extract owned/Copy handles:
+        //   `Index` is Arc-backed (cheap clone), `Field` is u32 (Copy),
+        //   `Searcher` is Arc-backed (cheap clone). All usable after the lock releases.
+        let (index, id_field, body_field, searcher) = {
+            let mut guard = self.state.lock();
+            let s = Self::ensure(&mut guard, &self.path)?;
+            (s.index.clone(), s.id_field, s.body_field, s.reader.searcher())
+        };
+
+        let parser = QueryParser::for_index(&index, vec![body_field]);
         let parsed = parser
             .parse_query(query)
             .map_err(|e| err_msg(format!("Invalid query \"{query}\": {e}")))?;
@@ -227,7 +235,7 @@ impl FTSEngine {
                 .doc(addr)
                 .map_err(|e| err_msg(format!("Failed to retrieve document: {e}")))?;
 
-            if let Some(raw) = doc.get_first(self.id_field) {
+            if let Some(raw) = doc.get_first(id_field) {
                 if let OwnedValue::Str(id_str) = OwnedValue::from(raw) {
                     if let Ok(uuid) = Uuid::parse_str(&id_str) {
                         results.push((uuid, score));
