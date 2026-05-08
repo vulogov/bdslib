@@ -23,9 +23,9 @@ pub mod storageengine;
 pub mod vectorengine;
 pub mod vm;
 pub use analysis::{
-    CausalCandidate, EventCluster, LdaConfig, RcaConfig, RcaResult, RcaTemplatesConfig,
-    RcaTemplatesResult, SamplePoint, TemplateCausalCandidate, TemplateCluster, TelemetryTrend,
-    TopicSummary,
+    textrank_rank, textrank_summary, textrank_summary_with, CausalCandidate, EventCluster,
+    LdaConfig, RcaConfig, RcaResult, RcaTemplatesConfig, RcaTemplatesResult, SamplePoint,
+    TelemetryTrend, TemplateCausalCandidate, TemplateCluster, TextRankConfig, TopicSummary,
 };
 pub use common::generator::{Generator, LogFormat};
 pub use common::jsonfingerprint::json_fingerprint;

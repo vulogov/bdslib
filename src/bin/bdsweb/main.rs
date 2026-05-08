@@ -127,6 +127,8 @@ async fn main() {
         .route("/signals/results",  get(routes::signals::results))
         .route("/rca",              get(routes::rca::page))
         .route("/rca/results",    get(routes::rca::results))
+        .route("/rca/templates",         get(routes::rca_templates::page))
+        .route("/rca/templates/results", get(routes::rca_templates::results))
         .route("/templates",         get(routes::templates::page))
         .route("/templates/results", get(routes::templates::results))
         .route("/chat",           get(routes::chat::page))

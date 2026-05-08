@@ -2,8 +2,10 @@ pub mod latentdirichletallocation;
 pub mod rca;
 pub mod rca_templates;
 pub mod telemetrytrend;
+pub mod textrank;
 
 pub use latentdirichletallocation::{LdaConfig, TopicSummary};
 pub use rca::{CausalCandidate, EventCluster, RcaConfig, RcaResult};
 pub use rca_templates::{RcaTemplatesConfig, RcaTemplatesResult, TemplateCausalCandidate, TemplateCluster};
 pub use telemetrytrend::{SamplePoint, TelemetryTrend};
+pub use textrank::{textrank_rank, textrank_summary, textrank_summary_with, TextRankConfig};

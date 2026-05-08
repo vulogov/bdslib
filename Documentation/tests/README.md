@@ -69,6 +69,7 @@ cargo test <test_function_name> -- --show-output
 | [telemetrytrend_test](telemetrytrend_test.md) | `tests/telemetrytrend_test.rs` | `TelemetryTrend`: statistics, S-H-ESD anomaly detection, breakout detection, generator integration |
 | [lda_test](lda_test.md) | `tests/lda_test.rs` | LDA topic modelling: corpus analysis, keyword invariants, k clamping, empty/numeric corpora |
 | [rca_test](rca_test.md) | `tests/rca_test.rs` | RCA: co-occurrence clustering, causal ranking, telemetry exclusion, threshold and bucket effects |
+| [textrank_test](textrank_test.md) | `tests/textrank_test.rs` | TextRank summariser: empty/single/duplicate inputs, central-topic ranking, length cap (`max_sentences`/`ratio`), unicode, log-fingerprint clustering |
 
 ## Global singleton
 

@@ -61,11 +61,14 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
 #[derive(Template)]
 #[template(path = "partials/trends_data.html")]
 struct TrendsData {
-    key:            String,
-    duration:       String,
-    stats:          TrendStats,
+    key:             String,
+    duration:        String,
+    stats:           TrendStats,
     uplot_data_json: String,
-    has_data:       bool,
+    /// Breakout points as `[[ts, value], ...]` so the chart can overlay them
+    /// as vertical markers without re-aligning to the main x-axis.
+    breakouts_json:  String,
+    has_data:        bool,
 }
 
 pub async fn results(
@@ -77,6 +80,7 @@ pub async fn results(
             key: p.key, duration: p.duration,
             stats: TrendStats::default(),
             uplot_data_json: "[[],[]]".to_owned(),
+            breakouts_json:  "[]".to_owned(),
             has_data: false,
         }.render()?));
     }
@@ -116,11 +120,28 @@ pub async fn results(
     let uplot_data_json = serde_json::to_string(&[&timestamps, &values])?;
     let has_data = !timestamps.is_empty();
 
+    // Extract breakouts as [[ts, value], ...] for chart overlay markers.
+    let breakouts: Vec<[f64; 2]> = trend_v
+        .get("breakouts")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let ts = p.get("timestamp").and_then(|x| x.as_u64())? as f64;
+                    let v  = p.get("value").and_then(|x| x.as_f64())?;
+                    Some([ts, v])
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let breakouts_json = serde_json::to_string(&breakouts)?;
+
     Ok(Html(TrendsData {
         key:             p.key,
         duration:        p.duration,
         stats,
         uplot_data_json,
+        breakouts_json,
         has_data,
     }.render()?))
 }

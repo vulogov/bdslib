@@ -71,7 +71,7 @@ fn fmt_lead_label(secs: f64) -> String {
     if secs > 0.0 { format!("{t} before") } else { format!("{t} after") }
 }
 
-fn extract_rca(v: &serde_json::Value) -> (RcaSummary, Vec<CausalRow>, Vec<ClusterCard>) {
+pub(super) fn extract_rca(v: &serde_json::Value) -> (RcaSummary, Vec<CausalRow>, Vec<ClusterCard>) {
     let failure_key = v.get("failure_key")
         .and_then(|x| x.as_str())
         .unwrap_or("")

@@ -71,8 +71,47 @@
   const raw = {{ uplot_data_json|safe }};
   if (!raw || !raw[0] || raw[0].length === 0) return;
 
+  // Breakout markers: [[ts, value], ...] — drawn as red dashed vertical lines
+  // with a circular marker at the breakout value, layered on top of the series.
+  const breakouts = {{ breakouts_json|safe }};
+
   const container = document.getElementById('uplot-container');
   const W = Math.max(container.clientWidth || 0, 400);
+
+  const breakoutOverlay = {
+    hooks: {
+      draw: [function (u) {
+        if (!breakouts || breakouts.length === 0) return;
+        const ctx = u.ctx;
+        const top    = u.bbox.top;
+        const bottom = u.bbox.top + u.bbox.height;
+        ctx.save();
+        ctx.strokeStyle = "rgba(239,68,68,0.85)"; // red-500
+        ctx.fillStyle   = "rgba(239,68,68,0.95)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        for (let i = 0; i < breakouts.length; i++) {
+          const ts = breakouts[i][0];
+          const v  = breakouts[i][1];
+          const x  = u.valToPos(ts, "x", true);
+          if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+          // Vertical dashed line spanning the plot area.
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, bottom);
+          ctx.stroke();
+          // Solid marker dot at the breakout value.
+          const y = u.valToPos(v, "y", true);
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.setLineDash([4, 3]);
+        }
+        ctx.restore();
+      }]
+    }
+  };
 
   new uPlot({
     width:  W,
@@ -87,7 +126,8 @@
       {},
       { label: "{{ key }}", stroke: "#3b82f6", fill: "rgba(59,130,246,0.07)",
         width: 1.5, points: { show: raw[0].length <= 200 } }
-    ]
+    ],
+    plugins: [breakoutOverlay]
   }, raw, container);
 })();
 </script>

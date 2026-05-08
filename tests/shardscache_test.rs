@@ -36,6 +36,7 @@ fn tmp_cache_threshold(duration: &str, threshold: f32) -> (TempDir, ShardsCache)
         4,
         engine().clone(),
         ObservabilityStorageConfig { similarity_threshold: threshold },
+        16,
     )
     .unwrap();
     (dir, cache)

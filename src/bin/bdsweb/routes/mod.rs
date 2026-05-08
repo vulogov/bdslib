@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod docs;
 pub mod logs;
 pub mod rca;
+pub mod rca_templates;
 pub mod search;
 pub mod signals;
 pub mod telemetry;

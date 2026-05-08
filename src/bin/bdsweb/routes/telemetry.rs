@@ -14,8 +14,14 @@ pub struct Params {
     pub duration: String,
     #[serde(default)]
     pub q: String,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
 }
 fn default_duration() -> String { "1h".to_owned() }
+fn default_limit()    -> usize  { 50 }
+
+/// Clamp a user-supplied limit to the supported [1, 1000] range.
+fn clamp_limit(n: usize) -> usize { n.clamp(1, 1000) }
 
 #[derive(Debug)]
 pub struct HitRow {
@@ -49,10 +55,14 @@ fn hit_to_row(v: &serde_json::Value) -> HitRow {
 
 #[derive(Template)]
 #[template(path = "telemetry.html")]
-struct TelemetryPage { duration: String, q: String }
+struct TelemetryPage { duration: String, q: String, limit: usize }
 
 pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
-    Ok(Html(TelemetryPage { duration: p.duration, q: p.q }.render()?))
+    Ok(Html(TelemetryPage {
+        duration: p.duration,
+        q:        p.q,
+        limit:    clamp_limit(p.limit),
+    }.render()?))
 }
 
 // ── HTMX: key cloud ──────────────────────────────────────────────────────────
@@ -97,6 +107,8 @@ pub async fn results(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
+    let limit = clamp_limit(p.limit);
+
     if p.q.is_empty() {
         return Ok(Html(TelemetryRows { rows: vec![], duration: p.duration, q: p.q }.render()?));
     }
@@ -105,7 +117,7 @@ pub async fn results(
         "session":  SESSION,
         "query":    p.q,
         "duration": p.duration,
-        "limit":    50,
+        "limit":    limit,
     })).await?;
 
     Ok(Html(TelemetryRows {

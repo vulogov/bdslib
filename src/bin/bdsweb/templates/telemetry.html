@@ -46,6 +46,19 @@
         <option value="7days" {% if duration == "7days" %}selected{% endif %}>7days</option>
       </select>
     </div>
+    <div class="w-28">
+      <label class="block text-xs text-slate-500 mb-1">Limit</label>
+      <select name="limit" class="w-full rounded px-3 py-2 text-sm">
+        <option value="1"    {% if limit == 1    %}selected{% endif %}>1</option>
+        <option value="10"   {% if limit == 10   %}selected{% endif %}>10</option>
+        <option value="25"   {% if limit == 25   %}selected{% endif %}>25</option>
+        <option value="50"   {% if limit == 50   %}selected{% endif %}>50</option>
+        <option value="100"  {% if limit == 100  %}selected{% endif %}>100</option>
+        <option value="250"  {% if limit == 250  %}selected{% endif %}>250</option>
+        <option value="500"  {% if limit == 500  %}selected{% endif %}>500</option>
+        <option value="1000" {% if limit == 1000 %}selected{% endif %}>1000</option>
+      </select>
+    </div>
     <button type="submit" class="btn btn-primary">Search</button>
     <span id="spinner" class="htmx-indicator text-blue-400 text-sm self-center">Searching…</span>
   </form>
@@ -69,7 +82,7 @@
   </div>
   {% else %}
   <div class="text-center py-8 text-slate-500 text-sm"
-       hx-get="/telemetry/results?q={{ q }}&duration={{ duration }}"
+       hx-get="/telemetry/results?q={{ q }}&duration={{ duration }}&limit={{ limit }}"
        hx-trigger="load"
        hx-target="#results"
        hx-swap="innerHTML">Searching…</div>
