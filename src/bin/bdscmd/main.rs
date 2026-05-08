@@ -116,6 +116,9 @@ enum Commands {
     /// Root cause analysis on drain3 template observations
     RcaTemplates(cmd::rca_templates::Cmd),
 
+    /// Extractive TextRank summary of every drain3 template observed in a window
+    TextrankTemplates(cmd::textrank_templates::Cmd),
+
     /// Evaluate a BUND script
     Eval(cmd::eval::Cmd),
 
@@ -259,6 +262,7 @@ fn main() -> Result<()> {
         Commands::TopicsAll(a)                => cmd::topics_all::run(&url, &session, a),
         Commands::Rca(a)                      => cmd::rca::run(&url, &session, a),
         Commands::RcaTemplates(a)             => cmd::rca_templates::run(&url, &session, a),
+        Commands::TextrankTemplates(a)        => cmd::textrank_templates::run(&url, &session, a),
         Commands::Eval(a)                     => cmd::eval::run(&url, &session, a),
         Commands::TplAdd(a)                   => cmd::tpl_add::run(&url, &session, a),
         Commands::TplGet(a)                   => cmd::tpl_get::run(&url, &session, a),

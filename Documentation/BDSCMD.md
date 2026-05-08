@@ -50,6 +50,7 @@ output suitable for piping into `jq`.
     - [topics-all](#113-topics-all)
     - [rca](#114-rca)
     - [rca-templates](#115-rca-templates)
+    - [textrank-templates](#116-textrank-templates)
 12. [Commands — Template Store](#12-commands--template-store)
     - [tpl-add](#121-tpl-add)
     - [tpl-get](#122-tpl-get)
@@ -1162,6 +1163,61 @@ before constructing the `--failure-body` argument.
 
 ---
 
+### 11.6 `textrank-templates`
+
+Extractive TextRank summary of every drain3 template observed in a lookback
+window. Each template is fingerprinted via `json_fingerprint` (combining its
+metadata and body), and the resulting list of strings is fed through the
+TextRank algorithm; the highest-ranked fingerprints are returned joined as a
+single summary string.
+
+Useful for one-glance dashboards and as the seed text for follow-up LLM
+prompts that need a compressed overview of "what the templates in this window
+are about".
+
+```
+bdscmd textrank-templates --duration <DUR> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window, e.g. `"1h"`, `"30min"`, `"7days"` |
+| `--max-sentences` | `0` | Hard cap on summary length; `0` → derive from `--ratio` |
+| `--ratio` | `0.3` | Fraction of fingerprints kept when `--max-sentences` is `0` |
+| `--min-word-len` | `2` | Tokens shorter than this are dropped before scoring |
+| `--damping` | `0.85` | PageRank damping factor |
+| `--iters` | `30` | Maximum PageRank iterations |
+| `--tolerance` | `1e-4` | L1-norm change tolerance for PageRank early exit |
+
+**Examples:**
+
+```bash
+# auto-sized summary over the last hour (~30% of templates kept)
+bdscmd textrank-templates -d 1h
+
+# capped summary with custom tuning
+bdscmd textrank-templates -d 6h --max-sentences 5 --min-word-len 3
+
+# extract just the summary text
+bdscmd --raw textrank-templates -d 24h | jq -r '.summary'
+```
+
+**Output:**
+
+```json
+{
+  "duration": "1h",
+  "max_sentences": 0,
+  "ratio": 0.3,
+  "summary": "level: error code: 503 body: upstream timeout service: <*> ..."
+}
+```
+
+When no templates were observed in the window, `summary` is the empty string —
+no error is raised.
+
+---
+
 ## 12. Commands — Template Store
 
 The template store (`tplstorage`) holds drain3 log-template documents: named
@@ -1628,6 +1684,7 @@ generate_report.sh | bdscmd eval -c reporting
 | `topics-all` | `v2/topics.all` | `-d`, `--k`, `--iters`, `--top-n` |
 | `rca` | `v2/rca` | `-d`, `-f`, `--bucket-secs`, `--jaccard-threshold` |
 | `rca-templates` | `v2/rca.templates` | `-d`, `-f`, `--bucket-secs`, `--jaccard-threshold` |
+| `textrank-templates` | `v2/textrank.templates` | `-d`, `--max-sentences`, `--ratio`, `--min-word-len` |
 | `tpl-add` | `v2/tpl.add` | `-n`, `-b`, `-t`, `--tag`, `-d` |
 | `tpl-get` | `v2/tpl.get` | `-i` |
 | `tpl-delete` | `v2/tpl.delete` | `-i` |

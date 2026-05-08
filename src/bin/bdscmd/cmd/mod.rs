@@ -32,6 +32,7 @@ pub mod primaries_get_telemetry;
 pub mod primary;
 pub mod rca;
 pub mod rca_templates;
+pub mod textrank_templates;
 pub mod search;
 pub mod signal_emit;
 pub mod signal_update;

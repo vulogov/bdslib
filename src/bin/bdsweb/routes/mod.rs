@@ -9,5 +9,6 @@ pub mod search;
 pub mod signals;
 pub mod telemetry;
 pub mod templates;
+pub mod templates_summary;
 pub mod trends;
 pub mod version;
