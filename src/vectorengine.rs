@@ -17,43 +17,47 @@ pub use vecstore::Neighbor as SearchResult;
 /// automatic text-to-vector conversion via [`store_document`] and
 /// [`search_json`].
 ///
+/// The underlying `VecStore` (HNSW index) is opened lazily on the first
+/// vector operation, not at construction time. This avoids deserialising the
+/// full binary index when a shard is opened for pure DuckDB queries.
+///
 /// [`store_document`]: VectorEngine::store_document
 /// [`search_json`]: VectorEngine::search_json
 #[derive(Clone)]
 pub struct VectorEngine {
-    store: Arc<Mutex<VecStore>>,
+    path: String,
+    store: Arc<Mutex<Option<VecStore>>>,
     embedding: Option<Arc<EmbeddingEngine>>,
 }
 
 impl VectorEngine {
-    /// Open or create a vector store at `path`.
+    /// Create a `VectorEngine` for the store at `path`.
     ///
-    /// The directory (and index files) are created automatically if they do
-    /// not exist.
-    ///
+    /// The HNSW index is NOT opened until the first vector read or write.
     /// `store_document` and `search_json` are not available on engines created
     /// with `new`; use [`with_embedding`] instead.
     ///
     /// [`with_embedding`]: VectorEngine::with_embedding
     pub fn new(path: &str) -> Result<Self> {
-        let store = VecStore::open(path)
-            .map_err(|e| err_msg(format!("Failed to open vector store at {path:?}: {e}")))?;
         Ok(Self {
-            store: Arc::new(Mutex::new(store)),
+            path: path.to_string(),
+            store: Arc::new(Mutex::new(None)),
             embedding: None,
         })
     }
 
-    /// Open or create a vector store at `path`, with an [`EmbeddingEngine`]
-    /// for automatic text embedding via [`store_document`] and [`search_json`].
+    /// Create a `VectorEngine` for the store at `path`, with an
+    /// [`EmbeddingEngine`] for automatic text embedding via [`store_document`]
+    /// and [`search_json`].
+    ///
+    /// The HNSW index is NOT opened until the first vector read or write.
     ///
     /// [`store_document`]: VectorEngine::store_document
     /// [`search_json`]: VectorEngine::search_json
     pub fn with_embedding(path: &str, engine: EmbeddingEngine) -> Result<Self> {
-        let store = VecStore::open(path)
-            .map_err(|e| err_msg(format!("Failed to open vector store at {path:?}: {e}")))?;
         Ok(Self {
-            store: Arc::new(Mutex::new(store)),
+            path: path.to_string(),
+            store: Arc::new(Mutex::new(None)),
             embedding: Some(Arc::new(engine)),
         })
     }
@@ -73,10 +77,10 @@ impl VectorEngine {
         metadata: Option<JsonValue>,
     ) -> Result<()> {
         let meta = json_to_metadata(metadata.unwrap_or(JsonValue::Object(Default::default())));
-        self.store
-            .lock()
-            .upsert(id.to_string(), vector, meta)
-            .map_err(|e| err_msg(format!("Failed to store vector {id:?}: {e}")))
+        self.with_store(|s| {
+            s.upsert(id.to_string(), vector, meta)
+                .map_err(|e| err_msg(format!("Failed to store vector {id:?}: {e}")))
+        })
     }
 
     /// Embed `document` using the attached [`EmbeddingEngine`] and store the
@@ -93,10 +97,10 @@ impl VectorEngine {
         let fingerprint = json_fingerprint(&document);
         let vector = engine.embed(&fingerprint)?;
         let meta = json_to_metadata(document);
-        self.store
-            .lock()
-            .upsert(id.to_string(), vector, meta)
-            .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))
+        self.with_store(|s| {
+            s.upsert(id.to_string(), vector, meta)
+                .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))
+        })
     }
 
     /// Embed and store multiple `(id, document)` pairs in a single ONNX batch
@@ -119,25 +123,25 @@ impl VectorEngine {
             .collect();
         let fp_refs: Vec<&str> = fingerprints.iter().map(String::as_str).collect();
         let vectors = engine.embed_batch(&fp_refs)?;
-        let mut store = self.store.lock();
-        for ((id, doc), vector) in entries.iter().zip(vectors) {
-            let meta = json_to_metadata(doc.clone());
-            store
-                .upsert(id.to_string(), vector, meta)
-                .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))?;
-        }
-        Ok(())
+        self.with_store(|s| {
+            for ((id, doc), vector) in entries.iter().zip(vectors) {
+                let meta = json_to_metadata(doc.clone());
+                s.upsert(id.to_string(), vector, meta)
+                    .map_err(|e| err_msg(format!("Failed to store document {id:?}: {e}")))?;
+            }
+            Ok(())
+        })
     }
 
     /// Remove the vector stored under `id`.
     ///
     /// Returns `Ok(())` silently if no record exists for `id`.
     pub fn delete_vector(&self, id: &str) -> Result<()> {
-        match self.store.lock().remove(id) {
+        self.with_store(|s| match s.remove(id) {
             Ok(()) => Ok(()),
             Err(e) if e.to_string().to_lowercase().contains("not found") => Ok(()),
             Err(e) => Err(err_msg(format!("Failed to remove vector {id:?}: {e}"))),
-        }
+        })
     }
 
     // ── searches ──────────────────────────────────────────────────────────────
@@ -146,11 +150,9 @@ impl VectorEngine {
     /// descending similarity score (1.0 = identical, 0.0 = orthogonal).
     pub fn search(&self, query_vector: Vec<f32>, limit: usize) -> Result<Vec<SearchResult>> {
         let q = Query::new(query_vector).with_limit(limit);
-        let mut results = self
-            .store
-            .lock()
-            .query(q)
-            .map_err(|e| err_msg(format!("Vector search failed: {e}")))?;
+        let mut results = self.with_store(|s| {
+            s.query(q).map_err(|e| err_msg(format!("Vector search failed: {e}")))
+        })?;
         distance_to_similarity(&mut results);
         Ok(results)
     }
@@ -171,11 +173,9 @@ impl VectorEngine {
     ) -> Result<Vec<SearchResult>> {
         let pool = candidate_pool.max(limit);
         let q = Query::new(query_vector).with_limit(pool);
-        let mut candidates = self
-            .store
-            .lock()
-            .query(q)
-            .map_err(|e| err_msg(format!("Vector search failed: {e}")))?;
+        let mut candidates = self.with_store(|s| {
+            s.query(q).map_err(|e| err_msg(format!("Vector search failed: {e}")))
+        })?;
         // Convert before reranking: rerankers treat score as similarity (higher = better).
         distance_to_similarity(&mut candidates);
         reranker
@@ -221,17 +221,29 @@ impl VectorEngine {
 
     /// Flush the in-memory index and all records to disk.
     ///
-    /// For file-backed stores this is necessary to persist changes across
-    /// process restarts. For in-process stores the call succeeds but has no
-    /// durable effect.
+    /// No-op when the store has never been opened (no vector writes or reads
+    /// have occurred). For file-backed stores this is necessary to persist
+    /// changes across process restarts.
     pub fn sync(&self) -> Result<()> {
-        self.store
-            .lock()
-            .save()
-            .map_err(|e| err_msg(format!("Failed to sync vector store: {e}")))
+        let mut guard = self.store.lock();
+        let Some(s) = guard.as_mut() else { return Ok(()); };
+        s.save().map_err(|e| err_msg(format!("Failed to sync vector store: {e}")))
     }
 
     // ── internal ──────────────────────────────────────────────────────────────
+
+    /// Open the VecStore on first access, then call `f` with a mutable ref.
+    fn with_store<R, F: FnOnce(&mut VecStore) -> Result<R>>(&self, f: F) -> Result<R> {
+        let mut guard = self.store.lock();
+        if guard.is_none() {
+            *guard = Some(
+                VecStore::open(&self.path).map_err(|e| {
+                    err_msg(format!("Failed to open vector store at {:?}: {e}", self.path))
+                })?,
+            );
+        }
+        f(guard.as_mut().unwrap())
+    }
 
     fn require_embedding(&self, caller: &str) -> Result<Arc<EmbeddingEngine>> {
         self.embedding.clone().ok_or_else(|| {
