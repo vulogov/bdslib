@@ -13,7 +13,10 @@
 #   --config PATH         path to hjson config file (overrides BDS_CONFIG env var)
 #   --tel-count N         telemetry records per key (default: 200)
 #   --log-count N         log records per format (default: 300)
-#   --doc-count N         docstore documents (default: 40)
+#   --doc-count N         docstore documents (default: 40); 0 skips docstore entirely
+#   --duration DUR        humantime duration (e.g. 6h, 30m, 2d) overriding the
+#                         per-key/per-format lookback windows for telemetry, logs
+#                         and the mixed batch
 #   --no-color            disable colour output
 #
 # Environment variables (lower precedence than flags):
@@ -32,6 +35,7 @@ CONFIG_ARGS=()
 TEL_COUNT=200
 LOG_COUNT=300
 DOC_COUNT=40
+DURATION=""
 COLOR=1
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -42,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --tel-count) TEL_COUNT="$2";          shift 2 ;;
         --log-count) LOG_COUNT="$2";          shift 2 ;;
         --doc-count) DOC_COUNT="$2";          shift 2 ;;
+        --duration)  DURATION="$2";           shift 2 ;;
         --no-color)  COLOR=0;                 shift   ;;
         -h|--help)
             sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
@@ -105,30 +110,34 @@ NODE_ID=$("$BDSCMD" "${BDSCMD_OPTS[@]}" status 2>/dev/null | jq -r '.node_id // 
 ok "bdsnode up  (node_id=$NODE_ID)"
 
 # ── Docstore ──────────────────────────────────────────────────────────────────
-step "Docstore — $DOC_COUNT documents"
-
 doc_ok=0; doc_fail=0
-info "Generating and submitting …"
+if [[ "$DOC_COUNT" -eq 0 ]]; then
+    step "Docstore — skipped (--doc-count=0)"
+else
+    step "Docstore — $DOC_COUNT documents"
 
-while IFS= read -r line; do
-    meta=$(printf '%s' "$line" | jq -c '.metadata' 2>/dev/null) || continue
-    content=$(printf '%s' "$line" | jq -r '.content' 2>/dev/null)   || continue
-    if "$BDSCMD" "${BDSCMD_OPTS[@]}" doc-add \
-            --metadata "$meta" \
-            --content  "$content" &>/dev/null; then
-        (( doc_ok++  )) || true
-    else
-        (( doc_fail++ )) || true
-    fi
-done < <("$BDSCLI" "${CONFIG_ARGS[@]}" generate docs --count "$DOC_COUNT" 2>/dev/null)
+    info "Generating and submitting …"
 
-tally "documents added:"  "$doc_ok"
-[[ $doc_fail -gt 0 ]] && tally "documents failed:" "$doc_fail"
+    while IFS= read -r line; do
+        meta=$(printf '%s' "$line" | jq -c '.metadata' 2>/dev/null) || continue
+        content=$(printf '%s' "$line" | jq -r '.content' 2>/dev/null)   || continue
+        if "$BDSCMD" "${BDSCMD_OPTS[@]}" doc-add \
+                --metadata "$meta" \
+                --content  "$content" &>/dev/null; then
+            (( doc_ok++  )) || true
+        else
+            (( doc_fail++ )) || true
+        fi
+    done < <("$BDSCLI" "${CONFIG_ARGS[@]}" generate docs --count "$DOC_COUNT" 2>/dev/null)
 
-info "Rebuilding document vector index …"
-reindexed=$("$BDSCMD" "${BDSCMD_OPTS[@]}" doc-reindex 2>/dev/null | jq -r '.indexed // 0') || reindexed=0
-tally "documents re-indexed:" "$reindexed"
-ok "Docstore done"
+    tally "documents added:"  "$doc_ok"
+    [[ $doc_fail -gt 0 ]] && tally "documents failed:" "$doc_fail"
+
+    info "Rebuilding document vector index …"
+    reindexed=$("$BDSCMD" "${BDSCMD_OPTS[@]}" doc-reindex 2>/dev/null | jq -r '.indexed // 0') || reindexed=0
+    tally "documents re-indexed:" "$reindexed"
+    ok "Docstore done"
+fi
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 # NOTE: telemetry records are ingested ASYNCHRONOUSLY.  `bdscmd add-batch` pipes
@@ -156,7 +165,7 @@ declare -A TEL_KEYS=(
 
 tel_total=0
 for key in "${!TEL_KEYS[@]}"; do
-    dur="${TEL_KEYS[$key]}"
+    dur="${DURATION:-${TEL_KEYS[$key]}}"
     queued=$(
         "$BDSCLI" "${CONFIG_ARGS[@]}" generate telemetry \
             --key      "$key" \
@@ -185,7 +194,7 @@ declare -A LOG_FORMATS=(
 
 log_total=0
 for fmt in "${!LOG_FORMATS[@]}"; do
-    dur="${LOG_FORMATS[$fmt]}"
+    dur="${DURATION:-${LOG_FORMATS[$fmt]}}"
     queued=$(
         "$BDSCLI" "${CONFIG_ARGS[@]}" generate log \
             --format   "$fmt" \
@@ -205,16 +214,17 @@ ok "Logs done  (total queued: $log_total)"
 step "Mixed batch"
 
 MIXED_COUNT=$(( TEL_COUNT * 2 ))
+MIXED_DUR="${DURATION:-8h}"
 mixed_queued=$(
     "$BDSCLI" "${CONFIG_ARGS[@]}" generate mixed \
-        --duration "8h" \
+        --duration "$MIXED_DUR" \
         --count    "$MIXED_COUNT" \
         --ratio    0.5 \
         2>/dev/null \
     | "$BDSCMD" "${BDSCMD_OPTS[@]}" add-batch 2>/dev/null \
     | jq -r '.queued // 0'
 ) || mixed_queued=0
-tally "mixed (8h, ratio=0.5):" "$mixed_queued queued"
+tally "mixed ($MIXED_DUR, ratio=0.5):" "$mixed_queued queued"
 ok "Mixed done"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
