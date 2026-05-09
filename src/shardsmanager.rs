@@ -134,6 +134,9 @@ pub struct ShardsManager {
     pub(crate) docstore: DocumentStorage,
     /// Signal store: emitted signals with name, severity, and timestamp metadata.
     pub(crate) signals: DocumentStorage,
+    /// Script store: BUND scripts addressable by UUID, with `name` + `schedule`
+    /// metadata. Backed by `DocumentStorage` like `docstore` and `signals`.
+    pub(crate) scripts: DocumentStorage,
     /// Shared drain parser; `Some` only when `drain_enabled = true` in the config.
     pub(crate) drain: Option<Arc<Mutex<DrainParser>>>,
     /// Maps in-memory drain cluster ID → stored tplstorage UUID.
@@ -183,6 +186,9 @@ impl ShardsManager {
         let signals_path = format!("{}/signals", cfg.dbpath);
         let signals = DocumentStorage::with_embedding(&signals_path, embedding.clone())?;
 
+        let scripts_path = format!("{}/scripts", cfg.dbpath);
+        let scripts = DocumentStorage::with_embedding(&scripts_path, embedding.clone())?;
+
         let cache = ShardsCache::with_config(
             &cfg.dbpath,
             &cfg.shard_duration,
@@ -201,6 +207,7 @@ impl ShardsManager {
             cache,
             docstore,
             signals,
+            scripts,
             drain: None,
             drain_cluster_map: Arc::new(Mutex::new(HashMap::new())),
             jsoncache,

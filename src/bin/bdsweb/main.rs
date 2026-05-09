@@ -3,7 +3,7 @@ mod error;
 mod routes;
 mod state;
 
-use axum::{routing::{get, post}, Router};
+use axum::{routing::{delete, get, post}, Router};
 use clap::Parser;
 use state::AppState;
 use tower_http::compression::CompressionLayer;
@@ -147,6 +147,12 @@ async fn main() {
         .route("/chat/reset",     get(routes::chat::reset))
         .route("/bund",           get(routes::bund::page))
         .route("/bund/eval",      post(routes::bund::eval))
+        .route("/scripts",                get(routes::scripts::page))
+        .route("/scripts/list",           get(routes::scripts::list))
+        .route("/scripts/editor",         get(routes::scripts::editor_new))
+        .route("/scripts/editor/{id}",    get(routes::scripts::editor_get))
+        .route("/scripts/save",           post(routes::scripts::save))
+        .route("/scripts/{id}",           delete(routes::scripts::delete))
         .route("/version",        get(routes::version::version))
         .layer(CompressionLayer::new())
         .with_state(state);

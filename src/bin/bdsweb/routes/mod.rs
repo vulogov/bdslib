@@ -9,6 +9,7 @@ pub mod primary_query_summary;
 pub mod primary_summary;
 pub mod rca;
 pub mod rca_templates;
+pub mod scripts;
 pub mod search;
 pub mod signals;
 pub mod telemetry;

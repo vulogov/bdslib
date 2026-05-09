@@ -75,6 +75,7 @@ cargo run --example <name>
 | [LSA](lsa_demo.md) | `lsa_demo.rs` | Extractive summarisation via Latent Semantic Analysis: TF-IDF → centred Gram → truncated SVD → Steinberger-Ježek scoring |
 | [PrimaryTextRank](primary_textrank_demo.md) | `primary_textrank_demo.rs` | `summary_for_recent` and `summary_for_query`: TextRank over primary observability records, skipping numeric measurements |
 | [PrimaryLSA](lsa_primary_textrank_demo.md) | `lsa_primary_textrank_demo.rs` | `summary_lsa_for_recent` and `summary_lsa_for_query`: LSA over primary observability records, numeric exclusion, `n_concepts` and `max_sentences` knobs |
+| [Scripts](shardsmanager_scripts_demo.md) | `shardsmanager_scripts_demo.rs` | `script_add` / `scripts` / `script` / `update_script` / `script_delete`: BUND script registry with `name` + `schedule` metadata validation |
 | [ResultQueue](result_queue_demo.md) | `result_queue_demo.rs` | Per-id FIFO queues of `rust_dynamic` values with creation timestamps and TTL eviction; backs `v2/results.*` |
 | [ShardsManagerTplFrequency](shardsmanager_tpl_frequency_demo.md) | `shardsmanager_tpl_frequency_demo.rs` | Drain3 template discovery and FrequencyTracking query API: `templates_recent`, `template_by_id`, `templates_by_timestamp` |
 

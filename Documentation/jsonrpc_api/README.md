@@ -163,3 +163,8 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/results.push`](v2_results_push.md) | Push a JSON value onto the back of the result queue identified by `id`; auto-creates the queue with a fresh creation timestamp |
 | [`v2/results.pull`](v2_results_pull.md) | Pop the front value from the result queue identified by `id`; returns the value as JSON plus `remaining` count |
 | [`v2/results.empty`](v2_results_empty.md) | Number of elements in the result queue identified by `id`, with `empty` boolean |
+| [`v2/script_add`](v2_script_add.md) | Store a new BUND script — metadata must contain `name` and `schedule` (crontab-style); returns the assigned UUIDv7 |
+| [`v2/scripts`](v2_scripts.md) | List every stored BUND script with `id`, `name`, `schedule`, and the full metadata document |
+| [`v2/script`](v2_script.md) | Fetch a single BUND script body and metadata by UUIDv7 |
+| [`v2/script_update`](v2_script_update.md) | Replace metadata and body of an existing script (full overwrite, not merge) |
+| [`v2/script_delete`](v2_script_delete.md) | Remove a script from all sub-stores; idempotent |

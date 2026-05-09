@@ -305,6 +305,15 @@ impl DocumentStorage {
         self.meta.get_json(id)
     }
 
+    /// Return every stored metadata document as `(uuid, metadata)` pairs.
+    ///
+    /// Used by callers that need a full directory of stored records without
+    /// going through the vector index (e.g., the `ShardsManager` script
+    /// registry).
+    pub fn list_metadata(&self) -> Result<Vec<(Uuid, JsonValue)>> {
+        self.meta.list_all()
+    }
+
     /// Return the raw content stored under `id`, or `None` if no such document
     /// exists.
     pub fn get_content(&self, id: Uuid) -> Result<Option<Vec<u8>>> {
