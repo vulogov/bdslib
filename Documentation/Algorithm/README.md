@@ -1,27 +1,34 @@
-# bdslib — Analysis Algorithms
+# bdslib — Algorithms
 
-Reference documentation for the unsupervised analysis algorithms that
-ship inside `bdslib::analysis`. Each algorithm has its own file in this
-directory: an exhaustive explanation of what problem it solves, how it
-works in classical form, how bdslib adapts it, the full pipeline with
-code excerpts, complexity and determinism guarantees, worked examples,
-edge-case behaviour, and references.
+Reference documentation for the algorithms that ship inside bdslib.
+Most live under `bdslib::analysis` and run as queries against stored
+records; one — primary/secondary classification — sits in the data path
+itself and is invoked on every write.
+
+Each algorithm has its own file in this directory: an exhaustive
+explanation of what problem it solves, how it works in classical form,
+how bdslib adapts it, the full pipeline with code excerpts, complexity
+and determinism guarantees, worked examples, edge-case behaviour, and
+references.
 
 These documents are *deep dives* — for quick test summaries see
 [`Documentation/tests/`](../tests/), for runnable demos see
 [`Documentation/examples/`](../examples/), and for a one-line API
-overview see the top-level [`Documentation/README.md`](../README.md).
+overview see the top-level [`Documentation/README.md`](../README.md). For
+the broader storage layout these algorithms operate over, see
+[`Documentation/DATABASE.md`](../DATABASE.md).
 
 ---
 
 ## What's here, by question they answer
 
-The five algorithms cover essentially every "what is this corpus
-about?" or "what is happening in my system?" question that doesn't
-require labelled training data or external models:
+These algorithms cover essentially every "what is this corpus about?",
+"what is happening in my system?", or "is this record really new?"
+question that doesn't require labelled training data or external models:
 
 | Question | Algorithm | What you get |
 |---|---|---|
+| *"Is this record genuinely new, or a near-duplicate of something we already have?"* | [Primary / Secondary](PRIMARY_SECONDARY.md) | A `(uuid, is_primary)` verdict on every incoming record — the deduplication backbone of the storage subsystem. |
 | *"What does this batch of strings boil down to?"* (extractive) | [TextRank](TEXTRANK.md) | A short summary string built from the most central inputs in their original input order. |
 | *"What does this batch of strings boil down to?"* (concept-based) | [LSA](LSA.md) | Same shape as TextRank, but ranking by SVD-derived latent concepts — better at multi-theme corpora. |
 | *"Which inputs cluster together, and which are outliers?"* | [k-NN](KNN.md) | Structured JSON with clusters, anomalies, density-ranked representatives. |
@@ -35,14 +42,18 @@ require labelled training data or external models:
 If you're choosing between them for a new feature, the quickest filter is
 **what shape of output you need**:
 
+- **Primary/Secondary** isn't a choice — it runs on every write,
+  invisibly, before any query algorithm sees the data. Read its doc to
+  understand what "primary record" means in every other algorithm's
+  input contract.
 - **Need a representative *string***? — TextRank or LSA. Pick TextRank
   for tighter algorithmic guarantees and dependency-free simplicity;
   pick LSA when you need explicit control over how many concepts to
   surface, or when the corpus is heterogeneous enough that "centrality"
   alone isn't enough.
 - **Need *structured JSON* with clusters and outliers?** — k-NN. The
-  only algorithm here that produces a full per-input verdict (cluster
-  id + density, or anomaly flag).
+  only query-time algorithm here that produces a full per-input verdict
+  (cluster id + density, or anomaly flag).
 - **Need to find *temporal correlations* between event keys?** — RCA
   Jaccard. Every other algorithm here ignores time; RCA is the one
   built around it. Use the failure-key form to extract probable causes
@@ -55,6 +66,7 @@ A second axis is **what you're feeding it**:
 
 | Input | Best fit |
 |---|---|
+| Every incoming `(key, data, timestamp)` record | Primary / Secondary (always — runs in the data path) |
 | `&[String]` of arbitrary text | TextRank, LSA, k-NN |
 | Stored events / drain3 templates with timestamps | RCA Jaccard |
 | Stored records under one or more keys | LDA |
@@ -106,6 +118,7 @@ you can navigate them without re-orienting:
 
 | Document | Module | What it covers |
 |---|---|---|
+| [PRIMARY_SECONDARY.md](PRIMARY_SECONDARY.md) | `bdslib::observability` | Primary/secondary record classification: exact-match deduplication + cosine-similarity-thresholded primary detection; the deduplication backbone in the data path. ~1320 lines, runs on every write. |
 | [TEXTRANK.md](TEXTRANK.md) | `bdslib::analysis::textrank` | TextRank extractive summarisation: TF cosine graph + weighted PageRank; ~265 lines of Rust, no external dependencies beyond `serde` |
 | [LSA.md](LSA.md) | `bdslib::analysis::lsa` | Latent Semantic Analysis summarisation: TF-IDF → centred Gram matrix → power-iteration SVD with deflation → Steinberger-Ježek scoring; ~415 lines, no external linear-algebra crates |
 | [KNN.md](KNN.md) | `bdslib::analysis::knn` | k-Nearest-Neighbour intelligence: TF-IDF + cosine similarity → top-k neighbours → cluster discovery (union-find on k-NN graph) → anomaly detection (low top-1 similarity); structured JSON output, ~360 lines |
@@ -138,19 +151,23 @@ algorithmic content:
 For each algorithm referenced above:
 
 ```
-src/analysis/
-├── knn.rs                            ← k-NN intelligence
-├── latentdirichletallocation.rs      ← LDA topic modelling
-├── lsa.rs                            ← LSA extractive summarisation
-├── rca.rs                            ← RCA over event records
-├── rca_templates.rs                  ← RCA over drain3 templates (same algorithm)
-└── textrank.rs                       ← TextRank extractive summarisation
+src/
+├── observability.rs                  ← Primary/Secondary classifier (data-path)
+└── analysis/
+    ├── knn.rs                        ← k-NN intelligence
+    ├── latentdirichletallocation.rs  ← LDA topic modelling
+    ├── lsa.rs                        ← LSA extractive summarisation
+    ├── rca.rs                        ← RCA over event records
+    ├── rca_templates.rs              ← RCA over drain3 templates (same algorithm)
+    └── textrank.rs                   ← TextRank extractive summarisation
 ```
 
-Each module is self-contained, depends only on `serde` + `std` for the
-text-based algorithms (LDA additionally depends on the
-`latentdirichletallocation` crate), and is `#[no_panic]` against
-user-supplied input.
+Each `analysis/*` module is self-contained, depends only on `serde` +
+`std` for the text-based algorithms (LDA additionally depends on the
+`latentdirichletallocation` crate), and never panics on user-supplied
+input. `observability.rs` depends on `StorageEngine` (DuckDB) and
+`EmbeddingEngine` (fastembed) — it is the only algorithm in this set
+that touches I/O directly.
 
 ---
 

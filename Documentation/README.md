@@ -116,7 +116,13 @@ active shard, and fans out cross-shard queries.
 
 Documents live outside the shard model in a dedicated `DocumentStorage` backed
 by a single DuckDB database (metadata table + blob table) and a shared HNSW
-index.
+index. The same composite type also backs the signal store and the script
+store.
+
+For the full layered architecture — every storage primitive, every search
+engine, every composite store, what gets written when, the on-disk filesystem
+layout, and operational notes on backup / sizing / pooling — see
+[**DATABASE.md**](DATABASE.md).
 
 ---
 
@@ -150,6 +156,7 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 
 | Document | Description |
 |----------|-------------|
+| [DATABASE.md](DATABASE.md) | **Full storage architecture overview** — every store, what role it plays, on-disk layout, what gets written when, threading and pooling, operational notes |
 | [STORAGEENGINE.md](STORAGEENGINE.md) | `StorageEngine` — DuckDB core with R2D2 connection pool |
 | [SHARD.md](SHARD.md) | `Shard` — single time-partition: telemetry, FTS, vector |
 | [SHARDSCACHE.md](SHARDSCACHE.md) | `ShardsCache` — LRU open-shard pool |
@@ -158,7 +165,8 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 | [FTSENGINE.md](FTSENGINE.md) | `FTSEngine` — Tantivy BM25 indexing |
 | [VECTORENGINE.md](VECTORENGINE.md) | `VectorEngine` — HNSW index via VecStore |
 | [DOCUMENTSENGINE.md](DOCUMENTSENGINE.md) | `DocumentStorage` — metadata, blob, and vector store |
-| [OBSERVABILITYENGINE.md](OBSERVABILITYENGINE.md) | `ObservabilityStorage` — redb dedup and secondaries |
+| [OBSERVABILITYENGINE.md](OBSERVABILITYENGINE.md) | `ObservabilityStorage` — telemetry rows, dedup tracking, primary/secondary classification |
+| [Algorithm/](Algorithm/README.md) | Deep-dive references for every analysis algorithm: TextRank, LSA, k-NN, RCA Jaccard, LDA, Primary/Secondary classification |
 | [COMMON.md](COMMON.md) | Shared utilities: errors, JSON fingerprint, time ranges, UUID |
 
 ### Tools
