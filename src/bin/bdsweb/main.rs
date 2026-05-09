@@ -152,6 +152,7 @@ async fn main() {
         .route("/scripts/editor",         get(routes::scripts::editor_new))
         .route("/scripts/editor/{id}",    get(routes::scripts::editor_get))
         .route("/scripts/save",           post(routes::scripts::save))
+        .route("/scripts/run",            post(routes::scripts::run))
         .route("/scripts/{id}",           delete(routes::scripts::delete))
         .route("/version",        get(routes::version::version))
         .layer(CompressionLayer::new())

@@ -23,7 +23,7 @@
     <textarea id="script-body" name="script" style="display:none">{{ body }}</textarea>
   </div>
 
-  <!-- Toolbar (Save button + delete + flash) -->
+  <!-- Toolbar (Run + Save + Delete + flash) -->
   <div class="editor-toolbar">
     {% if !is_new %}
     <button type="button"
@@ -46,6 +46,21 @@
     <span class="text-xs text-slate-600">
       {% if is_new %}Creating new script{% else %}Editing — id: <code class="text-slate-400">{{ id }}</code>{% endif %}
     </span>
+
+    <!-- Run: overrides the form's hx-post to /scripts/run and targets the
+         results pane instead of swapping the editor itself. -->
+    <button type="submit"
+            class="btn text-xs flex items-center gap-1.5"
+            style="background: #14352a; color: #86efac; border: 1px solid #1f5b3d;"
+            hx-post="/scripts/run"
+            hx-target="#run-results"
+            hx-swap="innerHTML"
+            hx-indicator="#run-spinner">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
+        <polygon points="5,3 19,12 5,21"/>
+      </svg>
+      Run
+    </button>
 
     <button type="submit" class="btn btn-primary text-xs flex items-center gap-1.5">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24"

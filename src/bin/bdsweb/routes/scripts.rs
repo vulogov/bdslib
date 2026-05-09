@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 use crate::{client::{rpc, SESSION}, error::AppError, state::AppState};
 
@@ -169,6 +170,176 @@ pub async fn save(
         is_new: false,
     };
     Ok(Html(editor.render()?))
+}
+
+// ── Run (eval.queued + poll results) ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RunForm {
+    #[serde(default)]
+    pub script: String,
+}
+
+/// Total budget for waiting on the result queue to populate. Most BUND scripts
+/// finish in well under a second; 30 s is a generous ceiling.
+const RUN_POLL_BUDGET: Duration = Duration::from_secs(30);
+/// Interval between `v2/results.empty` polls. Short enough to feel snappy,
+/// long enough to avoid hammering the RPC server.
+const RUN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Template)]
+#[template(path = "partials/scripts_run_result.html")]
+struct ScriptRunResult {
+    /// Result-queue id returned by `v2/eval.queued`.
+    queue_id: String,
+    /// One pretty-printed JSON string per pulled value.
+    values:   Vec<String>,
+    /// True once at least one value was pulled.
+    has_values: bool,
+    /// True when the poll timed out without any values appearing.
+    timed_out:  bool,
+    /// Wall-clock seconds spent polling — informational.
+    elapsed_ms: u128,
+    /// Optional error message (RPC failure, empty script, …).
+    error:    String,
+    has_error: bool,
+}
+
+pub async fn run(
+    State(state): State<AppState>,
+    Form(form): Form<RunForm>,
+) -> Result<Html<String>, AppError> {
+    let script = form.script;
+    let started = Instant::now();
+
+    if script.trim().is_empty() {
+        return Ok(Html(ScriptRunResult {
+            queue_id: String::new(),
+            values: vec![],
+            has_values: false,
+            timed_out: false,
+            elapsed_ms: 0,
+            error: "Script body is empty.".to_owned(),
+            has_error: true,
+        }.render()?));
+    }
+
+    // 1. Submit the script to the worker pool.
+    let queue_id = match rpc(&state, "v2/eval.queued", json!({
+        "session": SESSION,
+        "script":  script,
+    })).await {
+        Ok(v) => v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_owned(),
+        Err(e) => return Ok(Html(ScriptRunResult {
+            queue_id: String::new(),
+            values: vec![],
+            has_values: false,
+            timed_out: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            error: format!("v2/eval.queued failed: {e}"),
+            has_error: true,
+        }.render()?)),
+    };
+
+    if queue_id.is_empty() {
+        return Ok(Html(ScriptRunResult {
+            queue_id,
+            values: vec![],
+            has_values: false,
+            timed_out: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            error: "v2/eval.queued returned no id".to_owned(),
+            has_error: true,
+        }.render()?));
+    }
+
+    // 2. Poll v2/results.empty until the queue holds at least one value, or
+    //    the budget elapses.
+    let mut timed_out = true;
+    while started.elapsed() < RUN_POLL_BUDGET {
+        match rpc(&state, "v2/results.empty", json!({
+            "session": SESSION,
+            "id":      &queue_id,
+        })).await {
+            Ok(v) => {
+                let count = v.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
+                if count > 0 {
+                    timed_out = false;
+                    break;
+                }
+            }
+            Err(e) => return Ok(Html(ScriptRunResult {
+                queue_id,
+                values: vec![],
+                has_values: false,
+                timed_out: false,
+                elapsed_ms: started.elapsed().as_millis(),
+                error: format!("v2/results.empty failed: {e}"),
+                has_error: true,
+            }.render()?)),
+        }
+        tokio::time::sleep(RUN_POLL_INTERVAL).await;
+    }
+
+    if timed_out {
+        return Ok(Html(ScriptRunResult {
+            queue_id,
+            values: vec![],
+            has_values: false,
+            timed_out: true,
+            elapsed_ms: started.elapsed().as_millis(),
+            error: String::new(),
+            has_error: false,
+        }.render()?));
+    }
+
+    // 3. Drain the queue: pull until remaining == 0.
+    let mut values: Vec<String> = Vec::new();
+    loop {
+        let resp = rpc(&state, "v2/results.pull", json!({
+            "session": SESSION,
+            "id":      &queue_id,
+        })).await;
+        let v = match resp {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(Html(ScriptRunResult {
+                    queue_id,
+                    values,
+                    has_values: false,
+                    timed_out: false,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    error: format!("v2/results.pull failed: {e}"),
+                    has_error: true,
+                }.render()?));
+            }
+        };
+
+        let value = v.get("value").cloned().unwrap_or(serde_json::Value::Null);
+        let remaining = v.get("remaining").and_then(|x| x.as_u64()).unwrap_or(0);
+
+        // Skip nulls returned for already-empty queues — defensive only.
+        if !value.is_null() {
+            let pretty = serde_json::to_string_pretty(&value)
+                .unwrap_or_else(|_| value.to_string());
+            values.push(pretty);
+        }
+
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    let has_values = !values.is_empty();
+    Ok(Html(ScriptRunResult {
+        queue_id,
+        values,
+        has_values,
+        timed_out: false,
+        elapsed_ms: started.elapsed().as_millis(),
+        error: String::new(),
+        has_error: false,
+    }.render()?))
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
