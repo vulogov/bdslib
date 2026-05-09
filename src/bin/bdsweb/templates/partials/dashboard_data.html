@@ -85,6 +85,100 @@
   {% endif %}
 </div>
 
+<!-- ── BUND runtime statistics ────────────────────────────────────────────── -->
+<div class="card rounded-lg p-4 mb-8">
+  <div class="text-xs text-slate-500 mb-3 uppercase tracking-wide">BUND Runtime</div>
+
+  <div class="bund-stats-grid">
+    <div class="bund-stat">
+      <div class="bund-stat-label">Result queues</div>
+      <div class="bund-stat-value">{{ n_results }}</div>
+      <div class="bund-stat-hint">v2/results.* ids</div>
+    </div>
+    <div class="bund-stat">
+      <div class="bund-stat-label">Bund contexts</div>
+      <div class="bund-stat-value">{{ n_bunds }}</div>
+      <div class="bund-stat-hint">named v2/eval VMs</div>
+    </div>
+    <div class="bund-stat">
+      <div class="bund-stat-label">Recent submissions</div>
+      <div class="bund-stat-value">{{ n_recent }}</div>
+      <div class="bund-stat-hint">last 5 queued</div>
+    </div>
+    <div class="bund-stat">
+      <div class="bund-stat-label">Running</div>
+      <div class="bund-stat-value{% if n_running > 0 %} text-green-300{% endif %}">{{ n_running }}</div>
+      <div class="bund-stat-hint">active workers</div>
+    </div>
+  </div>
+
+  <div class="bund-status-tables">
+
+    <!-- Recent submissions -->
+    <div class="bund-status-card">
+      <div class="bund-status-card-header">
+        Recent submissions
+        <span class="text-xs text-slate-600 ml-auto">newest first · max 5</span>
+      </div>
+      {% if has_recent %}
+      <table class="bund-status-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Job id</th>
+            <th>Submitted</th>
+            <th class="text-right">Age</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for r in recent_scripts %}
+          <tr>
+            <td class="num">{{ loop.index }}</td>
+            <td><code class="job-id" title="{{ r.id }}">{{ r.short_id }}</code></td>
+            <td class="ts">{{ r.submitted_at }}</td>
+            <td class="num text-right">{{ r.age_secs }}s</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="bund-status-empty">
+        No submissions yet. Use <code>v2/eval.queued</code> or the cron scheduler.
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Currently running -->
+    <div class="bund-status-card">
+      <div class="bund-status-card-header">
+        Currently running
+        <span class="text-xs text-slate-600 ml-auto">by worker index</span>
+      </div>
+      {% if has_running %}
+      <table class="bund-status-table">
+        <thead>
+          <tr>
+            <th>Worker</th>
+            <th>Job id</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for r in running_scripts %}
+          <tr>
+            <td class="num"><span class="worker-badge">#{{ r.worker }}</span></td>
+            <td><code class="job-id" title="{{ r.id }}">{{ r.short_id }}</code></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="bund-status-empty">All workers idle.</div>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+
 <!-- Shard table -->
 {% if !shards.is_empty() %}
 <div class="card rounded-lg overflow-hidden">

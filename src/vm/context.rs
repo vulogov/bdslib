@@ -172,3 +172,10 @@ pub fn ttl() -> Duration {
         .map(|c| c.lock().ttl)
         .unwrap_or(Duration::from_secs(300))
 }
+
+/// Number of named BUND VM contexts currently in the registry.
+///
+/// Exposed for `v2/status` reporting; returns `0` if [`init`] has not run.
+pub fn n_contexts() -> usize {
+    BUNDS.get().map(|c| c.lock().entries.len()).unwrap_or(0)
+}

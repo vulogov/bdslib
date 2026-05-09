@@ -35,6 +35,26 @@ pub fn register(module: &mut RpcModule<()>) {
                     Err(_) => (0, 0, 0),
                 };
 
+            // BUND runtime stats (BundWorkerPool + result queues + named contexts).
+            let n_results = bdslib::vm::results().n_queues() as u64;
+            let n_bunds   = bdslib::vm::context::n_contexts() as u64;
+
+            let recent_scripts: Vec<serde_json::Value> = bdslib::vm::workers::recent_submissions()
+                .into_iter()
+                .map(|(id, ts)| serde_json::json!({
+                    "id":           id.to_string(),
+                    "submitted_at": ts,
+                }))
+                .collect();
+
+            let running_scripts: Vec<serde_json::Value> = bdslib::vm::workers::running_snapshot()
+                .into_iter()
+                .map(|(worker_id, job_id)| serde_json::json!({
+                    "worker": worker_id,
+                    "id":     job_id.to_string(),
+                }))
+                .collect();
+
             let value = serde_json::json!({
                 "node_id":           state.node_id,
                 "hostname":          state.hostname,
@@ -49,6 +69,10 @@ pub fn register(module: &mut RpcModule<()>) {
                 "jsoncache_pct":      jsoncache_pct,
                 "jsoncache_len":      jsoncache_len,
                 "jsoncache_capacity": jsoncache_capacity,
+                "n_results":          n_results,
+                "n_bunds":            n_bunds,
+                "recent_scripts":     recent_scripts,
+                "running_scripts":    running_scripts,
             });
 
             log::debug!("v2/status: done");

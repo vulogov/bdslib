@@ -44,6 +44,21 @@ pub struct ShardRow {
     pub secondary_count: u64,
 }
 
+#[derive(Debug)]
+pub struct RecentRow {
+    pub id:           String,
+    pub short_id:     String,
+    pub age_secs:     u64,
+    pub submitted_at: String,
+}
+
+#[derive(Debug)]
+pub struct RunningRow {
+    pub worker:    u64,
+    pub id:        String,
+    pub short_id:  String,
+}
+
 #[derive(Template)]
 #[template(path = "partials/dashboard_data.html")]
 struct DashboardData {
@@ -64,7 +79,20 @@ struct DashboardData {
     jsoncache_pct:        u64,
     jsoncache_len:        u64,
     jsoncache_capacity:   u64,
+    // ── BUND runtime stats (formerly on /bund) ──────────────────────────────
+    n_results:            u64,
+    n_bunds:              u64,
+    n_recent:             usize,
+    n_running:            usize,
+    recent_scripts:       Vec<RecentRow>,
+    running_scripts:      Vec<RunningRow>,
+    has_recent:           bool,
+    has_running:          bool,
     refresh_secs:         u64,
+}
+
+fn short_uuid(s: &str) -> String {
+    s.split('-').take(2).collect::<Vec<_>>().join("-")
 }
 
 const RECENT_SHARDS: usize = 5;
@@ -95,6 +123,43 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         shards.push(ShardRow { label, primary_count: p, secondary_count: sec });
     }
 
+    // ── BUND runtime stats from v2/status ──────────────────────────────────
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let recent_scripts: Vec<RecentRow> = snap.status.get("recent_scripts")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().map(|v| {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+            let submitted_at = v.get("submitted_at").and_then(|x| x.as_u64()).unwrap_or(0);
+            RecentRow {
+                short_id:     short_uuid(&id),
+                id:           id.clone(),
+                age_secs:     now_secs.saturating_sub(submitted_at),
+                submitted_at: fmt_ts(submitted_at),
+            }
+        }).collect())
+        .unwrap_or_default();
+
+    let running_scripts: Vec<RunningRow> = snap.status.get("running_scripts")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().map(|v| {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+            RunningRow {
+                worker:   v.get("worker").and_then(|x| x.as_u64()).unwrap_or(0),
+                short_id: short_uuid(&id),
+                id,
+            }
+        }).collect())
+        .unwrap_or_default();
+
+    let n_recent  = recent_scripts.len();
+    let n_running = running_scripts.len();
+    let has_recent  = n_recent  > 0;
+    let has_running = n_running > 0;
+
     let tmpl = DashboardData {
         node_id:              str_val(&snap.status, "node_id"),
         hostname:             str_val(&snap.status, "hostname"),
@@ -113,6 +178,14 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         jsoncache_pct:        u64_val(&snap.status, "jsoncache_pct"),
         jsoncache_len:        u64_val(&snap.status, "jsoncache_len"),
         jsoncache_capacity:   u64_val(&snap.status, "jsoncache_capacity"),
+        n_results:            u64_val(&snap.status, "n_results"),
+        n_bunds:              u64_val(&snap.status, "n_bunds"),
+        n_recent,
+        n_running,
+        recent_scripts,
+        running_scripts,
+        has_recent,
+        has_running,
         refresh_secs,
     };
 
