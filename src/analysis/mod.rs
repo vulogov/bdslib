@@ -1,10 +1,12 @@
 pub mod latentdirichletallocation;
+pub mod lsa;
 pub mod rca;
 pub mod rca_templates;
 pub mod telemetrytrend;
 pub mod textrank;
 
 pub use latentdirichletallocation::{LdaConfig, TopicSummary};
+pub use lsa::{lsa_rank, lsa_summary, lsa_summary_with, LsaConfig};
 pub use rca::{CausalCandidate, EventCluster, RcaConfig, RcaResult};
 pub use rca_templates::{RcaTemplatesConfig, RcaTemplatesResult, TemplateCausalCandidate, TemplateCluster};
 pub use telemetrytrend::{SamplePoint, TelemetryTrend};

@@ -72,7 +72,9 @@ cargo run --example <name>
 | [RCA](rca_demo.md) | `rca_demo.rs` | Co-occurrence clustering and causal ranking for root cause analysis |
 | [RCATemplates](rca_templates_demo.md) | `rca_templates_demo.rs` | G-Forest RCA on drain3 template observations: cluster detection and causal ranking by template lead time |
 | [TextRank](textrank_demo.md) | `textrank_demo.rs` | Extractive summarisation of sentence/log/JSON-fingerprint lists via cosine-similarity TextRank |
+| [LSA](lsa_demo.md) | `lsa_demo.rs` | Extractive summarisation via Latent Semantic Analysis: TF-IDF → centred Gram → truncated SVD → Steinberger-Ježek scoring |
 | [PrimaryTextRank](primary_textrank_demo.md) | `primary_textrank_demo.rs` | `summary_for_recent` and `summary_for_query`: TextRank over primary observability records, skipping numeric measurements |
+| [PrimaryLSA](lsa_primary_textrank_demo.md) | `lsa_primary_textrank_demo.rs` | `summary_lsa_for_recent` and `summary_lsa_for_query`: LSA over primary observability records, numeric exclusion, `n_concepts` and `max_sentences` knobs |
 | [ResultQueue](result_queue_demo.md) | `result_queue_demo.rs` | Per-id FIFO queues of `rust_dynamic` values with creation timestamps and TTL eviction; backs `v2/results.*` |
 | [ShardsManagerTplFrequency](shardsmanager_tpl_frequency_demo.md) | `shardsmanager_tpl_frequency_demo.rs` | Drain3 template discovery and FrequencyTracking query API: `templates_recent`, `template_by_id`, `templates_by_timestamp` |
 

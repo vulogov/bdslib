@@ -17,6 +17,7 @@ pub mod shardsmanager;
 pub mod shardsmanager_aggregationsearch;
 pub mod shardsmanager_docstore;
 pub mod shardsmanager_drain;
+pub mod shardsmanager_lsa_primary_textrank;
 pub mod shardsmanager_primary_textrank;
 pub mod shardsmanager_signals;
 pub mod shardsmanager_templates_textrank;
@@ -25,9 +26,10 @@ pub mod storageengine;
 pub mod vectorengine;
 pub mod vm;
 pub use analysis::{
-    textrank_rank, textrank_summary, textrank_summary_with, CausalCandidate, EventCluster,
-    LdaConfig, RcaConfig, RcaResult, RcaTemplatesConfig, RcaTemplatesResult, SamplePoint,
-    TelemetryTrend, TemplateCausalCandidate, TemplateCluster, TextRankConfig, TopicSummary,
+    lsa_rank, lsa_summary, lsa_summary_with, textrank_rank, textrank_summary,
+    textrank_summary_with, CausalCandidate, EventCluster, LdaConfig, LsaConfig, RcaConfig,
+    RcaResult, RcaTemplatesConfig, RcaTemplatesResult, SamplePoint, TelemetryTrend,
+    TemplateCausalCandidate, TemplateCluster, TextRankConfig, TopicSummary,
 };
 pub use common::generator::{Generator, LogFormat};
 pub use common::jsonfingerprint::json_fingerprint;

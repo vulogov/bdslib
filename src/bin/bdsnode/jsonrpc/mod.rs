@@ -59,6 +59,8 @@ mod results_push;
 mod status;
 mod summary_for_query;
 mod summary_for_recent;
+mod summary_lsa_for_query;
+mod summary_lsa_for_recent;
 mod textrank_templates;
 mod topics;
 mod topics_all;
@@ -125,6 +127,8 @@ pub fn build_module() -> RpcModule<()> {
     textrank_templates::register(&mut module);
     summary_for_recent::register(&mut module);
     summary_for_query::register(&mut module);
+    summary_lsa_for_recent::register(&mut module);
+    summary_lsa_for_query::register(&mut module);
     results_len::register(&mut module);
     results_push::register(&mut module);
     results_pull::register(&mut module);

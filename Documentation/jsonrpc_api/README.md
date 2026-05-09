@@ -127,6 +127,8 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/textrank.templates`](v2_textrank.templates.md) | Extractive TextRank summary of every drain3 template observed in a lookback window — fingerprints each template and returns the highest-ranked ones joined as a single string |
 | [`v2/summary_for_recent`](v2_summary_for_recent.md) | Extractive TextRank summary of text-bearing primary records observed in a lookback window — skips numeric measurements, extracts bodies from `data["value"]` or `data["raw"]` |
 | [`v2/summary_for_query`](v2_summary_for_query.md) | Extractive TextRank summary of primary records matching a vector query — same body-extraction rule as `v2/summary_for_recent`; default lookback is 365 days |
+| [`v2/summary_lsa_for_recent`](v2_summary_lsa_for_recent.md) | Extractive LSA summary of text-bearing primary records observed in a lookback window — same body-extraction rule as `v2/summary_for_recent`; uses SVD-based Steinberger-Ježek scoring |
+| [`v2/summary_lsa_for_query`](v2_summary_lsa_for_query.md) | Extractive LSA summary of primary records matching a vector query — same body-extraction and lookup as `v2/summary_for_query`; LSA backend |
 | [`v2/tpl.add`](v2_tpl_add.md) | Manually store a template (name, body, tags, description) in the per-shard tplstorage |
 | [`v2/tpl.get`](v2_tpl_get.md) | Fetch a template's metadata and body by UUID |
 | [`v2/tpl.list`](v2_tpl_list.md) | List every template (manual + drain3) stored in shards overlapping a humantime window, metadata only |
