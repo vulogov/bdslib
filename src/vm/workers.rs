@@ -120,21 +120,30 @@ fn worker_loop(rx: Receiver<JsonValue>) {
     }
 }
 
-// ── public helper ─────────────────────────────────────────────────────────────
+// ── public helpers ────────────────────────────────────────────────────────────
 
-/// Generate a UUIDv7, enqueue `{"id": ..., "code": script}` in the pool,
-/// and return the id.
+/// Enqueue `{"id": id, "code": script}` in the worker pool using a
+/// caller-supplied UUID, and return the same id.
+///
+/// Useful for submissions where the queue id must match an external key —
+/// e.g. the scheduler reuses the script's storage UUID so that all results
+/// for a given scheduled script accumulate under one well-known queue id.
 ///
 /// Poll [`crate::vm::results()`]`.pop(id)` to retrieve results once the
 /// worker has finished executing.
 ///
 /// Returns `Err` if [`BundWorkerPool::start`] has not been called.
-pub fn submit_script(script: &str) -> Result<Uuid, Error> {
+pub fn submit_script_with_id(id: Uuid, script: &str) -> Result<Uuid, Error> {
     let tx = WORKERS_PIPE
         .get()
         .ok_or_else(|| err_msg("BundWorkerPool not initialised; call BundWorkerPool::start() first"))?;
-    let id = Uuid::now_v7();
     let msg = serde_json::json!({ "id": id.to_string(), "code": script });
     tx.send(msg).map_err(|e| err_msg(e.to_string()))?;
     Ok(id)
+}
+
+/// Generate a fresh UUIDv7 and enqueue the script — convenience wrapper
+/// around [`submit_script_with_id`] for callers that don't already have an id.
+pub fn submit_script(script: &str) -> Result<Uuid, Error> {
+    submit_script_with_id(Uuid::now_v7(), script)
 }

@@ -143,6 +143,20 @@
   // Default: 30
   results_sweep_secs: 30
 
+  // ── Cron-driven script scheduler ─────────────────────────────────────────────
+
+  // bdsnode spawns a background tokio task that, once per
+  // `scheduler_interval_secs`, walks every BUND script stored in the script
+  // registry (v2/scripts), parses the metadata `schedule` field as a crontab
+  // expression, and submits any script whose next occurrence falls within the
+  // current minute to the BundWorkerPool via submit_script_with_id (the
+  // result-queue id is the script's storage UUID).
+  //
+  // Default 60 — i.e., once per minute, matching standard crontab semantics.
+  // Setting this to 0 disables the scheduler entirely.  Values smaller than
+  // 60 may cause "* * * * *" scripts to fire multiple times per minute.
+  scheduler_interval_secs: 60
+
   // ── bdsweb Dashboard ─────────────────────────────────────────────────────────
 
   // How often (in seconds) bdsweb polls bdsnode in the background to refresh

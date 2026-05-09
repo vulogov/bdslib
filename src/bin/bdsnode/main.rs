@@ -153,6 +153,13 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to read result-queue sweeper config")?;
     let results_sweeper_handle = server::results_sweeper::start(results_cfg);
 
+    // Cron-driven script scheduler — fires stored BUND scripts whose
+    // `schedule` metadata matches the current minute. Disabled by setting
+    // `scheduler_interval_secs: 0` in bds.hjson.
+    let scheduler_cfg = server::scheduler::Config::from_config(cli.config.as_deref())
+        .context("failed to read scheduler config")?;
+    let scheduler_handle = server::scheduler::start(scheduler_cfg);
+
     let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
     {
@@ -201,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
     server::bundcleanup::vm_close();
 
     results_sweeper_handle.stop().await;
+    scheduler_handle.stop().await;
 
     // Drain ingest channels and join batch threads before checkpointing so
     // that no queued records are lost.
