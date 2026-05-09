@@ -134,6 +134,9 @@ enum Commands {
     /// Evaluate a BUND script
     Eval(cmd::eval::Cmd),
 
+    /// Submit a BUND script to the worker pool and return the result queue id
+    EvalQueued(cmd::eval_queued::Cmd),
+
     // ── template store ────────────────────────────────────────────────────────
 
     /// Store a drain3 template document
@@ -280,6 +283,7 @@ fn main() -> Result<()> {
         Commands::ResultsPull(a)              => cmd::results_pull::run(&url, &session, a),
         Commands::ResultsEmpty(a)             => cmd::results_empty::run(&url, &session, a),
         Commands::Eval(a)                     => cmd::eval::run(&url, &session, a),
+        Commands::EvalQueued(a)               => cmd::eval_queued::run(&url, &session, a),
         Commands::TplAdd(a)                   => cmd::tpl_add::run(&url, &session, a),
         Commands::TplGet(a)                   => cmd::tpl_get::run(&url, &session, a),
         Commands::TplDelete(a)                => cmd::tpl_delete::run(&url, &session, a),

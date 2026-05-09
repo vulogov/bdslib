@@ -1803,6 +1803,56 @@ generate_report.sh | bdscmd eval -c reporting
 
 ---
 
+### 14.3 `eval-queued`
+
+Submit a BUND script to the process-wide worker pool and return a result-queue
+id immediately.  The script runs asynchronously in an ephemeral BUND VM; all
+values the script pushes to the workbench (with `.`) are deposited into the
+result queue under the returned id.  Retrieve them later with `results-pull`.
+
+```
+bdscmd eval-queued [SOURCE]
+```
+
+| Argument / Flag | Default | Description |
+|---|---|---|
+| `SOURCE` | stdin | Path to a `.bund` file, `-` for stdin, or omit to read from stdin. Shebang lines are stripped automatically. |
+
+**Examples:**
+
+```bash
+# submit a one-liner
+echo '6 7 * .' | bdscmd eval-queued
+
+# capture the returned id and poll for the result
+ID=$(echo '42 .' | bdscmd eval-queued --raw | jq -r '.id')
+bdscmd results-pull --id "$ID"
+
+# from a file
+bdscmd eval-queued analysis.bund
+
+# pipe from another tool
+generate_bund_script.sh | bdscmd eval-queued
+```
+
+**Output** (immediately, before the script finishes):
+
+```json
+{
+  "id": "0192a3b4-c5d6-7e8f-9012-34567890abcd"
+}
+```
+
+Use `results-pull --id <id>` or `results-empty --id <id>` to check for and
+retrieve workbench values once the worker has finished executing.
+
+**cf. `eval`:** Use `eval` when you need a synchronous response and want to
+reuse a named VM context across calls.  Use `eval-queued` when the script's
+runtime is long, when you want fire-and-forget execution, or when results will
+be consumed by a different client.
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -1853,6 +1903,7 @@ generate_report.sh | bdscmd eval -c reporting
 | `results-pull` | `v2/results.pull` | `-i` |
 | `results-empty` | `v2/results.empty` | `-i` |
 | `eval` | `v2/eval` | `SOURCE`, `-c` |
+| `eval-queued` | `v2/eval.queued` | `SOURCE` |
 
 ---
 

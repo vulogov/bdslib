@@ -5,6 +5,7 @@ mod aggregationsearch;
 mod add_file;
 mod add_file_syslog;
 mod eval;
+mod eval_queued;
 mod count;
 mod doc_add;
 mod doc_add_file;
@@ -76,6 +77,7 @@ pub fn build_module() -> RpcModule<()> {
     add_file::register(&mut module);
     add_file_syslog::register(&mut module);
     eval::register(&mut module);
+    eval_queued::register(&mut module);
     timeline::register(&mut module);
     count::register(&mut module);
     doc_add::register(&mut module);

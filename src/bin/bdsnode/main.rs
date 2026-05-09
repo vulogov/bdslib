@@ -3,8 +3,14 @@ mod server;
 mod status;
 
 use anyhow::Context;
+use bdslib::vm::workers::BundWorkerPool;
 use clap::Parser;
 use jsonrpsee::server::Server;
+use std::sync::OnceLock;
+
+/// Process-wide BUND worker pool.  Initialised in `main()` before the
+/// JSON-RPC server starts.  Workers run for the lifetime of the process.
+static WORKERS: OnceLock<BundWorkerPool> = OnceLock::new();
 
 fn nofile_limit_from_config(config_path: Option<&str>) -> u64 {
     const DEFAULT: u64 = 4096;
@@ -24,6 +30,27 @@ fn nofile_limit_from_config(config_path: Option<&str>) -> u64 {
        .and_then(|o| o.get("nofile_limit"))
        .and_then(|v| v.as_f64())
        .map(|n| n as u64)
+       .unwrap_or(DEFAULT)
+}
+
+fn n_workers_from_config(config_path: Option<&str>) -> usize {
+    const DEFAULT: usize = 4;
+    let path = match config_path {
+        Some(p) => p,
+        None => return DEFAULT,
+    };
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return DEFAULT,
+    };
+    let val: serde_hjson::Value = match serde_hjson::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return DEFAULT,
+    };
+    val.as_object()
+       .and_then(|o| o.get("n_workers"))
+       .and_then(|v| v.as_f64())
+       .map(|n| (n as usize).max(1))
        .unwrap_or(DEFAULT)
 }
 
@@ -102,6 +129,13 @@ async fn main() -> anyhow::Result<()> {
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;
+
+    let n_workers = n_workers_from_config(cli.config.as_deref());
+    let pool = BundWorkerPool::start(n_workers)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("failed to initialise BundWorkerPool")?;
+    WORKERS.set(pool).ok();
+    log::info!("BundWorkerPool started with {n_workers} worker(s)");
 
     bdslib::context::init(cli.config.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))

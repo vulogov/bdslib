@@ -18,6 +18,7 @@ pub mod add_file_syslog;
 pub mod count;
 pub mod duplicates;
 pub mod eval;
+pub mod eval_queued;
 pub mod fulltext;
 pub mod fulltext_get;
 pub mod fulltext_recent;

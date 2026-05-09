@@ -143,6 +143,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/signals_query`](v2_signals_query.md) | Semantic search over the signal store by plain-text query, ranked by cosine similarity |
 | [`v2/chat.ollama`](v2_chat_ollama.md) | Send a question to a local Ollama model with retrieval-augmented context drawn from observability + document stores; supports stateful sessions via `chat_id` |
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |
+| [`v2/eval.queued`](v2_eval_queued.md) | Submit a BUND script to the worker pool for async execution; returns a result-queue id immediately |
 | [`v2/aggregationsearch`](v2_aggregationsearch.md) | Parallel vector search over time-scoped telemetry shards + semantic document store search; returns `"observability"` and `"documents"` |
 | [`v2/doc.add`](v2_doc_add.md) | Store a document with JSON metadata and text content; auto-embeds both slots in the HNSW index |
 | [`v2/doc.add.file`](v2_doc_add_file.md) | Load a text file, split into overlapping chunks, and store each chunk as an independently searchable record |

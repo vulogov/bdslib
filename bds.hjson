@@ -105,6 +105,15 @@
   // Default: 5000
   syslog_timeout_ms: 5000
 
+  // ── BUND worker pool ──────────────────────────────────────────────────────────
+
+  // Number of threads in the process-wide BundWorkerPool.
+  // Each worker creates an ephemeral BUND VM per job submitted via
+  // v2/eval.queued.  Results are stored in the per-id RESULTS queue and
+  // retrieved via v2/results.pull.
+  // Default: 4
+  n_workers: 4
+
   // ── Ollama LLM integration ────────────────────────────────────────────────────
 
   // Base URL of the Ollama HTTP server.
