@@ -175,7 +175,8 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 |----------|-------------|
 | [BDSCLI.md](BDSCLI.md) | `bdscli` — local CLI: init, generate, ingest, get, search, analyze |
 | [BDSCMD.md](BDSCMD.md) | `bdscmd` — RPC client: all `v2/*` methods, eval shebang, quick reference |
-| [BDSWEB.md](BDSWEB.md) | `bdsweb` — web UI: all seven pages, startup flags, interaction patterns |
+| [BDSWEB.md](BDSWEB.md) | `bdsweb` — operator reference: route paths, startup flags, RPC calls behind every page |
+| [BDS_UI.md](BDS_UI.md) | `bdsweb` — **user manual**: walks every UI page in task order, with controls explained, common workflows, and a troubleshooting table |
 
 ### JSON-RPC API
 
