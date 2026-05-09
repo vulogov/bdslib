@@ -105,6 +105,22 @@
   //   qwen2.5:14b    — excellent instruction following, larger context
   ollama_model: "llama3.2"
 
+  // ── Result queues (v2/results.*) ────────────────────────────────────────────
+
+  // Time-to-live for per-id result queues exposed via the v2/results.* RPC
+  // family.  bdsnode runs a background tokio task that, once per
+  // `results_sweep_secs`, drops every queue whose creation timestamp is older
+  // than `results_ttl_secs` from now.  Set `results_ttl_secs` to 0 to keep
+  // queues forever (manual eviction only).
+  // Default: 600 (10 minutes)
+  results_ttl_secs: 600
+
+  // How often the sweeper runs, in seconds.  Smaller values reclaim memory
+  // faster; larger values reduce wakeups.  Has no effect when
+  // results_ttl_secs is 0.
+  // Default: 30
+  results_sweep_secs: 30
+
   // ── bdsweb Dashboard ─────────────────────────────────────────────────────────
 
   // How often (in seconds) bdsweb polls bdsnode in the background to refresh

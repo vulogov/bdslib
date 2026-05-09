@@ -62,11 +62,16 @@ output suitable for piping into `jq`.
     - [tpl-template-by-id](#128-tpl-template-by-id)
     - [tpl-templates-by-timestamp](#129-tpl-templates-by-timestamp)
     - [tpl-templates-recent](#1210-tpl-templates-recent)
-13. [Commands — BUND VM](#13-commands--bund-vm)
-    - [eval](#131-eval)
-    - [Shebang scripts](#132-shebang-scripts)
-14. [Quick Reference](#14-quick-reference)
-15. [Exit Codes](#15-exit-codes)
+13. [Commands — Result Queues](#13-commands--result-queues)
+    - [results-len](#131-results-len)
+    - [results-push](#132-results-push)
+    - [results-pull](#133-results-pull)
+    - [results-empty](#134-results-empty)
+14. [Commands — BUND VM](#14-commands--bund-vm)
+    - [eval](#141-eval)
+    - [Shebang scripts](#142-shebang-scripts)
+15. [Quick Reference](#15-quick-reference)
+16. [Exit Codes](#16-exit-codes)
 
 ---
 
@@ -1558,9 +1563,157 @@ bdscmd --raw tpl-templates-recent -d 6h | jq -r '.templates[].body'
 
 ---
 
-## 13. Commands — BUND VM
+## 13. Commands — Result Queues
 
-### 13.1 `eval`
+The result queue is a process-wide hashtable of per-id FIFO queues holding
+arbitrary `rust_dynamic` values. Queues are created on first push, stamped with
+the current Unix-second timestamp, and evicted by a background sweeper when
+their age exceeds `results_ttl_secs` (configured in `bds.hjson`; default
+`600`). Useful for short-lived async result passing between an upstream
+producer and a downstream poller.
+
+---
+
+### 13.1 `results-len`
+
+Number of result queues currently tracked, with their UUIDs.
+
+```
+bdscmd results-len
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| _none_ | — | No flags. |
+
+**Example:**
+
+```bash
+bdscmd results-len
+```
+
+**Output:**
+
+```json
+{
+  "count": 2,
+  "ids": [
+    "0192a3b4-c5d6-7e8f-9012-34567890abcd",
+    "0192a3b4-c5d6-7e8f-9012-34567890abce"
+  ]
+}
+```
+
+---
+
+### 13.2 `results-push`
+
+Push a JSON value (or raw string) onto the back of the queue identified by `--id`.
+Auto-creates the queue with a fresh creation timestamp on first push.
+
+```
+bdscmd results-push --id <UUID> ( --value <JSON> | --raw <STRING> )
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i, --id` | required | UUIDv7 of the target queue. |
+| `-v, --value` | — | Inline JSON literal (object, array, number, etc.). Mutually exclusive with `--raw`. |
+| `-r, --raw` | — | Plain string — wrapped server-side as a JSON string value. Mutually exclusive with `--value`. |
+
+**Examples:**
+
+```bash
+# Push a structured object
+bdscmd results-push -i 0192a3b4-c5d6-7e8f-9012-34567890abcd \
+  --value '{"kind":"alert","code":503}'
+
+# Push a plain string
+bdscmd results-push -i 0192a3b4-c5d6-7e8f-9012-34567890abcd \
+  --raw "background job complete"
+```
+
+**Output:**
+
+```json
+{
+  "id":    "0192a3b4-c5d6-7e8f-9012-34567890abcd",
+  "count": 3
+}
+```
+
+---
+
+### 13.3 `results-pull`
+
+Pop the front value from the queue identified by `--id`. Returns the value as
+JSON plus the remaining queue length.
+
+```
+bdscmd results-pull --id <UUID>
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i, --id` | required | UUIDv7 of the queue to pop from. |
+
+**Example:**
+
+```bash
+bdscmd results-pull -i 0192a3b4-c5d6-7e8f-9012-34567890abcd
+```
+
+**Output:**
+
+```json
+{
+  "id":        "0192a3b4-c5d6-7e8f-9012-34567890abcd",
+  "value":     {"kind":"alert","code":503},
+  "remaining": 2
+}
+```
+
+When the queue is empty or unknown, `value` is `null` and `remaining` is `0`.
+
+---
+
+### 13.4 `results-empty`
+
+Number of elements in the queue identified by `--id`, plus an `empty` boolean.
+
+```
+bdscmd results-empty --id <UUID>
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i, --id` | required | UUIDv7 of the queue to inspect. |
+
+**Example:**
+
+```bash
+bdscmd results-empty -i 0192a3b4-c5d6-7e8f-9012-34567890abcd
+```
+
+**Output:**
+
+```json
+{
+  "id":    "0192a3b4-c5d6-7e8f-9012-34567890abcd",
+  "count": 2,
+  "empty": false
+}
+```
+
+A missing queue is reported as `count: 0, empty: true` — `results-empty` does
+not distinguish between "never created" and "exists but drained". Use
+`results-len` to discover which queue ids are currently tracked.
+
+---
+
+## 14. Commands — BUND VM
+
+### 14.1 `eval`
 
 Compile and evaluate a BUND stack-based script in a named VM context. The result
 is the workbench stack printed as a JSON array.
@@ -1603,7 +1756,7 @@ BUND
 
 ---
 
-### 13.2 Shebang Scripts
+### 14.2 Shebang Scripts
 
 `bdscmd eval` supports the Unix shebang mechanism, allowing BUND scripts to be
 executed directly as programs. The kernel passes the script path as the first
@@ -1650,7 +1803,7 @@ generate_report.sh | bdscmd eval -c reporting
 
 ---
 
-## 14. Quick Reference
+## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
 |---|---|---|
@@ -1695,11 +1848,15 @@ generate_report.sh | bdscmd eval -c reporting
 | `tpl-template-by-id` | `v2/tpl.template_by_id` | `-i` |
 | `tpl-templates-by-timestamp` | `v2/tpl.templates_by_timestamp` | `-s`, `-e` |
 | `tpl-templates-recent` | `v2/tpl.templates_recent` | `-d` |
+| `results-len` | `v2/results.len` | _none_ |
+| `results-push` | `v2/results.push` | `-i`, `-v`/`-r` |
+| `results-pull` | `v2/results.pull` | `-i` |
+| `results-empty` | `v2/results.empty` | `-i` |
 | `eval` | `v2/eval` | `SOURCE`, `-c` |
 
 ---
 
-## 15. Exit Codes
+## 16. Exit Codes
 
 | Code | Meaning |
 |---|---|

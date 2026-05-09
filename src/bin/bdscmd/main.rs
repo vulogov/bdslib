@@ -119,6 +119,18 @@ enum Commands {
     /// Extractive TextRank summary of every drain3 template observed in a window
     TextrankTemplates(cmd::textrank_templates::Cmd),
 
+    /// Number of result queues currently tracked, with their UUIDs
+    ResultsLen(cmd::results_len::Cmd),
+
+    /// Push a JSON value into the result queue identified by --id
+    ResultsPush(cmd::results_push::Cmd),
+
+    /// Pop the front value from the result queue identified by --id
+    ResultsPull(cmd::results_pull::Cmd),
+
+    /// Number of elements in the result queue identified by --id
+    ResultsEmpty(cmd::results_empty::Cmd),
+
     /// Evaluate a BUND script
     Eval(cmd::eval::Cmd),
 
@@ -263,6 +275,10 @@ fn main() -> Result<()> {
         Commands::Rca(a)                      => cmd::rca::run(&url, &session, a),
         Commands::RcaTemplates(a)             => cmd::rca_templates::run(&url, &session, a),
         Commands::TextrankTemplates(a)        => cmd::textrank_templates::run(&url, &session, a),
+        Commands::ResultsLen(a)               => cmd::results_len::run(&url, &session, a),
+        Commands::ResultsPush(a)              => cmd::results_push::run(&url, &session, a),
+        Commands::ResultsPull(a)              => cmd::results_pull::run(&url, &session, a),
+        Commands::ResultsEmpty(a)             => cmd::results_empty::run(&url, &session, a),
         Commands::Eval(a)                     => cmd::eval::run(&url, &session, a),
         Commands::TplAdd(a)                   => cmd::tpl_add::run(&url, &session, a),
         Commands::TplGet(a)                   => cmd::tpl_get::run(&url, &session, a),

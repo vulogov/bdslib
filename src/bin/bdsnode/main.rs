@@ -115,6 +115,10 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to read BUND cleanup config")?;
     let cleanup_handle = server::bundcleanup::start(cleanup_cfg);
 
+    let results_cfg = server::results_sweeper::Config::from_config(cli.config.as_deref())
+        .context("failed to read result-queue sweeper config")?;
+    let results_sweeper_handle = server::results_sweeper::start(results_cfg);
+
     let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
     {
@@ -161,6 +165,8 @@ async fn main() -> anyhow::Result<()> {
 
     cleanup_handle.stop().await;
     server::bundcleanup::vm_close();
+
+    results_sweeper_handle.stop().await;
 
     // Drain ingest channels and join batch threads before checkpointing so
     // that no queued records are lost.

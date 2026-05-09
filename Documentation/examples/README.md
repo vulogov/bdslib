@@ -73,6 +73,7 @@ cargo run --example <name>
 | [RCATemplates](rca_templates_demo.md) | `rca_templates_demo.rs` | G-Forest RCA on drain3 template observations: cluster detection and causal ranking by template lead time |
 | [TextRank](textrank_demo.md) | `textrank_demo.rs` | Extractive summarisation of sentence/log/JSON-fingerprint lists via cosine-similarity TextRank |
 | [PrimaryTextRank](primary_textrank_demo.md) | `primary_textrank_demo.rs` | `summary_for_recent` and `summary_for_query`: TextRank over primary observability records, skipping numeric measurements |
+| [ResultQueue](result_queue_demo.md) | `result_queue_demo.rs` | Per-id FIFO queues of `rust_dynamic` values with creation timestamps and TTL eviction; backs `v2/results.*` |
 | [ShardsManagerTplFrequency](shardsmanager_tpl_frequency_demo.md) | `shardsmanager_tpl_frequency_demo.rs` | Drain3 template discovery and FrequencyTracking query API: `templates_recent`, `template_by_id`, `templates_by_timestamp` |
 
 ### Data generation and globals

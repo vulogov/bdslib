@@ -127,9 +127,21 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/textrank.templates`](v2_textrank.templates.md) | Extractive TextRank summary of every drain3 template observed in a lookback window — fingerprints each template and returns the highest-ranked ones joined as a single string |
 | [`v2/summary_for_recent`](v2_summary_for_recent.md) | Extractive TextRank summary of text-bearing primary records observed in a lookback window — skips numeric measurements, extracts bodies from `data["value"]` or `data["raw"]` |
 | [`v2/summary_for_query`](v2_summary_for_query.md) | Extractive TextRank summary of primary records matching a vector query — same body-extraction rule as `v2/summary_for_recent`; default lookback is 365 days |
+| [`v2/tpl.add`](v2_tpl_add.md) | Manually store a template (name, body, tags, description) in the per-shard tplstorage |
+| [`v2/tpl.get`](v2_tpl_get.md) | Fetch a template's metadata and body by UUID |
+| [`v2/tpl.list`](v2_tpl_list.md) | List every template (manual + drain3) stored in shards overlapping a humantime window, metadata only |
+| [`v2/tpl.search`](v2_tpl_search.md) | Semantic vector search over templates within a humantime window, ranked by cosine similarity |
+| [`v2/tpl.update`](v2_tpl_update.md) | Update one or more fields (name, body, tags, description) of a template by UUID — partial merge |
+| [`v2/tpl.delete`](v2_tpl_delete.md) | Remove a template (metadata + body + vector entry) by UUID; idempotent |
+| [`v2/tpl.reindex`](v2_tpl_reindex.md) | Rebuild the tplstorage HNSW index for every shard overlapping a humantime window |
 | [`v2/tpl.template_by_id`](v2_tpl_template_by_id.md) | Fetch a single drain3 template document by UUID, scanning all shards |
 | [`v2/tpl.templates_by_timestamp`](v2_tpl_templates_by_timestamp.md) | List drain3 template documents whose FrequencyTracking observation falls within an explicit Unix-second range |
 | [`v2/tpl.templates_recent`](v2_tpl_templates_recent.md) | List drain3 template documents whose FrequencyTracking observation falls within a humantime lookback window |
+| [`v2/signal.emit`](v2_signal_emit.md) | Emit a signal — name + severity + timestamp + arbitrary metadata — into the per-shard signal store |
+| [`v2/signal.update`](v2_signal_update.md) | Replace a signal's metadata in-place by UUID (full overwrite, not merge) |
+| [`v2/signals`](v2_signals.md) | List signals observed within a humantime window, with full metadata resolved per signal |
+| [`v2/signals_query`](v2_signals_query.md) | Semantic search over the signal store by plain-text query, ranked by cosine similarity |
+| [`v2/chat.ollama`](v2_chat_ollama.md) | Send a question to a local Ollama model with retrieval-augmented context drawn from observability + document stores; supports stateful sessions via `chat_id` |
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context, returning the workbench stack as JSON |
 | [`v2/aggregationsearch`](v2_aggregationsearch.md) | Parallel vector search over time-scoped telemetry shards + semantic document store search; returns `"observability"` and `"documents"` |
 | [`v2/doc.add`](v2_doc_add.md) | Store a document with JSON metadata and text content; auto-embeds both slots in the HNSW index |
@@ -144,3 +156,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/doc.search.json`](v2_doc_search_json.md) | Semantic search by JSON query object via json_fingerprint embedding |
 | [`v2/doc.search.strings`](v2_doc_search_strings.md) | Semantic search returning results as flat json_fingerprint strings |
 | [`v2/doc.reindex`](v2_doc_reindex.md) | Rebuild the HNSW vector index from persisted metadata and blobs; use after unclean shutdown or bulk content updates |
+| [`v2/results.len`](v2_results_len.md) | Number of result queues currently tracked, with their UUIDs |
+| [`v2/results.push`](v2_results_push.md) | Push a JSON value onto the back of the result queue identified by `id`; auto-creates the queue with a fresh creation timestamp |
+| [`v2/results.pull`](v2_results_pull.md) | Pop the front value from the result queue identified by `id`; returns the value as JSON plus `remaining` count |
+| [`v2/results.empty`](v2_results_empty.md) | Number of elements in the result queue identified by `id`, with `empty` boolean |
