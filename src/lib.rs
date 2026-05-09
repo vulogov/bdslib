@@ -28,10 +28,11 @@ pub mod storageengine;
 pub mod vectorengine;
 pub mod vm;
 pub use analysis::{
-    lsa_rank, lsa_summary, lsa_summary_with, textrank_rank, textrank_summary,
-    textrank_summary_with, CausalCandidate, EventCluster, LdaConfig, LsaConfig, RcaConfig,
-    RcaResult, RcaTemplatesConfig, RcaTemplatesResult, SamplePoint, TelemetryTrend,
-    TemplateCausalCandidate, TemplateCluster, TextRankConfig, TopicSummary,
+    knn_summary, knn_summary_with, lsa_rank, lsa_summary, lsa_summary_with, textrank_rank,
+    textrank_summary, textrank_summary_with, CausalCandidate, EventCluster, KnnConfig,
+    LdaConfig, LsaConfig, RcaConfig, RcaResult, RcaTemplatesConfig, RcaTemplatesResult,
+    SamplePoint, TelemetryTrend, TemplateCausalCandidate, TemplateCluster, TextRankConfig,
+    TopicSummary,
 };
 pub use common::generator::{Generator, LogFormat};
 pub use common::jsonfingerprint::json_fingerprint;

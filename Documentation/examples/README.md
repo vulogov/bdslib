@@ -73,6 +73,7 @@ cargo run --example <name>
 | [RCATemplates](rca_templates_demo.md) | `rca_templates_demo.rs` | G-Forest RCA on drain3 template observations: cluster detection and causal ranking by template lead time |
 | [TextRank](textrank_demo.md) | `textrank_demo.rs` | Extractive summarisation of sentence/log/JSON-fingerprint lists via cosine-similarity TextRank |
 | [LSA](lsa_demo.md) | `lsa_demo.rs` | Extractive summarisation via Latent Semantic Analysis: TF-IDF → centred Gram → truncated SVD → Steinberger-Ježek scoring |
+| [k-NN](knn_demo.md) | `knn_demo.rs` | k-Nearest-Neighbour intelligence: TF-IDF + cosine similarity → top-k neighbours → cluster discovery (union-find on k-NN graph) → anomaly detection (low top-1 similarity); structured JSON output |
 | [PrimaryTextRank](primary_textrank_demo.md) | `primary_textrank_demo.rs` | `summary_for_recent` and `summary_for_query`: TextRank over primary observability records, skipping numeric measurements |
 | [PrimaryLSA](lsa_primary_textrank_demo.md) | `lsa_primary_textrank_demo.rs` | `summary_lsa_for_recent` and `summary_lsa_for_query`: LSA over primary observability records, numeric exclusion, `n_concepts` and `max_sentences` knobs |
 | [Scripts](shardsmanager_scripts_demo.md) | `shardsmanager_scripts_demo.rs` | `script_add` / `scripts` / `script` / `update_script` / `script_delete`: BUND script registry with `name` + `schedule` metadata validation |
