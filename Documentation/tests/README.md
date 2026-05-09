@@ -72,6 +72,8 @@ cargo test <test_function_name> -- --show-output
 | [textrank_test](textrank_test.md) | `tests/textrank_test.rs` | TextRank summariser: empty/single/duplicate inputs, central-topic ranking, length cap (`max_sentences`/`ratio`), unicode, log-fingerprint clustering |
 | [shardsmanager_primary_textrank_test](shardsmanager_primary_textrank_test.md) | `tests/shardsmanager_primary_textrank_test.rs` | `summary_for_recent`/`summary_for_query`: numeric exclusion, `value`/`raw` precedence, window semantics, empty-store fallbacks |
 | [result_queue_test](result_queue_test.md) | `tests/result_queue_test.rs` | `ResultQueue`: FIFO order, TTL sweep, missing-id behaviour, JSON round-trip, concurrent-pusher safety |
+| [vm_workers_test](vm_workers_test.md) | `tests/vm_workers_test.rs` | `BundWorkerPool`: singleton init, UUIDv7 job handles, workbench-to-RESULTS bridge, per-type value delivery, VM isolation, concurrent-submission safety |
+| [vm_ephemeral_test](vm_ephemeral_test.md) | `tests/vm_ephemeral_test.rs` | `WorkerPool` (ephemeral): per-job fresh Bund VM, strict word-dictionary isolation, independent `EPHEMERAL_PIPE` channel, concurrent-submission safety |
 
 ## Global singleton
 

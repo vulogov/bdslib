@@ -17,11 +17,13 @@ pub fn results() -> result_queue::ResultQueue {
 }
 
 pub mod context;
+pub mod ephemeral;
 pub mod eval;
 pub mod helpers;
 pub mod result_queue;
 pub mod stdlib;
 pub mod vm;
+pub mod workers;
 
 pub use vm::init_adam;
 

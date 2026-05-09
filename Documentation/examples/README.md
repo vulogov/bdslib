@@ -76,6 +76,13 @@ cargo run --example <name>
 | [ResultQueue](result_queue_demo.md) | `result_queue_demo.rs` | Per-id FIFO queues of `rust_dynamic` values with creation timestamps and TTL eviction; backs `v2/results.*` |
 | [ShardsManagerTplFrequency](shardsmanager_tpl_frequency_demo.md) | `shardsmanager_tpl_frequency_demo.rs` | Drain3 template discovery and FrequencyTracking query API: `templates_recent`, `template_by_id`, `templates_by_timestamp` |
 
+### BUND worker pools
+
+| Example | File | Description |
+|---|---|---|
+| [WorkersDemo](workers_demo.md) | `workers_demo.rs` | `BundWorkerPool`: submit Bund scripts to a shared worker pool; poll results by UUIDv7 job handle; concurrent submissions |
+| [EphemeralDemo](ephemeral_demo.md) | `ephemeral_demo.rs` | `WorkerPool` (ephemeral): per-job fresh Bund VM, zero cross-job state leakage; independent `EPHEMERAL_PIPE` channel |
+
 ### Data generation and globals
 
 | Example | File | Description |

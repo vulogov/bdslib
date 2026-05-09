@@ -47,5 +47,6 @@ pub use shardsmanager::ShardsManager;
 pub use storageengine::StorageEngine;
 pub use vectorengine::VectorEngine;
 pub use vm::context;
+pub use vm::workers::submit_script;
 pub use vm::{bund_eval, init_adam};
 pub mod setloglevel;
