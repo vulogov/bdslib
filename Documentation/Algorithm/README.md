@@ -32,6 +32,8 @@ question that doesn't require labelled training data or external models:
 | *"What does this batch of strings boil down to?"* (extractive) | [TextRank](TEXTRANK.md) | A short summary string built from the most central inputs in their original input order. |
 | *"What does this batch of strings boil down to?"* (concept-based) | [LSA](LSA.md) | Same shape as TextRank, but ranking by SVD-derived latent concepts — better at multi-theme corpora. |
 | *"Which inputs cluster together, and which are outliers?"* | [k-NN](KNN.md) | Structured JSON with clusters, anomalies, density-ranked representatives. |
+| *"Which lines use unusual phrases?"* (phrase-structure outliers) | [N-gram anomaly](NGRAM_ANOMALY.md) | List of anomalous lines with mean-rarity score and explanatory novel n-grams. |
+| *"Strip the heartbeats — show me only the lines that say something distinctive."* | [N-gram noise removal](NGRAM_NOISE.md) | A `kept` (signal) array + a `removed` (noise) array, separated by mean n-gram commonness. |
 | *"What event keys are correlated in time, and what plausibly caused this failure?"* | [RCA Jaccard](RCA_JACCARD.md) | Co-occurrence clusters + ranked precursor candidates with mean lead-time. |
 | *"What is this stream talking about? give me keywords."* | [LDA](LDA.md) | A sorted, deduplicated keyword list per topic, distilled into one keyword string per key. |
 
@@ -54,6 +56,13 @@ If you're choosing between them for a new feature, the quickest filter is
 - **Need *structured JSON* with clusters and outliers?** — k-NN. The
   only query-time algorithm here that produces a full per-input verdict
   (cluster id + density, or anomaly flag).
+- **Need to flag *lines using unusual phrases*?** — N-gram anomaly.
+  Catches phrase-structure outliers that k-NN's vocabulary-overlap
+  score smooths over (a line built from common words but in an
+  unusual combination).
+- **Need to *remove repetitive noise* before downstream processing?** —
+  N-gram noise removal. The dual of n-gram anomaly: same pipeline,
+  scored by commonness, used to strip heartbeat-style traffic.
 - **Need to find *temporal correlations* between event keys?** — RCA
   Jaccard. Every other algorithm here ignores time; RCA is the one
   built around it. Use the failure-key form to extract probable causes
@@ -67,7 +76,7 @@ A second axis is **what you're feeding it**:
 | Input | Best fit |
 |---|---|
 | Every incoming `(key, data, timestamp)` record | Primary / Secondary (always — runs in the data path) |
-| `&[String]` of arbitrary text | TextRank, LSA, k-NN |
+| `&[String]` of arbitrary text | TextRank, LSA, k-NN, N-gram anomaly, N-gram noise |
 | Stored events / drain3 templates with timestamps | RCA Jaccard |
 | Stored records under one or more keys | LDA |
 
@@ -122,6 +131,8 @@ you can navigate them without re-orienting:
 | [TEXTRANK.md](TEXTRANK.md) | `bdslib::analysis::textrank` | TextRank extractive summarisation: TF cosine graph + weighted PageRank; ~265 lines of Rust, no external dependencies beyond `serde` |
 | [LSA.md](LSA.md) | `bdslib::analysis::lsa` | Latent Semantic Analysis summarisation: TF-IDF → centred Gram matrix → power-iteration SVD with deflation → Steinberger-Ježek scoring; ~415 lines, no external linear-algebra crates |
 | [KNN.md](KNN.md) | `bdslib::analysis::knn` | k-Nearest-Neighbour intelligence: TF-IDF + cosine similarity → top-k neighbours → cluster discovery (union-find on k-NN graph) → anomaly detection (low top-1 similarity); structured JSON output, ~360 lines |
+| [NGRAM_ANOMALY.md](NGRAM_ANOMALY.md) | `bdslib::analysis::ngram::ngram_anomaly` | N-gram anomaly detection: tokenise → sliding-window n-grams → document-frequency table → mean rarity per line → threshold cut + explanatory novel n-grams; structured JSON output |
+| [NGRAM_NOISE.md](NGRAM_NOISE.md) | `bdslib::analysis::ngram::ngram_remove_noise` | N-gram noise removal: same pipeline as anomaly detection, scored by *commonness* — splits the corpus into `kept` (signal) and `removed` (noise) for downstream cleanup |
 | [RCA_JACCARD.md](RCA_JACCARD.md) | `bdslib::analysis::rca`, `bdslib::analysis::rca_templates` | Jaccard-based root-cause analysis: bucketed co-occurrence → Jaccard threshold + union-find clustering → mean-lead-time causal ranking; the *temporal* analysis algorithm of the family |
 | [LDA.md](LDA.md) | `bdslib::analysis::latentdirichletallocation` | Latent Dirichlet Allocation topic modelling: per-key corpus → `json_fingerprint`-flattened text → collapsed Gibbs sampling → deduplicated alphabetical keyword set; delegates to the external `latentdirichletallocation` crate |
 
@@ -157,6 +168,7 @@ src/
     ├── knn.rs                        ← k-NN intelligence
     ├── latentdirichletallocation.rs  ← LDA topic modelling
     ├── lsa.rs                        ← LSA extractive summarisation
+    ├── ngram.rs                      ← N-gram anomaly + noise removal (dual endpoints)
     ├── rca.rs                        ← RCA over event records
     ├── rca_templates.rs              ← RCA over drain3 templates (same algorithm)
     └── textrank.rs                   ← TextRank extractive summarisation
