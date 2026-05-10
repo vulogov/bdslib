@@ -4,6 +4,7 @@ pub mod chat;
 pub mod dashboard;
 pub mod denoise_recent;
 pub mod docs;
+pub mod knn;
 pub mod logs;
 pub mod primary_lsa_query_summary;
 pub mod primary_lsa_summary;

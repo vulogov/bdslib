@@ -53,6 +53,7 @@ output suitable for piping into `jq`.
     - [textrank-templates](#116-textrank-templates)
     - [anomaly-recent](#117-anomaly-recent)
     - [denoise-recent](#118-denoise-recent)
+    - [knn](#119-knn)
 12. [Commands — Template Store](#12-commands--template-store)
     - [tpl-add](#121-tpl-add)
     - [tpl-get](#122-tpl-get)
@@ -1364,6 +1365,94 @@ bdscmd --raw denoise-recent -d 6h --noise-threshold 0.4 | \
 `n_kept + n_removed == n_logs` for every output. The `kept` array is in
 input order so it can be read sequentially as the denoised corpus; the
 `removed` array is sorted from most-noise-like to least.
+
+---
+
+### 11.9 `knn`
+
+k-NN clustering + isolation analysis over recent primary records. Reuses
+the same fingerprinting pipeline as `anomaly-recent` and `denoise-recent`
+(`"<key with . _ - → spaces>  <json_fingerprint(data)>"`), then applies
+TF-IDF + cosine similarity on the resulting bag-of-words to:
+
+1. Build a k-NN graph (`k` nearest neighbours per fingerprint by cosine
+   similarity).
+2. Group fingerprints into **clusters** via connected-component traversal
+   on that graph; each cluster reports a **representative** chosen by
+   density (mean similarity to its in-cluster neighbours).
+3. Surface **anomalies** — fingerprints whose maximum similarity to any
+   neighbour is at or below `--anomaly-threshold`. These are records that
+   have no close phrase-structural match anywhere in the lookback window.
+
+```
+bdscmd knn --duration <DUR> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window, e.g. `"1h"`, `"30min"`, `"7days"` |
+| `-k, --k` | `5` | Neighbours per node in the k-NN graph |
+| `--min-word-len` | `2` | Tokens shorter than this are dropped before TF-IDF |
+| `--anomaly-threshold` | `0.2` | Max cosine similarity to nearest neighbour at or below which a fingerprint is flagged as anomalous (range `[0, 1]`) |
+| `--max-cluster-members` | `10` | Cap on members listed per cluster (true total reported in `size`) |
+| `--max-anomalies` | `20` | Cap on the response `anomalies` array |
+
+Lower `--anomaly-threshold` ⇒ stricter (fewer, more isolated anomalies);
+higher ⇒ broader (more fingerprints flagged).  The default `0.2` is a
+sensible starting point for typical operational streams; tune downward
+(`0.1`) when the corpus is highly diverse and upward (`0.4`) when most
+records share boilerplate.
+
+**Examples:**
+
+```bash
+# default sweep — k=5, threshold=0.2
+bdscmd knn -d 1h
+
+# tighten clustering: bigger neighbourhood, stricter isolation cutoff
+bdscmd knn -d 6h -k 8 --anomaly-threshold 0.15
+
+# return up to 50 anomalies and 25 members per cluster
+bdscmd knn -d 24h --max-anomalies 50 --max-cluster-members 25
+
+# extract just the cluster representatives (one line each)
+bdscmd --raw knn -d 1h | jq -r '.representatives[].text'
+
+# count clusters and anomalies for a quick health-check
+bdscmd --raw knn -d 6h | jq '{n_logs, n_clusters: (.clusters|length), n_anomalies: (.anomalies|length)}'
+```
+
+**Output:**
+
+```json
+{
+  "n_logs": 120,
+  "k": 5,
+  "anomaly_threshold": 0.2,
+  "clusters": [
+    {
+      "id": 0,
+      "size": 42,
+      "representative": { "idx": 17, "density": 0.81, "text": "monitor heartbeats  msg: heartbeat ok node1 ..." },
+      "members": [
+        { "idx": 17, "density": 0.81, "text": "monitor heartbeats  msg: heartbeat ok node1 ..." },
+        { "idx": 22, "density": 0.79, "text": "monitor heartbeats  msg: heartbeat ok node2 ..." }
+      ]
+    }
+  ],
+  "representatives": [
+    { "cluster_id": 0, "idx": 17, "density": 0.81, "text": "monitor heartbeats  msg: heartbeat ok node1 ..." }
+  ],
+  "anomalies": [
+    { "idx": 88, "max_similarity": 0.07, "text": "log alerts  msg: kernel panic on node5 ..." }
+  ]
+}
+```
+
+The `clusters` array is sorted by `size` (largest first); `members`
+within each cluster are sorted by `density` (most representative first).
+The `anomalies` array is sorted by `max_similarity` ascending so the
+most-isolated records appear first.
 
 ---
 

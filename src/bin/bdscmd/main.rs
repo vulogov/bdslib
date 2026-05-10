@@ -125,6 +125,9 @@ enum Commands {
     /// N-gram noise removal over recent primary records (signal vs noise split)
     DenoiseRecent(cmd::denoise_recent::Cmd),
 
+    /// k-NN clustering + isolation analysis over recent primary records
+    Knn(cmd::knn::Cmd),
+
     /// Number of result queues currently tracked, with their UUIDs
     ResultsLen(cmd::results_len::Cmd),
 
@@ -286,6 +289,7 @@ fn main() -> Result<()> {
         Commands::TextrankTemplates(a)        => cmd::textrank_templates::run(&url, &session, a),
         Commands::AnomalyRecent(a)            => cmd::anomaly_recent::run(&url, &session, a),
         Commands::DenoiseRecent(a)            => cmd::denoise_recent::run(&url, &session, a),
+        Commands::Knn(a)                      => cmd::knn::run(&url, &session, a),
         Commands::ResultsLen(a)               => cmd::results_len::run(&url, &session, a),
         Commands::ResultsPush(a)              => cmd::results_push::run(&url, &session, a),
         Commands::ResultsPull(a)              => cmd::results_pull::run(&url, &session, a),

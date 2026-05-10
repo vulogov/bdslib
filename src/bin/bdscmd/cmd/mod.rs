@@ -3,6 +3,7 @@ pub mod add_batch;
 pub mod aggregationsearch;
 pub mod anomaly_recent;
 pub mod denoise_recent;
+pub mod knn;
 pub mod doc_add;
 pub mod doc_add_file;
 pub mod doc_delete;

@@ -145,6 +145,8 @@ async fn main() {
         .route("/anomaly_recent/results", get(routes::anomaly_recent::results))
         .route("/denoise_recent",         get(routes::denoise_recent::page))
         .route("/denoise_recent/results", get(routes::denoise_recent::results))
+        .route("/knn",                    get(routes::knn::page))
+        .route("/knn/results",            get(routes::knn::results))
         .route("/chat",           get(routes::chat::page))
         .route("/chat/query",     post(routes::chat::query))
         .route("/chat/new",       post(routes::chat::new_session))
