@@ -19,6 +19,7 @@
 //! analyser sees both schema (field names) and payload (values) without
 //! losing the relationship between them.
 
+use crate::analysis::knn::{knn_summary_with, KnnConfig};
 use crate::analysis::ngram::{
     ngram_anomaly_with, ngram_remove_noise_with, NgramAnomalyConfig, NgramNoiseConfig,
 };
@@ -72,6 +73,35 @@ impl ShardsManager {
     ) -> Result<JsonValue> {
         let fingerprints = self.collect_fingerprints_in_recent(lookback)?;
         Ok(ngram_remove_noise_with(&fingerprints, cfg))
+    }
+
+    /// Fetch every primary record observed in `[now − lookback, now)`,
+    /// fingerprint each as `"<key>  <json_fingerprint(data)>"`, and run
+    /// k-NN intelligence on the resulting strings.
+    ///
+    /// Reuses the same fingerprinting pipeline as
+    /// [`ngram_anomaly_recent`](Self::ngram_anomaly_recent) and
+    /// [`ngram_denoise_recent`](Self::ngram_denoise_recent), so the three
+    /// endpoints operate on identical input — only the analysis algorithm
+    /// differs.  Returns the JSON value produced by [`knn_summary_with`]
+    /// verbatim — see `Documentation/Algorithm/KNN.md` for the output
+    /// shape (clusters, anomalies, density-ranked representatives).
+    ///
+    /// # Parameters
+    ///
+    /// - `_transaction_id` — UUIDv7 of the calling transaction; accepted
+    ///   for parity with other v2 methods, not consulted internally.
+    /// - `lookback` — how far back to look. Convert humantime strings
+    ///   such as `"1h"` via [`humantime::parse_duration`].
+    /// - `cfg` — k-NN tuning knobs.
+    pub fn knn_recent(
+        &self,
+        _transaction_id: Uuid,
+        lookback: Duration,
+        cfg: &KnnConfig,
+    ) -> Result<JsonValue> {
+        let fingerprints = self.collect_fingerprints_in_recent(lookback)?;
+        Ok(knn_summary_with(&fingerprints, cfg))
     }
 
     /// Walk every shard that overlaps the lookback window and return

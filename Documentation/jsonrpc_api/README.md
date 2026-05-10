@@ -132,6 +132,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/summary_lsa_for_query`](v2_summary_lsa_for_query.md) | Extractive LSA summary of primary records matching a vector query — same body-extraction and lookup as `v2/summary_for_query`; LSA backend |
 | [`v2/anomaly.recent`](v2_anomaly_recent.md) | N-gram anomaly detection over recent primary records — fingerprints each record (key + `json_fingerprint(data)`) and feeds the strings to `bdslib::analysis::ngram::ngram_anomaly_with`; returns its JSON verbatim |
 | [`v2/denoise.recent`](v2_denoise_recent.md) | N-gram noise removal over recent primary records — same fingerprinting as `v2/anomaly.recent`, fed to `bdslib::analysis::ngram::ngram_remove_noise_with`; splits the corpus into `kept` (signal) and `removed` (noise) |
+| [`v2/knn`](v2_knn.md) | k-NN intelligence over recent primary records — same fingerprinting as `v2/anomaly.recent`, fed to `bdslib::analysis::knn::knn_summary_with`; returns clusters, density-ranked representatives, and isolated outliers as one structured JSON document |
 | [`v2/tpl.add`](v2_tpl_add.md) | Manually store a template (name, body, tags, description) in the per-shard tplstorage |
 | [`v2/tpl.get`](v2_tpl_get.md) | Fetch a template's metadata and body by UUID |
 | [`v2/tpl.list`](v2_tpl_list.md) | List every template (manual + drain3) stored in shards overlapping a humantime window, metadata only |
