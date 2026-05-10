@@ -28,16 +28,17 @@ component-oriented.
 11. [Analysis → Primary LSA Summary / LSA Query Summary — LSA equivalents](#11-analysis--primary-lsa-summary--lsa-query-summary--lsa-equivalents)
 12. [Analysis → Detect anomalies — n-gram phrase-rarity outliers](#12-analysis--detect-anomalies--n-gram-phrase-rarity-outliers)
 13. [Analysis → Denoise primaries — n-gram noise removal](#13-analysis--denoise-primaries--n-gram-noise-removal)
-14. [RCA → Telemetry RCA — co-occurrence + causal ranking](#14-rca--telemetry-rca--co-occurrence--causal-ranking)
-15. [RCA → Template RCA — same algorithm on drain3 templates](#15-rca--template-rca--same-algorithm-on-drain3-templates)
-16. [Documents — semantic knowledge-base search](#16-documents--semantic-knowledge-base-search)
-17. [Scripts — store, run, and schedule BUND scripts](#17-scripts--store-run-and-schedule-bund-scripts)
-18. [Signals — emit and search named events](#18-signals--emit-and-search-named-events)
-19. [Bund — interactive scripting workbench](#19-bund--interactive-scripting-workbench)
-20. [Chat — Ollama-powered RAG assistant](#20-chat--ollama-powered-rag-assistant)
-21. [Common interaction patterns](#21-common-interaction-patterns)
-22. [Cookbook — typical workflows end to end](#22-cookbook--typical-workflows-end-to-end)
-23. [Troubleshooting](#23-troubleshooting)
+14. [Analysis → k-NN analysis — TF-IDF clustering + isolation](#14-analysis--k-nn-analysis--tf-idf-clustering--isolation)
+15. [RCA → Telemetry RCA — co-occurrence + causal ranking](#15-rca--telemetry-rca--co-occurrence--causal-ranking)
+16. [RCA → Template RCA — same algorithm on drain3 templates](#16-rca--template-rca--same-algorithm-on-drain3-templates)
+17. [Documents — semantic knowledge-base search](#17-documents--semantic-knowledge-base-search)
+18. [Scripts — store, run, and schedule BUND scripts](#18-scripts--store-run-and-schedule-bund-scripts)
+19. [Signals — emit and search named events](#19-signals--emit-and-search-named-events)
+20. [Bund — interactive scripting workbench](#20-bund--interactive-scripting-workbench)
+21. [Chat — Ollama-powered RAG assistant](#21-chat--ollama-powered-rag-assistant)
+22. [Common interaction patterns](#22-common-interaction-patterns)
+23. [Cookbook — typical workflows end to end](#23-cookbook--typical-workflows-end-to-end)
+24. [Troubleshooting](#24-troubleshooting)
 
 ---
 
@@ -563,7 +564,92 @@ calibration loop:
 
 ---
 
-## 14. RCA → Telemetry RCA — co-occurrence + causal ranking
+## 14. Analysis → k-NN analysis — TF-IDF clustering + isolation
+
+**URL:** `/knn`
+
+The companion view to *Detect anomalies* and *Denoise primaries*. Same
+fingerprinting pipeline as those two pages — every primary record in the
+window is rendered as `"<key with . _ - → spaces>  <json_fingerprint(data)>"`
+— but here the analysis switches from n-gram commonness to **TF-IDF +
+cosine similarity** on a bag-of-words view.
+
+Two things come out:
+
+1. **Clusters** — connected components of a k-NN graph (each fingerprint
+   keeps its `k` nearest neighbours by cosine similarity). Each cluster
+   is summarised by a **representative**: the member with the highest
+   mean similarity to its in-cluster neighbours.
+2. **Anomalies** — fingerprints whose **maximum** similarity to any
+   neighbour is at or below the configured threshold. These are records
+   with no close phrase-structural match anywhere in the lookback window
+   — phrases that stand on their own.
+
+Where *Detect anomalies* asks "which records use rare phrases?" k-NN
+asks "which records have no structural twin?" — the two views often
+disagree on edge cases, which is the point.
+
+### Controls
+
+- **Duration** — lookback window.
+- **k** — neighbours per node in the k-NN graph (default 5). Bigger `k`
+  ⇒ broader, looser clusters.
+- **Min word len** — short-token filter (default 2).
+- **Anomaly threshold** — max nearest-neighbour cosine similarity at-or-below
+  which a fingerprint is flagged as anomalous. Default `0.2`. Lower ⇒
+  stricter (fewer, more isolated anomalies); higher ⇒ broader.
+- **Members cap** — limit on members listed per cluster (the true total
+  is always reported as `size`).
+- **Anomalies cap** — limit on the response anomalies array.
+- **Analyze** button — runs the analysis.
+
+### Reading the output
+
+**Stat tiles:**
+- *Records scanned* — total primary records in the window.
+- *k* — neighbours-per-node actually used (capped at `n_logs - 1`).
+- *Clusters* — number of connected components found (green when > 0).
+- *Anomalies* — number of isolated records (red when > 0).
+
+**Clusters card** — one collapsible `<details>` per cluster, sorted by
+size descending. Each header shows a `cluster #N` badge, the size, the
+representative's density, and its index. Expanding a cluster reveals:
+- the representative fingerprint (full text), and
+- a table of members sorted by density descending (most representative
+  first), capped at *Members cap*.
+
+**Anomalies table** — sorted by max-similarity ascending so the
+**most-isolated** records appear at the top. Each row shows the index,
+the maximum similarity to any neighbour (a value at or below the
+threshold), and the fingerprint text.
+
+### When to use it
+
+- *"Group the last hour into a handful of patterns and show me one
+  example of each."* — read the cluster representatives.
+- *"What's structurally one-of-a-kind in this window?"* — read the
+  anomalies table.
+- *"Cross-check the n-gram anomaly view."* — a record flagged here that
+  *Detect anomalies* missed is a strong signal: structurally isolated
+  even though its individual phrases are common.
+- *"Estimate corpus diversity at a glance."* — a high cluster count
+  with small sizes means a heterogeneous window; one giant cluster plus
+  a long anomaly tail means heavy boilerplate with sporadic novelty.
+
+### Tip on threshold tuning
+
+The default `0.2` is a reasonable starting point for typical operational
+streams. If the *Anomalies* tile stays empty, raise the threshold (try
+`0.3` or `0.4`). If it floods with too many records to be useful,
+tighten it (`0.15` or `0.1`). You can also raise `k` to make the graph
+denser, which suppresses spurious singletons.
+
+For the algorithm internals see
+[`Algorithm/KNN.md`](Algorithm/KNN.md).
+
+---
+
+## 15. RCA → Telemetry RCA — co-occurrence + causal ranking
 
 **URL:** `/rca`
 
@@ -606,7 +692,7 @@ The full algorithm is documented in
 
 ---
 
-## 15. RCA → Template RCA — same algorithm on drain3 templates
+## 16. RCA → Template RCA — same algorithm on drain3 templates
 
 **URL:** `/rca/templates`
 
@@ -620,7 +706,7 @@ you can read them at a glance instead of cross-referencing UUIDs.
 
 ---
 
-## 16. Documents — semantic knowledge-base search
+## 17. Documents — semantic knowledge-base search
 
 **URL:** `/docs`
 
@@ -649,7 +735,7 @@ content. Long content is truncated with a "Show more" button.
 
 ---
 
-## 17. Scripts — store, run, and schedule BUND scripts
+## 18. Scripts — store, run, and schedule BUND scripts
 
 **URL:** `/scripts`
 
@@ -685,7 +771,7 @@ Three controls:
   occurrence falls inside the current minute.
 - **CodeMirror editor** — BUND source with syntax highlighting,
   line numbers, bracket matching. Same colour scheme as the
-  Bund page (§17).
+  Bund page (§20).
 
 Three buttons at the bottom:
 
@@ -732,7 +818,7 @@ queue id so you can pull results later via `bdscmd results-pull`.
 
 ---
 
-## 18. Signals — emit and search named events
+## 19. Signals — emit and search named events
 
 **URL:** `/signals`
 
@@ -769,7 +855,7 @@ Severities are colour-coded: green / yellow / orange / red.
 
 ---
 
-## 19. Bund — interactive scripting workbench
+## 20. Bund — interactive scripting workbench
 
 **URL:** `/bund`
 
@@ -816,7 +902,7 @@ If the script throws an error, the error message appears in red.
 
 ---
 
-## 20. Chat — Ollama-powered RAG assistant
+## 21. Chat — Ollama-powered RAG assistant
 
 **URL:** `/chat`
 
@@ -856,7 +942,7 @@ question + context to Ollama for an answer.
 
 ---
 
-## 21. Common interaction patterns
+## 22. Common interaction patterns
 
 A few UI conventions repeat across pages:
 
@@ -899,7 +985,7 @@ re-submit the form to refresh.
 
 ---
 
-## 22. Cookbook — typical workflows end to end
+## 23. Cookbook — typical workflows end to end
 
 ### Triage an unfamiliar alert
 
@@ -971,7 +1057,7 @@ table is short — both are quick negative checks.
 
 ---
 
-## 23. Troubleshooting
+## 24. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
