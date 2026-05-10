@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -78,7 +78,7 @@ pub async fn results(
 ) -> Result<Html<String>, AppError> {
     if p.q.is_empty() {
         // Browse mode: show recently observed templates via FrequencyTracking
-        let resp = rpc(&state, "v2/tpl.templates_recent", json!({
+        let resp = rpc_versioned(&state, "v2/tpl.templates_recent", "v3/tpl.templates_recent", json!({
             "session":  SESSION,
             "duration": p.duration,
         }))
@@ -94,7 +94,7 @@ pub async fn results(
         Ok(Html(TemplateRows { rows, duration: p.duration, q: p.q, searching: false }.render()?))
     } else {
         // Search mode: semantic vector search across tpl store
-        let resp = rpc(&state, "v2/tpl.search", json!({
+        let resp = rpc_versioned(&state, "v2/tpl.search", "v3/tpl.search", json!({
             "session":  SESSION,
             "duration": p.duration,
             "query":    p.q,

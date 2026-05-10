@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 #[derive(Deserialize, Default)]
 pub struct Params {
@@ -79,7 +79,7 @@ pub async fn keys(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
-    let resp = rpc(&state, "v2/keys.all", json!({
+    let resp = rpc_versioned(&state, "v2/keys.all", "v3/keys.all", json!({
         "session":  SESSION,
         "duration": p.duration,
         "key":      "*",
@@ -113,7 +113,7 @@ pub async fn results(
         return Ok(Html(TelemetryRows { rows: vec![], duration: p.duration, q: p.q }.render()?));
     }
 
-    let resp = rpc(&state, "v2/search.get", json!({
+    let resp = rpc_versioned(&state, "v2/search.get", "v3/search.get", json!({
         "session":  SESSION,
         "query":    p.q,
         "duration": p.duration,

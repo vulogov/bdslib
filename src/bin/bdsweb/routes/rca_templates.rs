@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{rpc_versioned, SESSION}, error::AppError, state::AppState};
 use super::rca::{extract_rca, CausalRow, ClusterCard, RcaSummary};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ pub async fn results(
 ) -> Result<Html<String>, AppError> {
     let fb: Option<String> = if p.failure_body.is_empty() { None } else { Some(p.failure_body.clone()) };
 
-    let resp = rpc(&state, "v2/rca.templates", json!({
+    let resp = rpc_versioned(&state, "v2/rca.templates", "v3/rca.templates", json!({
         "session":           SESSION,
         "duration":          p.duration,
         "failure_body":      fb,

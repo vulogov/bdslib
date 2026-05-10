@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ pub async fn results(
 ) -> Result<Html<String>, AppError> {
     let fk: Option<String> = if p.failure_key.is_empty() { None } else { Some(p.failure_key.clone()) };
 
-    let resp = rpc(&state, "v2/rca", json!({
+    let resp = rpc_versioned(&state, "v2/rca", "v3/rca", json!({
         "session":           SESSION,
         "duration":          p.duration,
         "failure_key":       fk,

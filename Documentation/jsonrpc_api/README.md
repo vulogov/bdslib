@@ -127,6 +127,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | `v3/keys`, `v3/keys.all`, `v3/keys.get` | Cluster-wide key enumeration; sorted string union plus per-key UUID-set merge. |
 | `v3/primaries`, `v3/primaries.explore`(`.telemetry`), `v3/primaries.get`(`.telemetry`) | Cluster-wide primary record listings; UUID dedup or per-key count + UUID-set merge. |
 | `v3/topics`, `v3/topics.all` | Cluster-wide LDA topic analysis; pick the largest-corpus result per key (LDA isn't directly mergeable). |
+| `v3/rca`, `v3/rca.templates` | Cluster-wide root-cause analysis; pick the largest-corpus result (same strategy as v3/topics — RCA is corpus-relative, not directly mergeable). |
 | `v3/signals`, `v3/signals_query` | Cluster-wide signal queries; UUID dedup with score average for semantic search. |
 | `v3/tpl.list`, `v3/tpl.search`, `v3/tpl.get`, `v3/tpl.template_by_id`, `v3/tpl.templates_recent`, `v3/tpl.templates_by_timestamp` | Cluster-wide template-store reads; UUID dedup with first-non-null-peer-wins for single-record fetches. |
 | `v3/search.get` | Cluster-wide semantic vector search returning full documents. UUID dedup + score average. |

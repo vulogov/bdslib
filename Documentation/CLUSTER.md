@@ -225,6 +225,24 @@ All cluster artefacts live under `<dbpath>/network/`:
     tombstones.duckdb      # tombstone log for fully-replicated stores (Phase 4)
 ```
 
+### 6.1 bdsweb mode-aware routing
+
+bdsweb's Telemetry / Analysis / RCA route handlers call
+`client::rpc_versioned(state, v2, v3, params)` instead of `rpc(state,
+method, params)`.  The helper checks `v2/status.cluster` (cached for 30 s
+in `AppState.cluster_mode`) and routes to **v3/* when the bdsnode reports
+cluster mode is on**, **v2/* otherwise**.  The same bdsweb binary therefore
+serves both standalone and clustered bdsnode without operator intervention.
+
+Routes that switch (where the v3 equivalent exists):
+`/telemetry`, `/logs`, `/templates`, `/anomaly_recent`, `/denoise_recent`,
+`/knn`, `/rca`, `/rca/templates`.
+
+Routes that stay on v2 (no v3 equivalent yet — future work):
+`/search` (aggregationsearch), `/trends`, `/templates_summary` (textrank),
+`/primary_summary`, `/primary_query_summary`, `/primary_lsa_summary`,
+`/primary_lsa_query_summary`.
+
 ## 7. RPC surface
 
 | Method | Auth | Phase | Purpose |

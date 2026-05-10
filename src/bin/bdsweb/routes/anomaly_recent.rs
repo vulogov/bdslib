@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::{client::{rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ pub async fn results(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
-    let resp = rpc(&state, "v2/anomaly.recent", json!({
+    let resp = rpc_versioned(&state, "v2/anomaly.recent", "v3/anomaly.recent", json!({
         "session":           SESSION,
         "duration":          p.duration.clone(),
         "n":                 p.n,

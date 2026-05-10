@@ -97,6 +97,7 @@ mod v3_keys;
 mod v3_knn;
 mod v3_merge;
 mod v3_primaries;
+mod v3_rca;
 mod v3_replicated;
 mod v3_script_add;
 mod v3_script_delete;
@@ -212,6 +213,7 @@ pub fn build_module() -> RpcModule<()> {
     v3_fulltext::register(&mut module);
     v3_keys::register(&mut module);
     v3_primaries::register(&mut module);
+    v3_rca::register(&mut module);
     v3_topics::register(&mut module);
     v3_signals::register(&mut module);
     v3_search_get::register(&mut module);
