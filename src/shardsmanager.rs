@@ -1,3 +1,4 @@
+use crate::cluster::{Cluster, ClusterConfig};
 use crate::common::cache_json::JsonCache;
 use crate::common::drain::DrainParser;
 use crate::common::error::{err_msg, Result};
@@ -187,6 +188,9 @@ pub struct ShardsManager {
     /// caller used [`Self::with_embedding`] directly (typically tests, where
     /// no model name is meaningful).
     pub(crate) embedding_model_name: Arc<std::sync::Mutex<Option<String>>>,
+    /// Cluster layer.  `Some` when `cluster.enabled = true` in `bds.hjson`;
+    /// `None` for stand-alone deployments (zero overhead — no background tasks).
+    pub(crate) cluster: Option<Arc<Cluster>>,
 }
 
 impl ShardsManager {
@@ -235,8 +239,14 @@ impl ShardsManager {
         let mgr = Self::with_embedding(config_path, embedding)?;
         // Stash the resolved name so callers (v2/status) can echo it back
         // without having to re-parse the config or interrogate fastembed.
+        let model_name = format!("{model:?}");
         if let Ok(mut slot) = mgr.embedding_model_name.lock() {
-            *slot = Some(format!("{model:?}"));
+            *slot = Some(model_name.clone());
+        }
+        // Mirror into the cluster layer so `v3/cluster.hello` can advertise
+        // it (peers refuse to form when their dimensions don't match).
+        if let Some(cluster) = &mgr.cluster {
+            cluster.set_embedding_model(Some(model_name));
         }
         Ok(mgr)
     }
@@ -287,6 +297,16 @@ impl ShardsManager {
             Duration::from_secs(cfg.jsoncache_ttl_secs),
         );
 
+        // Cluster layer is opt-in.  Parse the cluster.* sub-block; an
+        // absent or `enabled: false` block returns a disabled config and
+        // leaves `cluster` as None (zero overhead).
+        let cluster_cfg = ClusterConfig::from_hjson_str(&raw)?;
+        let cluster = if cluster_cfg.enabled {
+            Some(Cluster::init(&cfg.dbpath, cluster_cfg)?)
+        } else {
+            None
+        };
+
         let mut manager = Self {
             cache,
             docstore,
@@ -298,6 +318,7 @@ impl ShardsManager {
             // `with_embedding` doesn't know which model variant produced the
             // engine — `Self::new` populates this slot after construction.
             embedding_model_name: Arc::new(std::sync::Mutex::new(None)),
+            cluster,
         };
 
         if cfg.drain_enabled {
@@ -1093,6 +1114,12 @@ impl ShardsManager {
             return 0;
         }
         (self.jsoncache.len() * 100 / cap) as u64
+    }
+
+    /// Borrow the cluster layer.  `Some` only when `cluster.enabled = true`
+    /// in the originating `bds.hjson`; `None` for stand-alone deployments.
+    pub fn cluster(&self) -> Option<&Arc<Cluster>> {
+        self.cluster.as_ref()
     }
 }
 

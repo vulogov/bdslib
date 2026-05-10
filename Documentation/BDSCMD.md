@@ -73,6 +73,9 @@ output suitable for piping into `jq`.
 14. [Commands — BUND VM](#14-commands--bund-vm)
     - [eval](#141-eval)
     - [Shebang scripts](#142-shebang-scripts)
+14b. [Commands — Cluster](#14b-commands--cluster)
+    - [cluster status](#cluster-status)
+    - [cluster peers](#cluster-peers)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -2083,6 +2086,297 @@ retrieve workbench values once the worker has finished executing.
 reuse a named VM context across calls.  Use `eval-queued` when the script's
 runtime is long, when you want fire-and-forget execution, or when results will
 be consumed by a different client.
+
+---
+
+## 14b. Commands — Cluster
+
+`cluster` is a nested subcommand for inspecting cluster membership and for
+running distributed reads/analytics across the mesh.
+
+The subcommands fall into two groups:
+
+- **Membership** (`status`, `peers`) — call HMAC-authenticated
+  `v3/cluster.*` methods.  Require `--secret` (or
+  `BDSCMD_CLUSTER_SECRET`) matching the target node's
+  `cluster.shared_secret` from `bds.hjson`.
+- **Distributed reads** (`timeline`, `count`, `search`, `knn`, `anomaly`,
+  `denoise`) — call unauthenticated v3/* methods.  No secret required.
+
+```
+bdscmd cluster [--secret <SECRET>] <subcommand> [SUB-OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-s, --secret` | required for `status`/`peers` (or `BDSCMD_CLUSTER_SECRET`) | Shared cluster secret. Ignored by distributed-read subcommands. |
+
+### `cluster status`
+
+Calls `v3/cluster.status`.  Returns mode, peer counts, and replication
+factor in effect on the target node.
+
+```bash
+export BDSCMD_CLUSTER_SECRET="change-me-32-bytes-or-more"
+bdscmd --address http://10.0.0.7:9000 cluster status
+```
+
+### `cluster peers`
+
+Calls `v3/cluster.peers`.  Returns the full peer table snapshot.
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster peers
+```
+
+### `cluster timeline`
+
+Calls `v3/timeline`.  Returns cluster-wide earliest+latest timestamps
+(min/max merge across local + every Alive peer).
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster timeline
+```
+
+### `cluster count`
+
+Calls `v3/count`.  Returns the cluster-wide record count (sum across local
++ every Alive peer).
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | none (all-time) | Lookback window (`"1h"`, `"30min"`). |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster count
+bdscmd --address http://10.0.0.7:9000 cluster count -d 1h
+```
+
+### `cluster search`
+
+Calls `v3/search`.  Cluster-wide semantic vector search; per-peer
+`v2/search` results are merged, deduped by UUID, sorted by score, and
+truncated to `--limit`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-q, --query` | required | Plain-text query. |
+| `-d, --duration` | required | Lookback window. |
+| `-l, --limit` | `10` | Maximum hits returned **after** merge + dedup. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster search -q "kernel panic" -d 6h --limit 20
+```
+
+### `cluster knn`
+
+Calls `v3/knn`.  k-NN over the union of every peer's
+`v2/fingerprints.recent` (deduped by UUID).
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window. |
+| `-k, --k` | `5` | Neighbours per node. |
+| `--min-word-len` | `2` | Token-length filter. |
+| `--anomaly-threshold` | `0.2` | Top-1 cosine threshold for anomaly. |
+| `--max-cluster-members` | `10` | Cap on `members[]` per cluster. |
+| `--max-anomalies` | `20` | Cap on `anomalies[]`. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster knn -d 1h -k 5 --anomaly-threshold 0.15
+```
+
+### `cluster anomaly`
+
+Calls `v3/anomaly.recent`.  N-gram phrase-rarity outliers across the cluster.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window. |
+| `-n, --n` | `2` | N-gram length. |
+| `--min-word-len` | `2` | Token-length filter. |
+| `--anomaly-threshold` | `0.7` | Mean-rarity threshold. |
+| `--max-anomalies` | `20` | Cap on `anomalies[]`. |
+| `--max-novel-ngrams` | `5` | Cap on per-anomaly novel-ngram detail. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster anomaly -d 1h --anomaly-threshold 0.6
+```
+
+### `cluster denoise`
+
+Calls `v3/denoise.recent`.  N-gram noise removal across the cluster.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window. |
+| `-n, --n` | `2` | N-gram length. |
+| `--min-word-len` | `2` | Token-length filter. |
+| `--noise-threshold` | `0.85` | Mean-commonness threshold for noise classification. |
+| `--max-kept` | `100` | Cap on `kept[]`. |
+| `--max-removed` | `100` | Cap on `removed[]`. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster denoise -d 6h --noise-threshold 0.5
+```
+
+### `cluster add`
+
+Calls `v3/add`.  Replicated single-document write — local sync + fire-and-forget
+fan-out to `replication_factor - 1` random Alive peers, with hinted-handoff
+retry on failure.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-D, --doc` | required | Telemetry document as a JSON string (must contain `timestamp`, `key`, `data`). |
+| `-r, --replication-factor` | `cluster.replication_factor` | Override the cluster's configured rf. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster add \
+  -D '{"timestamp":1778000000,"key":"app.error","data":{"msg":"boom"}}'
+```
+
+Sample response:
+
+```json
+{
+  "id":                  "019e103e-4d9e-7aa2-a83f-faf98655b6e1",
+  "replication_factor":  3,
+  "replicas_dispatched": 2,
+  "alive_peers":         2,
+  "under_replicated":    false,
+  "mode":                "full"
+}
+```
+
+### `cluster add-batch`
+
+Calls `v3/add.batch`.  Replicated batch write from an NDJSON file (one
+document per line).
+
+| Flag | Default | Description |
+|---|---|---|
+| `-f, --file` | required | NDJSON file (one document per line). |
+| `-r, --replication-factor` | `cluster.replication_factor` | Override the cluster's configured rf. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster add-batch -f /path/to/batch.ndjson
+```
+
+### `cluster doc-add`
+
+Calls `v3/doc.add`.  Fully-replicated document write — fans out to
+**every** Alive peer with shared UUID + tombstoned-aware anti-entropy
+(Phase 4).
+
+| Flag | Default | Description |
+|---|---|---|
+| `-m, --metadata` | required | Document metadata as a JSON string. |
+| `-c, --content` | required | UTF-8 document body. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster doc-add \
+  -m '{"title":"runbook","tags":["ops"]}' \
+  -c "Step 1: …"
+```
+
+### `cluster doc-delete`
+
+Calls `v3/doc.delete`.  Fully-replicated delete with shared tombstone.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i, --id` | required | UUIDv7 of the doc to delete. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster doc-delete -i 019e1056-…
+```
+
+### `cluster signal-emit`
+
+Calls `v3/signal.emit`.  Fully-replicated signal emit (signals are
+append-only).
+
+| Flag | Default | Description |
+|---|---|---|
+| `-n, --name` | required | Signal identifier. |
+| `-S, --severity` | `info` | Severity level. |
+| `-t, --timestamp` | now | Unix-second timestamp. |
+| `-m, --metadata` | none | Optional extra metadata as a JSON object string. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster signal-emit -n disk-full -S critical
+```
+
+### `cluster script-add`
+
+Calls `v3/script.add`.  Fully-replicated BUND script add.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-m, --metadata` | required | Script metadata JSON (must contain `name` and `schedule`). |
+| `-b, --body` | required | BUND script source. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster script-add \
+  -m '{"name":"hourly","schedule":"0 * * * *"}' \
+  -b "data 'hello' results"
+```
+
+### `cluster script-delete`
+
+Calls `v3/script.delete`.  Fully-replicated delete with tombstone.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i, --id` | required | UUIDv7 of the script to delete. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster script-delete -i 019e1057-…
+```
+
+### `cluster sync`
+
+Calls `v3/cluster.sync`.  HMAC-authenticated admin RPC that forces an
+immediate hint replay + anti-entropy tick on the target node.  Useful
+after recovering from a network event when you don't want to wait for
+the periodic loops to schedule the catch-up.
+
+```bash
+export BDSCMD_CLUSTER_SECRET="change-me-32-bytes-or-more"
+bdscmd --address http://10.0.0.7:9000 cluster sync
+```
+
+Sample output:
+
+```json
+{
+  "node_id":         "019e1123-…",
+  "hints_replayed":  3,
+  "ae_pulled":       2,
+  "ae_tombstones":   1,
+  "ae_pruned":       0,
+  "hint_backlog":    0,
+  "tombstone_total": 4
+}
+```
+
+### `cluster hints`
+
+Reads `v2/cluster.peers` (no secret required) and shows the per-peer
+hint backlog, AE/hint-tick telemetry, and replication health.
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster hints
+```
+
+Architectural reference: [`Documentation/CLUSTER.md`](CLUSTER.md).
+
+**Common error responses:**
+
+- `-32097` — cluster mode disabled on the target node (membership subcommands only).
+- `-32098` — missing or wrong `--secret` (membership subcommands only).
+- `-32600` — invalid `duration` string.
 
 ---
 

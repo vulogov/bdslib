@@ -2,6 +2,7 @@ extern crate log;
 
 pub mod ai;
 pub mod analysis;
+pub mod cluster;
 pub mod common;
 pub mod datastorage;
 pub mod documentstorage;
@@ -51,6 +52,7 @@ pub use shard::Shard;
 pub use shardscache::ShardsCache;
 pub use shardsinfo::ShardInfoEngine;
 pub use shardsmanager::ShardsManager;
+pub use cluster::{Cluster, ClusterConfig, ClusterMode};
 pub use storageengine::StorageEngine;
 pub use vectorengine::VectorEngine;
 pub use vm::context;

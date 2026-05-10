@@ -110,6 +110,7 @@ async fn main() {
         .route("/",                  get(routes::dashboard::page))
         .route("/dashboard/data",    get(routes::dashboard::data))
         .route("/dashboard/refresh", get(routes::dashboard::refresh))
+        .route("/cluster",           get(routes::cluster::page))
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))

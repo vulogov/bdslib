@@ -104,6 +104,47 @@ impl ShardsManager {
         Ok(knn_summary_with(&fingerprints, cfg))
     }
 
+    /// Walk every shard that overlaps `[now − lookback, now)` and return
+    /// `(uuid, fingerprint)` pairs for every primary record found there.
+    ///
+    /// Used by `v2/fingerprints.recent` so the v3 distributed-analytics
+    /// endpoints (`v3/knn`, `v3/anomaly.recent`, `v3/denoise.recent`) can
+    /// fan out to peers, dedup by UUID, and run the analysis once on the
+    /// union of all peers' fingerprints.
+    pub fn fingerprints_with_ids_in_recent(
+        &self,
+        lookback: Duration,
+    ) -> Result<Vec<(Uuid, String)>> {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let start_secs = now_secs.saturating_sub(lookback.as_secs());
+
+        let start_st = UNIX_EPOCH + Duration::from_secs(start_secs);
+        let end_st   = UNIX_EPOCH + Duration::from_secs(now_secs);
+
+        let infos = self.cache.info().shards_in_range(start_st, end_st)?;
+        let mut shards: Vec<Shard> = Vec::with_capacity(infos.len());
+        for info in infos {
+            shards.push(self.cache.shard(info.start_time)?);
+        }
+
+        let collected: Vec<Vec<(Uuid, String)>> = if shards.len() <= 1 {
+            shards.iter()
+                .map(|s| collect_fingerprints_with_ids_in_range(s, start_st, end_st))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            shards.par_iter()
+                .map(|s| collect_fingerprints_with_ids_in_range(s, start_st, end_st))
+                .collect::<Result<Vec<_>>>()?
+        };
+        let total: usize = collected.iter().map(|v| v.len()).sum();
+        let mut out = Vec::with_capacity(total);
+        for v in collected { out.extend(v); }
+        Ok(out)
+    }
+
     /// Walk every shard that overlaps the lookback window and return
     /// one fingerprint string per primary record found there.
     fn collect_fingerprints_in_recent(&self, lookback: Duration) -> Result<Vec<String>> {
@@ -161,6 +202,26 @@ fn collect_fingerprints_in_range(
         let fp = record_to_fingerprint(&key, &data);
         if !fp.trim().is_empty() {
             out.push(fp);
+        }
+    }
+    Ok(out)
+}
+
+/// Same as [`collect_fingerprints_in_range`] but keeps the UUID so callers
+/// can dedup across peers.
+fn collect_fingerprints_with_ids_in_range(
+    shard: &Shard,
+    start: SystemTime,
+    end: SystemTime,
+) -> Result<Vec<(Uuid, String)>> {
+    let rows = shard
+        .observability()
+        .list_primaries_with_data_in_range(start, end)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, key, data) in rows {
+        let fp = record_to_fingerprint(&key, &data);
+        if !fp.trim().is_empty() {
+            out.push((id, fp));
         }
     }
     Ok(out)

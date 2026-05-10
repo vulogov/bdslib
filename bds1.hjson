@@ -1,0 +1,50 @@
+{
+  // ─────────────────────────────────────────────────────────────────────────────
+  // bds1.hjson — node 1 of a 3-node test cluster.
+  //
+  // Pair with bds2.hjson and bds3.hjson.  Node 1 acts as the bootstrap;
+  // the other two pull its address from `cluster.bootstrap`.
+  //
+  // Run:   BDS_CONFIG=bds1.hjson cargo run --bin bdsnode -- --new --port 9711 -d 1
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // ── Storage (per-node — must be unique across the trio) ──
+  dbpath:               "/tmp/bds-cluster/db1"
+  shard_duration:       "1h"
+  pool_size:            2
+  max_open_shards:      8
+  ingest_channel_capacity: 10000
+
+  // ── Test-friendly: disable background bits that aren't being tested ──
+  drain_enabled:        false
+  scheduler_interval_secs: 0
+  sync_interval_secs:      0
+  n_workers:            2
+
+  // ── Cluster ──
+  cluster: {
+    enabled:                 true
+    shared_secret:           "test-cluster-secret-32-or-more-chars"
+
+    // Where peers reach this node — must match --port below.
+    bind_url:                "http://127.0.0.1:9711"
+
+    // Node 1 has no `bootstrap` — it IS the bootstrap target for nodes 2 and 3.
+
+    // Faster cadence for test feedback.
+    gossip_interval:         "2s"
+    suspect_timeout:         "10s"
+    dead_timeout:            "30s"
+    hint_replay_interval:    "5s"
+    antientropy_interval:    "60s"
+    peer_rpc_timeout:        "2s"
+
+    // Full mode at 3 alive peers — exercises the full→partial transition
+    // when one node goes down.
+    full_mode_threshold:     3
+    replication_factor:      3
+
+    // All three replicated stores.
+    full_replication_stores: ["docs", "signals", "scripts"]
+  }
+}

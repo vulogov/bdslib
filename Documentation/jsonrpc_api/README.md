@@ -96,6 +96,31 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | Method | Description |
 |---|---|
 | [`v2/status`](v2_status.md) | Live process snapshot: node identity, uptime, timestamp, hostname, and ingest queue depths |
+| [`v2/cluster.peers`](v2_cluster_peers.md) | Unauthenticated read of the local peer table (mode, peer states, replication knobs). Returns `{enabled: false, peers: []}` when cluster mode is off. Phase 1 of the [cluster layer](../CLUSTER.md). |
+| [`v3/cluster.hello`](v3_cluster_hello.md) | HMAC-authenticated handshake: caller sends identity, receiver registers it and echoes back its own identity + peer view. |
+| [`v3/cluster.peers`](v3_cluster_peers.md) | HMAC-authenticated read of the local peer table (used by the gossip loop every 3rd tick to converge membership). |
+| [`v3/cluster.ping`](v3_cluster_ping.md) | HMAC-authenticated lightweight liveness probe; receiver returns its `node_id` + wall-clock `ts`. |
+| [`v3/cluster.status`](v3_cluster_status.md) | HMAC-authenticated compact summary: mode, peer counts, replication factor, embedding model. |
+| [`v2/fingerprints.recent`](v2_fingerprints_recent.md) | Raw `(uuid, fingerprint)` pairs for every primary in the lookback window; input source for the v3 distributed-analytics endpoints. |
+| [`v3/timeline`](v3_timeline.md) | Cluster-wide earliest+latest timestamps; min/max merge across local + every Alive peer's `v2/timeline`. Phase 2 of the [cluster layer](../CLUSTER.md). |
+| [`v3/count`](v3_count.md) | Cluster-wide record count; sum across local + every Alive peer's `v2/count` (with documented caveat for Phase 3 replication). |
+| [`v3/search`](v3_search.md) | Cluster-wide semantic vector search; per-peer `v2/search` results merged + UUID-deduped + score-sorted + truncated. |
+| [`v3/knn`](v3_knn.md) | Cluster-wide k-NN; per-peer `v2/fingerprints.recent` deduped by UUID; analysis runs once on the union. |
+| [`v3/anomaly.recent`](v3_anomaly_recent.md) | Cluster-wide n-gram anomaly detection; same fan-out recipe as v3/knn. |
+| [`v3/denoise.recent`](v3_denoise_recent.md) | Cluster-wide n-gram noise removal; same fan-out recipe as v3/knn. |
+| [`v3/add`](v3_add.md) | Replicated single-document write: local sync + fire-and-forget fan-out to RF-1 random Alive peers, with hinted-handoff retry on failure. Phase 3 of the [cluster layer](../CLUSTER.md). |
+| [`v3/add.batch`](v3_add_batch.md) | Replicated batch write: same recipe as v3/add but uses `v2/add.batch` with `sync: true` for one round-trip per peer. |
+| [`v2/doc.list_ids`](v2_doc_list_ids.md) · `v2/signal.list_ids` · `v2/script.list_ids` | Cheap UUID + `updated_at` enumeration plus a tombstone list — input source for the Phase 4 anti-entropy pull-sync. |
+| [`v3/doc.add`](v3_doc_add.md) | Fully-replicated docstore add: local sync + fan-out to **every** Alive peer with shared UUID. Phase 4 canonical pattern. |
+| [`v3/doc.update.metadata`](v3_doc_update_metadata.md) | Fully-replicated docstore metadata update; bumps `metadata.updated_at` for LWW. |
+| [`v3/doc.update.content`](v3_doc_update_content.md) | Fully-replicated docstore content update. |
+| [`v3/doc.delete`](v3_doc_delete.md) | Fully-replicated docstore delete with shared tombstone (so anti-entropy doesn't resurrect). |
+| [`v3/signal.emit`](v3_signal_emit.md) | Fully-replicated signal emit (signals are append-only — no update/delete). |
+| [`v3/script.add`](v3_script_add.md) | Fully-replicated BUND script add. |
+| [`v3/script.update`](v3_script_update.md) | Fully-replicated BUND script update. |
+| [`v3/script.delete`](v3_script_delete.md) | Fully-replicated BUND script delete with tombstone. |
+| [`v3/cluster.sync`](v3_cluster_sync.md) | HMAC-authenticated admin RPC: force an immediate hint replay + anti-entropy tick. Phase 5 of the [cluster layer](../CLUSTER.md). |
+| [`v2/signal.get`](v2_signal_get.md) | Fetch a single signal's metadata by UUID. Used by anti-entropy to pull a missing signal. |
 | [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence |
 | [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence |
 | [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion |

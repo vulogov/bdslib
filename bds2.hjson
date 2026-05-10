@@ -1,0 +1,40 @@
+{
+  // ─────────────────────────────────────────────────────────────────────────────
+  // bds2.hjson — node 2 of the 3-node test cluster (pair with bds1, bds3).
+  //
+  // Run:   BDS_CONFIG=bds2.hjson cargo run --bin bdsnode -- --new --port 9712 -d 1
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  dbpath:               "/tmp/bds-cluster/db2"
+  shard_duration:       "1h"
+  pool_size:            2
+  max_open_shards:      8
+  ingest_channel_capacity: 10000
+
+  drain_enabled:        false
+  scheduler_interval_secs: 0
+  sync_interval_secs:      0
+  n_workers:            2
+
+  cluster: {
+    enabled:                 true
+    shared_secret:           "test-cluster-secret-32-or-more-chars"
+    bind_url:                "http://127.0.0.1:9712"
+
+    // Bootstrap = node 1.  Once we shake hands with node 1, gossip
+    // converges the rest (we'll learn node 3 via cluster.peers exchange).
+    bootstrap:               "http://127.0.0.1:9711"
+
+    gossip_interval:         "2s"
+    suspect_timeout:         "10s"
+    dead_timeout:            "30s"
+    hint_replay_interval:    "5s"
+    antientropy_interval:    "60s"
+    peer_rpc_timeout:        "2s"
+
+    full_mode_threshold:     3
+    replication_factor:      3
+
+    full_replication_stores: ["docs", "signals", "scripts"]
+  }
+}

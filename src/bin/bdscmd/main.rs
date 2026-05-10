@@ -29,6 +29,9 @@ enum Commands {
     /// Show live node status (no server check performed)
     Status(cmd::status::Cmd),
 
+    /// Cluster operations: `cluster status` and `cluster peers`
+    Cluster(cmd::cluster::Cmd),
+
     /// Ingest a single telemetry document
     Add(cmd::add::Cmd),
 
@@ -257,6 +260,7 @@ fn main() -> Result<()> {
 
     let result = match cli.command {
         Commands::Status(a)                   => cmd::status::run(&url, &session, a),
+        Commands::Cluster(a)                  => cmd::cluster::run(&url, &session, a),
         Commands::Add(a)                      => cmd::add::run(&url, &session, a),
         Commands::AddBatch(a)                 => cmd::add_batch::run(&url, &session, a),
         Commands::AddFile(a)                  => cmd::add_file::run(&url, &session, a),

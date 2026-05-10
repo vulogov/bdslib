@@ -113,6 +113,17 @@ impl DocumentStorage {
     /// Returns the generated UUIDv7 that identifies this document.
     pub fn add_document(&self, metadata: JsonValue, content: &[u8]) -> Result<Uuid> {
         let id = generate_v7();
+        self.add_document_with_id(id, metadata, content)?;
+        Ok(id)
+    }
+
+    /// Same as [`add_document`] but uses the caller-supplied UUID instead
+    /// of generating a fresh UUIDv7.  Used by the v3/* fully-replicated
+    /// store endpoints so every replica writes under the same identity —
+    /// the dedup key for distributed reads.
+    ///
+    /// Returns `Err` if the UUID already exists in the metadata store.
+    pub fn add_document_with_id(&self, id: Uuid, metadata: JsonValue, content: &[u8]) -> Result<()> {
         let id_str = id.to_string();
 
         self.meta.add_json_with_id(id, metadata.clone())?;
@@ -127,7 +138,7 @@ impl DocumentStorage {
         let ts = metadata.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_secs);
         self.frequency.add_with_timestamp(ts, &id_str)?;
 
-        Ok(id)
+        Ok(())
     }
 
     /// Store metadata and body to DuckDB and frequency tracking only; skip vector

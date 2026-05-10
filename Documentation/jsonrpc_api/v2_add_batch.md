@@ -11,18 +11,33 @@ The call returns as soon as all documents are accepted by the channel.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `docs` | array of objects | yes | The JSON telemetry documents to ingest. Each must contain `"timestamp"` (Unix seconds), `"key"` (string), and `"data"` (any JSON value). An optional `"id"` (UUID v7) may be supplied; one is generated if absent. All other fields are stored as metadata. |
+| `sync` | bool | no (default `false`) | When `true`, bypass the ingest queue and call `ShardsManager::add_batch` directly on a blocking thread. The response carries the assigned UUIDv7s instead of the bare queue acknowledgement. Used by [`v3/add.batch`](v3_add_batch.md) fan-out so the coordinator can distinguish success from failure on the receiver. |
 
 ## Response
+
+Async (default `sync: false`):
 
 ```json
 { "queued": 42 }
 ```
 
+Sync (`sync: true`):
+
+```json
+{
+  "ids":    ["019e103e-…", "019e103e-…", "019e103e-…"],
+  "n":      3,
+  "synced": true
+}
+```
+
 | Field | Type | Description |
 |---|---|---|
-| `queued` | integer | Number of documents accepted by the channel (equals `len(docs)`). |
+| `queued` | integer | (async only) Number of documents accepted by the channel (equals `len(docs)`). |
+| `ids` | array of strings | (sync only) UUIDv7s of the stored records, in input order. |
+| `n` | integer | (sync only) `ids.length`. |
 
-Returns `{ "queued": 0 }` for an empty `docs` array.
+Returns `{ "queued": 0 }` (or `{"ids":[],"n":0,"synced":true}`) for an empty `docs` array.
 
 ## Example
 

@@ -1,4 +1,6 @@
+use bdslib::cluster::fanout::FanOutResults;
 use jsonrpsee::types::ErrorObject;
+use serde_json::Value as JsonValue;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -15,6 +17,25 @@ pub fn duplication_timestamps(obs: &bdslib::ObservabilityStorage, id: Uuid) -> V
 
 pub fn rpc_err(code: i32, msg: impl std::fmt::Display) -> ErrorObject<'static> {
     ErrorObject::owned(code, msg.to_string(), None::<()>)
+}
+
+/// Standard `cluster_meta` block embedded in every v3/* read response.
+///
+/// `None` for `f` means cluster mode is disabled on this node — in that case
+/// we emit `{ "enabled": false }` so callers can detect the degraded state.
+/// Otherwise we emit the fan-out's `peers_queried` / `peers_answered` /
+/// `partial` / `failed` block plus `enabled: true`.
+pub fn v3_cluster_meta(f: Option<FanOutResults>) -> JsonValue {
+    match f {
+        Some(r) => {
+            let mut m = r.cluster_meta();
+            if let Some(obj) = m.as_object_mut() {
+                obj.insert("enabled".into(), JsonValue::Bool(true));
+            }
+            m
+        }
+        None => serde_json::json!({ "enabled": false }),
+    }
 }
 
 /// Map a `bdslib::pipe::send` / `pipe::send_many` failure to a JSON-RPC

@@ -36,6 +36,25 @@ pub fn register(module: &mut RpcModule<()>) {
                     Err(_) => (0, 0, 0, None),
                 };
 
+            // Cluster summary — compact, suitable for dashboard tile.
+            let cluster_info = bdslib::get_db().ok().and_then(|db| {
+                db.cluster().map(|c| {
+                    let (alive, suspect, dead) = c.peers.read().count_by_state();
+                    let hint_backlog = c.hints.len().unwrap_or(0);
+                    serde_json::json!({
+                        "node_id":  c.node_id.to_string(),
+                        "bind_url": c.config.bind_url,
+                        "mode":     c.mode().as_str(),
+                        "alive":    alive,
+                        "suspect":  suspect,
+                        "dead":     dead,
+                        "full_mode_threshold": c.config.full_mode_threshold,
+                        "replication_factor":  c.config.replication_factor,
+                        "hint_backlog":        hint_backlog,
+                    })
+                })
+            });
+
             // BUND runtime stats (BundWorkerPool + result queues + named contexts).
             let n_results = bdslib::vm::results().n_queues() as u64;
             let n_bunds   = bdslib::vm::context::n_contexts() as u64;
@@ -75,6 +94,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 "n_bunds":            n_bunds,
                 "recent_scripts":     recent_scripts,
                 "running_scripts":    running_scripts,
+                "cluster":            cluster_info,
             });
 
             log::debug!("v2/status: done");

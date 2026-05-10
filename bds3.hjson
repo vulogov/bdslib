@@ -1,0 +1,37 @@
+{
+  // ─────────────────────────────────────────────────────────────────────────────
+  // bds3.hjson — node 3 of the 3-node test cluster (pair with bds1, bds2).
+  //
+  // Run:   BDS_CONFIG=bds3.hjson cargo run --bin bdsnode -- --new --port 9713 -d 1
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  dbpath:               "/tmp/bds-cluster/db3"
+  shard_duration:       "1h"
+  pool_size:            2
+  max_open_shards:      8
+  ingest_channel_capacity: 10000
+
+  drain_enabled:        false
+  scheduler_interval_secs: 0
+  sync_interval_secs:      0
+  n_workers:            2
+
+  cluster: {
+    enabled:                 true
+    shared_secret:           "test-cluster-secret-32-or-more-chars"
+    bind_url:                "http://127.0.0.1:9713"
+    bootstrap:               "http://127.0.0.1:9711"
+
+    gossip_interval:         "2s"
+    suspect_timeout:         "10s"
+    dead_timeout:            "30s"
+    hint_replay_interval:    "5s"
+    antientropy_interval:    "60s"
+    peer_rpc_timeout:        "2s"
+
+    full_mode_threshold:     3
+    replication_factor:      3
+
+    full_replication_stores: ["docs", "signals", "scripts"]
+  }
+}

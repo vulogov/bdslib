@@ -203,6 +203,11 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to read sync config")?;
     let sync_handle = server::sync::start(sync_cfg);
 
+    // Cluster gossip task — bootstraps against `cluster.bootstrap` (if set)
+    // then runs a periodic ping/peers exchange + liveness sweep.  No-op when
+    // `cluster.enabled = false` in bds.hjson.
+    let cluster_handle = server::cluster::start();
+
     let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
     {
@@ -253,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
     results_sweeper_handle.stop().await;
     scheduler_handle.stop().await;
     sync_handle.stop().await;
+    cluster_handle.stop().await;
 
     // Drain ingest channels and join batch threads before checkpointing so
     // that no queued records are lost.

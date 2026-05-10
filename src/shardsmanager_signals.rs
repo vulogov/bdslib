@@ -62,4 +62,29 @@ impl ShardsManager {
     pub fn signal_get(&self, id: Uuid) -> Result<Option<JsonValue>> {
         self.signals.get_metadata(id)
     }
+
+    // ── Phase 4 (cluster) helpers ─────────────────────────────────────────────
+
+    /// Emit a signal under a caller-supplied UUID.  Used by
+    /// [`v3/signal.emit`] so every replica writes under the same identity.
+    pub fn signal_emit_with_id(
+        &self,
+        id:        Uuid,
+        name:      &str,
+        severity:  &str,
+        timestamp: u64,
+        extra:     serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let mut meta = extra;
+        meta.insert("name".to_owned(),      serde_json::json!(name));
+        meta.insert("severity".to_owned(),  serde_json::json!(severity));
+        meta.insert("timestamp".to_owned(), serde_json::json!(timestamp));
+        self.signals.add_document_with_id(id, serde_json::Value::Object(meta), b"")
+    }
+
+    /// Enumerate every signal `(id, metadata)` pair.  Used by the
+    /// `v2/signal.list_ids` endpoint that drives anti-entropy.
+    pub fn signals_list_metadata(&self) -> Result<Vec<(Uuid, JsonValue)>> {
+        self.signals.list_metadata()
+    }
 }

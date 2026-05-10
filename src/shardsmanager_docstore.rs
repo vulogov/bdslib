@@ -180,4 +180,19 @@ impl ShardsManager {
     pub fn doc_search_text_strings(&self, query: &str, limit: usize) -> Result<Vec<String>> {
         self.docstore.search_document_text_strings(query, limit)
     }
+
+    // ── Phase 4 (cluster) helpers ─────────────────────────────────────────────
+
+    /// Add a document under a caller-supplied UUID.  Used by
+    /// [`v3/doc.add`](../../bdsnode/jsonrpc/v3_doc_add.rs) so every replica
+    /// writes under the same identity.
+    pub fn doc_add_with_id(&self, id: Uuid, metadata: JsonValue, content: &[u8]) -> Result<()> {
+        self.docstore.add_document_with_id(id, metadata, content)
+    }
+
+    /// Enumerate every document `(id, metadata)` pair.  Used by the
+    /// `v2/doc.list_ids` endpoint that drives anti-entropy diff.
+    pub fn docstore_list_metadata(&self) -> Result<Vec<(Uuid, JsonValue)>> {
+        self.docstore.list_metadata()
+    }
 }

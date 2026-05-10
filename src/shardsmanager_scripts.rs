@@ -138,4 +138,13 @@ impl ShardsManager {
     pub fn script_delete(&self, id: Uuid) -> Result<()> {
         self.scripts.delete_document(id)
     }
+
+    // ── Phase 4 (cluster) helpers ─────────────────────────────────────────────
+
+    /// Add a script under a caller-supplied UUID.  Used by [`v3/script.add`]
+    /// so every replica writes under the same identity.
+    pub fn script_add_with_id(&self, id: Uuid, metadata: JsonValue, script: &str) -> Result<()> {
+        verify_script_metadata(&metadata)?;
+        self.scripts.add_document_with_id(id, metadata, script.as_bytes())
+    }
 }
