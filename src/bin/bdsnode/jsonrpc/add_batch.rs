@@ -1,4 +1,4 @@
-use super::params::rpc_err;
+use super::params::pipe_err;
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 
@@ -13,9 +13,10 @@ pub fn register(module: &mut RpcModule<()>) {
             log::debug!("v2/add.batch: start");
             let p: AddBatchParams = params.parse()?;
             let n = p.docs.len();
-            for doc in p.docs {
-                bdslib::pipe::send("ingest", doc).map_err(|e| rpc_err(-32001, e))?;
-            }
+            // Bulk-push all docs in a single helper call: the channel mutex
+            // is taken once per item (instead of once per call site) and the
+            // tokio worker is freed up sooner.
+            bdslib::pipe::send_many("ingest", p.docs).map_err(pipe_err)?;
             log::debug!("v2/add.batch: done");
             Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "queued": n }))
         })

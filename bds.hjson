@@ -157,6 +157,33 @@
   // 60 may cause "* * * * *" scripts to fire multiple times per minute.
   scheduler_interval_secs: 60
 
+  // ── Periodic global sync ─────────────────────────────────────────────────────
+
+  // bdsnode spawns a background tokio task that, once per
+  // `sync_interval_secs`, calls `bdslib::sync_db()` — which iterates every
+  // open shard and runs DuckDB CHECKPOINT, Tantivy commit, VecStore flush,
+  // and tplstorage HNSW save.  Without this, sync only happens on LRU shard
+  // eviction or process shutdown — meaning an unclean exit (kill -9, OOM,
+  // hardware fault) loses every write since the last eviction (typically
+  // hours of data on the active shard).
+  //
+  // Default 60 — sub-second per tick on warm WALs.  Setting this to 0
+  // disables the background task entirely (sync still runs on shard
+  // eviction and at shutdown).
+  sync_interval_secs: 60
+
+  // ── Ingest channel backpressure ──────────────────────────────────────────────
+
+  // Maximum number of pending records in each ingest channel
+  // (`ingest`, `ingest_file`, `ingest_file_syslog`).  When the channel is
+  // full, `v2/add` / `v2/add.batch` / `v2/add.file` / `v2/add.file.syslog`
+  // return JSON-RPC error -32099 ("ingest channel overloaded") so the
+  // client can apply backoff + retry rather than the server OOMing on
+  // an unbounded queue.
+  //
+  // Default: 100000.  Set to 0 for legacy unbounded behaviour.
+  ingest_channel_capacity: 100000
+
   // ── bdsweb Dashboard ─────────────────────────────────────────────────────────
 
   // How often (in seconds) bdsweb polls bdsnode in the background to refresh

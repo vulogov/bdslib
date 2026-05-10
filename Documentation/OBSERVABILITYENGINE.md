@@ -159,6 +159,51 @@ Including the key in the embedding input means that signals with different keys 
 
 ---
 
+### `add_batch`
+
+```rust
+fn add_batch(
+    &self,
+    docs: &[JsonValue],
+) -> Result<Vec<(Uuid, bool, Option<Vec<f32>>)>>
+```
+
+Stores a batch of telemetry records and returns one
+`(uuid, is_primary, embedding)` triple per input doc in the same
+order. The `embedding` field is `Some(vec)` only for new primary
+records — callers (typically `Shard::add_batch`) feed it directly
+into the vector index without re-embedding.
+
+The batch path applies four optimisations on top of the per-record
+algorithm:
+
+1. **Bulk dedup** — every distinct `(key, data_text)` pair in the
+   batch is resolved against the DB in a **single tuple-IN
+   `SELECT`** (chunked at 1000 pairs to keep individual SQL strings
+   bounded). Replaces N per-record SELECTs.
+2. **Intra-batch dedup map** — duplicates within the same batch are
+   collapsed to the first occurrence's UUID without a DB round-trip.
+3. **One ONNX `embed_batch`** for every new primary's embedding,
+   amortising transformer-model warmup across the batch.
+4. **Single `BEGIN…COMMIT`** transaction containing every
+   `telemetry`, `primary_embeddings`, and `primary_secondary` INSERT,
+   committed via `StorageEngine::execute_many`.
+
+Returns the same `(id, is_primary, opt_emb)` shape as the
+per-record `add`, so callers can branch on `is_primary` to decide
+whether to feed the embedding into FTS / vector indexes downstream.
+
+```rust
+let docs = vec![
+    json!({ "timestamp": 1_700_000_000, "key": "cpu.usage", "data": 72 }),
+    json!({ "timestamp": 1_700_000_001, "key": "cpu.usage", "data": 74 }),
+];
+let results = obs.add_batch(&docs)?;
+assert_eq!(results.len(), 2);
+```
+
+---
+
 ### `delete_by_id`
 
 ```rust

@@ -17,6 +17,20 @@ pub fn rpc_err(code: i32, msg: impl std::fmt::Display) -> ErrorObject<'static> {
     ErrorObject::owned(code, msg.to_string(), None::<()>)
 }
 
+/// Map a `bdslib::pipe::send` / `pipe::send_many` failure to a JSON-RPC
+/// error.  "channel full" maps to `-32099` (server overloaded — the
+/// client should back off and retry); every other failure (registry not
+/// initialised, channel disconnected) maps to `-32001` (database
+/// unavailable, treated as fatal).
+pub fn pipe_err(msg: impl std::fmt::Display) -> ErrorObject<'static> {
+    let s = msg.to_string();
+    if s.contains("is full") {
+        rpc_err(-32099, format!("ingest channel overloaded: {s}"))
+    } else {
+        rpc_err(-32001, s)
+    }
+}
+
 /// Optional time-window parameters accepted by several methods.
 #[derive(serde::Deserialize, Default)]
 pub struct TimeWindowParams {

@@ -1,6 +1,6 @@
 # common module
 
-The `common` module provides shared utilities used across all bdslib engines. It has five sub-modules: `error`, `jsonfingerprint`, `math`, `timerange`, and `uuid`.
+The `common` module provides shared utilities used across all bdslib engines. Its sub-modules cover errors, JSON fingerprinting, math primitives, time ranges, UUID generation, and the named-channel pipe registry.
 
 ```rust
 use bdslib::common::error::{Result, Error, err_msg};
@@ -8,6 +8,9 @@ use bdslib::common::jsonfingerprint::json_fingerprint;
 use bdslib::common::math::{cosine_similarity, dot_product, l2_norm, normalize, euclidean_distance, squared_euclidean};
 use bdslib::common::timerange::{TimeRange, minute_range, hour_range, day_range};
 use bdslib::common::uuid::{generate_v7, generate_v7_at, timestamp_from_v7};
+
+// Pipe registry — shared producer→consumer channels (bdsnode ingest pipeline).
+use bdslib::pipe;   // re-exported at crate root
 ```
 
 ---
@@ -375,5 +378,97 @@ fn tag_and_score(query: &[f32], doc: &[f32]) -> Result<(uuid::Uuid, SystemTime, 
     let day = day_range(SystemTime::now())?;
     let sim = cosine_similarity(&normalize(query)?, &normalize(doc)?)?;
     Ok((id, day.start, sim))
+}
+```
+
+---
+
+## common::pipe
+
+A process-wide registry of named MPMC channels used by `bdsnode`'s
+ingest pipeline. Producers (the JSON-RPC `v2/add*` handlers) push
+records onto a named channel; consumers (the background ingest
+threads) drain them in batches and call `ShardsManager::add_batch`.
+
+Re-exported at the crate root as `bdslib::pipe`.
+
+### `init` and `init_with_capacity`
+
+```rust
+pub fn init(names: &[&str]) -> Result<()>;
+pub fn init_with_capacity(specs: &[(&str, usize)]) -> Result<()>;
+```
+
+`init` creates one **unbounded** channel per name. `init_with_capacity`
+gives explicit capacities — `0` means unbounded (back-compat); any
+positive value creates a **bounded** channel that returns
+`"channel <name> is full"` from `send` / `send_many` when the consumer
+can't keep up. `bdsnode` uses `init_with_capacity` for the ingest
+channels (`ingest`, `ingest_file`, `ingest_file_syslog`) so a producer
+flood can't OOM the server with an unbounded queue. The default
+capacity is `100_000`, configurable via `ingest_channel_capacity` in
+`bds.hjson`. The `v2/add*` JSON-RPC handlers translate channel-full
+errors into JSON-RPC code `-32099` ("ingest channel overloaded — back
+off and retry").
+
+Must be called exactly once before any `send` / `recv` call.
+
+### `send` and `send_many`
+
+```rust
+pub fn send(name: &str, value: serde_json::Value) -> Result<()>;
+pub fn send_many(name: &str, values: Vec<serde_json::Value>) -> Result<()>;
+```
+
+`send` pushes one value. `send_many` pushes a whole `Vec` in one
+call: each crossbeam `send` takes the channel's internal mutex, so
+the bulk helper amortises that lock cost across the whole batch
+rather than the call site doing N separate acquisitions. Used by
+`v2/add.batch` to enqueue large batches without monopolising a tokio
+worker.
+
+For bounded channels both helpers use `try_send` (non-blocking):
+- channel full → `Err("channel <name> is full")`
+- channel disconnected → `Err("channel <name> is disconnected")`
+
+For unbounded channels neither error fires (until the process runs out
+of memory).
+
+### `recv`, `try_recv`, `recv_timeout`, `len`, `receiver`
+
+```rust
+pub fn recv(name: &str)         -> Result<Value>;
+pub fn try_recv(name: &str)     -> Result<Option<Value>>;
+pub fn recv_timeout(name: &str, timeout: Duration) -> Result<Option<Value>>;
+pub fn len(name: &str)          -> Result<usize>;
+pub fn receiver(name: &str)     -> Result<&'static Receiver<Value>>;
+```
+
+The consumer side. `receiver` returns the raw crossbeam `Receiver`
+for use inside `crossbeam::select!` (e.g. combining ingest and
+shutdown signals on the same loop, as the `bds-add` thread does).
+`len` exposes the queue depth — surfaced in `v2/status` so dashboards
+can monitor backpressure.
+
+### Example: shape used by `bdsnode`
+
+```rust
+// startup
+bdslib::pipe::init_with_capacity(&[
+    ("ingest",             100_000),
+    ("ingest_file",        100_000),
+    ("ingest_file_syslog", 100_000),
+])?;
+
+// JSON-RPC handler — producer
+bdslib::pipe::send_many("ingest", docs).map_err(pipe_err)?;
+// pipe_err maps "channel is full" → JSON-RPC -32099, anything else → -32001.
+
+// Background ingest thread — consumer
+let rx = bdslib::pipe::receiver("ingest")?;
+crossbeam::select! {
+    recv(rx)            -> msg => /* batch and flush */,
+    recv(shutdown_rx)   -> _   => /* drain and exit */,
+    default(timeout)            => /* flush partial batch */,
 }
 ```

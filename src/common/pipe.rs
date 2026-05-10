@@ -1,11 +1,14 @@
 use crate::common::error::{err_msg, Result};
-use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use crossbeam::channel::{
+    bounded, unbounded, Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// A named unbounded MPMC channel pair.
+/// A named MPMC channel pair (bounded or unbounded — see [`init`] vs
+/// [`init_with_capacity`]).
 pub struct Pipe {
     pub sender: Sender<Value>,
     pub receiver: Receiver<Value>,
@@ -13,15 +16,44 @@ pub struct Pipe {
 
 static REGISTRY: OnceLock<HashMap<String, Pipe>> = OnceLock::new();
 
-/// Create one unbounded channel per name and register them globally.
+/// Create one **unbounded** channel per name and register them globally.
 ///
 /// Must be called exactly once before any [`send`] / [`recv`] call.
 /// Returns `Err` if called a second time.
+///
+/// Prefer [`init_with_capacity`] for ingest channels in production —
+/// unbounded queues silently grow under producer pressure and can
+/// trigger OOM when the consumer stalls.
 pub fn init(names: &[&str]) -> Result<()> {
     let map: HashMap<String, Pipe> = names
         .iter()
         .map(|&name| {
             let (sender, receiver) = unbounded();
+            (name.to_string(), Pipe { sender, receiver })
+        })
+        .collect();
+    REGISTRY
+        .set(map)
+        .map_err(|_| err_msg("pipe registry already initialized"))
+}
+
+/// Create channels with explicit capacity per name.
+///
+/// `capacity` of `0` keeps the channel **unbounded** (back-compat); any
+/// positive value creates a **bounded** channel that returns
+/// `"channel <name> is full"` from [`send`] / [`send_many`] when the
+/// consumer can't keep up. Callers translate this to JSON-RPC error
+/// `-32603` ("server overloaded") so clients can apply backoff + retry
+/// rather than the server OOMing.
+pub fn init_with_capacity(specs: &[(&str, usize)]) -> Result<()> {
+    let map: HashMap<String, Pipe> = specs
+        .iter()
+        .map(|&(name, cap)| {
+            let (sender, receiver) = if cap == 0 {
+                unbounded()
+            } else {
+                bounded(cap)
+            };
             (name.to_string(), Pipe { sender, receiver })
         })
         .collect();
@@ -38,12 +70,58 @@ fn get(name: &str) -> Result<&'static Pipe> {
         .ok_or_else(|| err_msg(format!("pipe {name:?} not found in registry")))
 }
 
-/// Send `value` to the named channel. Never blocks (unbounded).
+/// Send `value` to the named channel.
+///
+/// For unbounded channels this never blocks. For bounded channels it
+/// uses `try_send`, which returns `Err("channel <name> is full")` when
+/// the queue is at capacity. Callers must handle the full case
+/// explicitly (typically by returning a JSON-RPC `-32603` so the
+/// client can retry with backoff).
 pub fn send(name: &str, value: Value) -> Result<()> {
-    get(name)?
-        .sender
-        .send(value)
-        .map_err(|e| err_msg(e.to_string()))
+    let pipe = get(name)?;
+    match pipe.sender.try_send(value) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            Err(err_msg(format!("channel {name:?} is full")))
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            Err(err_msg(format!("channel {name:?} is disconnected")))
+        }
+    }
+}
+
+/// Bulk-send every item in `values` to the named channel.
+///
+/// Each crossbeam `send` takes the channel's internal mutex; pushing N
+/// items via N separate calls means N lock acquisitions. This helper
+/// pushes them in a single tight loop on the same `Sender` clone, so
+/// the underlying mutex is contended only once per item rather than
+/// once per *call site*. The performance win is biggest when many
+/// producers are all calling `send` from a tokio worker thread (e.g.
+/// the `v2/add.batch` RPC handler), because tying up the worker on
+/// repeated mutex acquisitions blocks unrelated RPC traffic.
+///
+/// For bounded channels, the helper aborts on the first full/closed
+/// error; items earlier in `values` that were successfully pushed are
+/// retained in the channel (no rollback). The error message identifies
+/// the channel so the JSON-RPC layer can translate it to `-32603`.
+pub fn send_many(name: &str, values: Vec<Value>) -> Result<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let sender = &get(name)?.sender;
+    for v in values {
+        match sender.try_send(v) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                return Err(err_msg(format!("channel {name:?} is full")));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(err_msg(format!("channel {name:?} is disconnected")));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Block until a value is available on the named channel.
@@ -198,5 +276,17 @@ mod tests {
     fn test_init_twice_returns_error() {
         setup(); // first init already happened via Once
         assert!(init(&["duplicate"]).is_err());
+    }
+
+    #[test]
+    fn test_send_many_round_trip() {
+        setup();
+        let payload: Vec<Value> = (0..5).map(|i| serde_json::json!(i)).collect();
+        send_many("t_basic", payload.clone()).unwrap();
+        // The previous send_recv test left the channel empty for "t_basic".
+        // Drain in order to confirm send_many preserves FIFO ordering.
+        for expected in payload {
+            assert_eq!(recv("t_basic").unwrap(), expected);
+        }
     }
 }

@@ -66,11 +66,13 @@ curl -s -X POST http://127.0.0.1:9000 \
 
 | Code | Condition |
 |---|---|
-| `-32001` | `"ingest_file"` pipe not available (server startup error) |
+| `-32001` | `"ingest_file"` pipe not available (server startup error) or disconnected |
+| `-32099` | `"ingest_file"` channel full — back off and retry. The channel is bounded by `ingest_channel_capacity` (default 100000); when at capacity the call returns this error instead of blocking. |
 | `-32600` | File does not exist, is not a regular file, is empty, or cannot be opened for reading |
 
 ## Notes
 
 - Ingestion is asynchronous. The method returns as soon as the path is enqueued; records may not be queryable immediately.
 - The background thread processes files in the order they are received. Batch size and flush timeout are controlled by `file_batch_size` and `file_timeout_ms` in the hjson config (defaults: 100 records, 5000 ms).
+- The `"ingest_file"` channel is bounded by `ingest_channel_capacity` (default 100000). Set the config to `0` to revert to the legacy unbounded behaviour.
 - For single-record or low-volume ingestion use [`v2/add`](v2_add.md) or [`v2/add.batch`](v2_add_batch.md) instead.

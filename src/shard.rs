@@ -129,18 +129,22 @@ impl Shard {
         let results = self.observability.add_batch(&docs)?;
 
         let mut ids = Vec::with_capacity(results.len());
-        let mut fts_batch: Vec<(Uuid, String)> = Vec::new();
+        let mut fts_batch:    Vec<(Uuid, String)>                        = Vec::new();
+        let mut vector_batch: Vec<(String, Vec<f32>, Option<JsonValue>)> = Vec::new();
 
         for (i, (id, is_primary, opt_emb)) in results.into_iter().enumerate() {
             ids.push(id);
             if is_primary {
                 fts_batch.push((id, fingerprints[i].clone()));
                 // Reuse embedding from observability — no re-embed.
-                self.vector
-                    .store_vector(&id.to_string(), opt_emb.unwrap(), Some(docs[i].clone()))?;
+                vector_batch.push((id.to_string(), opt_emb.unwrap(), Some(docs[i].clone())));
             }
         }
 
+        // One vector-store mutex acquisition + one Tantivy commit per
+        // batch (instead of one per primary). This is the largest single
+        // perf win for high-volume primary-heavy ingestion.
+        self.vector.store_vectors_batch(vector_batch)?;
         self.fts.add_documents_batch(&fts_batch)?;
         Ok(ids)
     }

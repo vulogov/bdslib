@@ -142,6 +142,23 @@ fn add_batch(&self, docs: Vec<serde_json::Value>) -> Result<Vec<Uuid>>
 
 Add a batch of documents, routing each to its timestamp-appropriate shard. Returns UUIDs in the same order as the input. Stops and returns `Err` on the first document that fails validation or causes a storage error.
 
+The implementation does three things in order:
+
+1. **Validate + tag** every input doc, sorting by aligned shard
+   start time so all docs for the same shard are contiguous.
+2. **Open every shard upfront** (cache lookups serialise on the
+   shard-cache mutex; doing them sequentially avoids contention).
+3. **Per-shard `add_batch` in parallel** via `rayon`. Each shard's
+   storage engines (DuckDB pool, Tantivy index, VecStore) are
+   independent, so concurrent writes across shards don't contend on
+   shared state. For a single-shard batch this degrades gracefully to
+   sequential execution; for multi-shard backfills (e.g. a 24h batch
+   into 1h shards) the speedup approaches the number of shards times
+   the per-shard speed.
+
+After the parallel pass returns, the per-doc `jsoncache` insert and
+result-id assembly happen sequentially.
+
 ```rust
 let ids = mgr.add_batch(vec![
     json!({ "timestamp": ts,     "key": "mem.usage",  "data": 61 }),
@@ -150,6 +167,14 @@ let ids = mgr.add_batch(vec![
 ])?;
 assert_eq!(ids.len(), 3);
 ```
+
+Inside each per-shard call, `Shard::add_batch` itself batches the
+DuckDB writes into one transaction, batches the Tantivy index updates
+into one commit, and batches the HNSW upserts under one lock — so even
+single-shard batches see big wins over per-record `add`. See
+[`SHARD.md`](SHARD.md) for the per-shard batched optimisations and
+[`OBSERVABILITYENGINE.md`](OBSERVABILITYENGINE.md) for the bulk dedup
+inside `ObservabilityStorage::add_batch`.
 
 ---
 

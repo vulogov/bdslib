@@ -1,6 +1,6 @@
 # bdslib — BUND Data Storage
 
-**bdslib** (version 0.4) is a Rust library for multifunctional programmatic
+**bdslib** is a Rust library for multifunctional programmatic
 data storage. It provides a unified system for ingesting, indexing, searching,
 and analysing time-series telemetry, structured logs, and knowledge-base
 documents. The library ships with a network daemon, two command-line clients,
@@ -123,6 +123,29 @@ For the full layered architecture — every storage primitive, every search
 engine, every composite store, what gets written when, the on-disk filesystem
 layout, and operational notes on backup / sizing / pooling — see
 [**DATABASE.md**](DATABASE.md).
+
+### Ingest pipeline & durability
+
+Two `bds.hjson` knobs govern the ingest-path durability/throughput trade-off:
+
+- `sync_interval_secs` (default 60) — `bdsnode` runs a background sync
+  task that calls `bdslib::sync_db()` on this cadence. Without it, a
+  process killed without graceful shutdown loses every write since the
+  last LRU shard eviction. Set to `0` to disable.
+- `ingest_channel_capacity` (default 100000) — the `v2/add*` ingest
+  channels are bounded so a producer flood can't OOM the server. When
+  full, callers receive JSON-RPC `-32099` ("ingest channel
+  overloaded") and should back off. Set to `0` for legacy unbounded
+  behaviour.
+
+The ingest thread defaults are tuned for batch throughput:
+`pipe_batch_size = 500`, `pipe_timeout_ms = 500` — so high-volume
+streams amortise the Tantivy / DuckDB / ONNX commit cost while sparse
+single-record streams still flush within half a second.
+
+For one-shot scripts that need the assigned UUID in the response,
+`v2/add` accepts `"sync": true` to bypass the queue and return
+`{ "id": "<uuidv7>", "synced": true }` after the record is persisted.
 
 ---
 

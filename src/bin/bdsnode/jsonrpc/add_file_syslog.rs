@@ -1,4 +1,4 @@
-use super::params::rpc_err;
+use super::params::{pipe_err, rpc_err};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 
@@ -32,7 +32,7 @@ pub fn register(module: &mut RpcModule<()>) {
             })?;
 
             bdslib::pipe::send("ingest_file_syslog", serde_json::json!(p.path))
-                .map_err(|e| rpc_err(-32001, e))?;
+                .map_err(pipe_err)?;
 
             log::debug!("v2/add.file.syslog: queued {:?}", p.path);
             Ok::<serde_json::Value, ErrorObject>(serde_json::json!({ "queued": p.path }))

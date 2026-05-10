@@ -83,6 +83,39 @@ impl VectorEngine {
         })
     }
 
+    /// Bulk-upsert `(id, vector, metadata)` triples under a single
+    /// store-lock acquisition.
+    ///
+    /// Equivalent in effect to calling [`store_vector`] N times, but pays
+    /// the `Mutex<Option<VecStore>>` lock cost only once for the whole
+    /// batch. Used by `Shard::add_batch` to coalesce per-primary HNSW
+    /// upserts inside one critical section.
+    ///
+    /// `entries` items take ownership of their vector + metadata. Empty
+    /// input is a no-op. On the first failed upsert the helper returns
+    /// immediately; entries already upserted in this call are not rolled
+    /// back (HNSW has no transaction primitive).
+    ///
+    /// [`store_vector`]: VectorEngine::store_vector
+    pub fn store_vectors_batch(
+        &self,
+        entries: Vec<(String, Vec<f32>, Option<JsonValue>)>,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        self.with_store(|s| {
+            for (id, vector, metadata) in entries {
+                let meta = json_to_metadata(
+                    metadata.unwrap_or(JsonValue::Object(Default::default())),
+                );
+                s.upsert(id.clone(), vector, meta)
+                    .map_err(|e| err_msg(format!("Failed to store vector {id:?}: {e}")))?;
+            }
+            Ok(())
+        })
+    }
+
     /// Embed `document` using the attached [`EmbeddingEngine`] and store the
     /// resulting vector under `id`.
     ///

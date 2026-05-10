@@ -54,6 +54,33 @@ fn n_workers_from_config(config_path: Option<&str>) -> usize {
        .unwrap_or(DEFAULT)
 }
 
+/// Capacity for the ingest channels (`ingest`, `ingest_file`,
+/// `ingest_file_syslog`).
+///
+/// Returns the `ingest_channel_capacity` config value, or `100_000` if
+/// unset.  `0` means "unbounded" (the legacy behaviour, susceptible to
+/// OOM under producer pressure).
+fn ingest_channel_capacity_from_config(config_path: Option<&str>) -> usize {
+    const DEFAULT: usize = 100_000;
+    let path = match config_path {
+        Some(p) => p,
+        None => return DEFAULT,
+    };
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return DEFAULT,
+    };
+    let val: serde_hjson::Value = match serde_hjson::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return DEFAULT,
+    };
+    val.as_object()
+       .and_then(|o| o.get("ingest_channel_capacity"))
+       .and_then(|v| v.as_f64())
+       .map(|n| n as usize)
+       .unwrap_or(DEFAULT)
+}
+
 fn raise_nofile_limit(limit: u64) {
     match rlimit::increase_nofile_limit(limit) {
         Ok(n)  => log::info!("NOFILE soft limit raised to {n}"),
@@ -141,7 +168,16 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND context")?;
 
-    bdslib::pipe::init(&["ingest", "ingest_file", "ingest_file_syslog"])
+    // Bound the ingest channels so a producer flood (or a stalled
+    // consumer thread) returns "full" to the RPC layer instead of
+    // OOMing the process by silently growing an unbounded queue.
+    // `0` means unbounded (back-compat for callers that need it).
+    let ingest_capacity = ingest_channel_capacity_from_config(cli.config.as_deref());
+    bdslib::pipe::init_with_capacity(&[
+        ("ingest",              ingest_capacity),
+        ("ingest_file",         ingest_capacity),
+        ("ingest_file_syslog",  ingest_capacity),
+    ])
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise pipe registry")?;
 
@@ -159,6 +195,13 @@ async fn main() -> anyhow::Result<()> {
     let scheduler_cfg = server::scheduler::Config::from_config(cli.config.as_deref())
         .context("failed to read scheduler config")?;
     let scheduler_handle = server::scheduler::start(scheduler_cfg);
+
+    // Periodic global sync — checkpoints DuckDB WAL, commits Tantivy, flushes
+    // VecStore on every open shard. Bounds recovery time after an unclean
+    // exit. Disabled by setting `sync_interval_secs: 0` in bds.hjson.
+    let sync_cfg = server::sync::Config::from_config(cli.config.as_deref())
+        .context("failed to read sync config")?;
+    let sync_handle = server::sync::start(sync_cfg);
 
     let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
@@ -209,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
 
     results_sweeper_handle.stop().await;
     scheduler_handle.stop().await;
+    sync_handle.stop().await;
 
     // Drain ingest channels and join batch threads before checkpointing so
     // that no queued records are lost.

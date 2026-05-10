@@ -621,19 +621,48 @@ DuckDB writes are durable on COMMIT, but uses a write-ahead log (WAL)
 for ongoing transactions. To force a checkpoint, call
 `StorageEngine::sync()` (which executes `CHECKPOINT`).
 
-bdslib calls `sync` in two places:
+bdslib calls `sync` in three places:
 
+- **Periodic background sync** — `bdsnode` spawns a tokio task on
+  startup that calls `bdslib::sync_db()` every `sync_interval_secs`
+  (default 60). The task iterates every open shard and runs DuckDB
+  CHECKPOINT, Tantivy commit, VecStore flush, and tplstorage HNSW
+  save. Bounds WAL recovery time after an unclean exit. Set
+  `sync_interval_secs: 0` in `bds.hjson` to disable.
 - **LRU shard eviction** — before dropping a shard from the cache.
 - **Process shutdown** — `sync_db()` is called from `bdsnode`'s
   shutdown handler before the process exits.
 
 For unclean shutdowns (process killed without `sync_db`), DuckDB
 recovers from the WAL on next open. No data is lost; the recovery
-just takes a fraction of a second longer.
+just takes a fraction of a second longer. With the periodic sync
+running every 60 s the WAL stays bounded — without it, the active
+shard's WAL could grow for hours between LRU evictions.
 
 Tantivy writes are durable after the explicit `commit()` that
 follows every `add_document` / `drop_document`. VecStore writes are
 durable after the per-store flush, which happens automatically.
+
+### Ingest backpressure
+
+`bdsnode`'s `v2/add` / `v2/add.batch` / `v2/add.file` /
+`v2/add.file.syslog` handlers push records onto named crossbeam
+channels (`ingest`, `ingest_file`, `ingest_file_syslog`) drained by
+background threads. The channels are **bounded** by
+`ingest_channel_capacity` (default 100000); when at capacity the
+handler returns JSON-RPC error `-32099` ("ingest channel
+overloaded") so clients can apply backoff + retry rather than the
+server OOMing on an unbounded queue. Set
+`ingest_channel_capacity: 0` to revert to the legacy unbounded
+behaviour.
+
+Inside the `bds-add` thread, records are batched up to
+`pipe_batch_size` (default 500) before flushing to
+`ShardsManager::add_batch`, or whenever `pipe_timeout_ms` (default
+500) of idle elapses. This trades sub-second visibility for any
+single record against amortising the Tantivy commit / DuckDB
+transaction / ONNX embedding cost across hundreds of records per
+flush — the dominant perf optimisation on the ingest path.
 
 ---
 

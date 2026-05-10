@@ -68,6 +68,40 @@ engine.store_vector(
 engine.store_vector("doc-2", vec![0.4, 0.5, 0.6], None)?;
 ```
 
+### `store_vectors_batch`
+
+```rust
+fn store_vectors_batch(
+    &self,
+    entries: Vec<(String, Vec<f32>, Option<JsonValue>)>,
+) -> Result<()>
+```
+
+Bulk-upsert `(id, vector, metadata)` triples under a **single
+store-lock acquisition**. Equivalent to calling `store_vector` N
+times, but pays the inner `Mutex<Option<VecStore>>` lock cost once
+for the whole batch.
+
+Used by `Shard::add_batch` to coalesce per-primary HNSW upserts
+inside one critical section — the largest single perf win for
+high-volume primary-heavy ingestion. For an empty input it is a
+no-op. On the first failed upsert the helper returns immediately;
+entries already upserted in this call are not rolled back (HNSW has
+no transaction primitive).
+
+```rust
+use serde_json::json;
+
+let entries = vec![
+    ("doc-1".to_string(), vec![0.1, 0.2, 0.3],
+     Some(json!({ "title": "A" }))),
+    ("doc-2".to_string(), vec![0.4, 0.5, 0.6],
+     Some(json!({ "title": "B" }))),
+    ("doc-3".to_string(), vec![0.7, 0.8, 0.9], None),
+];
+engine.store_vectors_batch(entries)?;
+```
+
 ### `store_document`
 
 ```rust

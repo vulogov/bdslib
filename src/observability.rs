@@ -55,6 +55,11 @@ const INIT_SQL: &str = "
     );
 ";
 
+/// Maximum number of `(key, data_text)` pairs in a single bulk dedup
+/// SELECT. Beyond this the IN list gets unwieldy — we chunk to keep
+/// individual SQL strings under ~1 MB even with long key/data pairs.
+const BULK_DEDUP_CHUNK: usize = 1000;
+
 // ── config ────────────────────────────────────────────────────────────────────
 
 /// Configuration for [`ObservabilityStorage`].
@@ -278,10 +283,22 @@ impl ObservabilityStorage {
             metadata: JsonValue,
         }
 
-        let mut states: Vec<State> = Vec::with_capacity(docs.len());
-        let mut new_docs: Vec<NewDoc> = Vec::new();
-        // Track (key, data_text) seen in this batch for intra-batch dedup.
-        let mut batch_seen: HashMap<(String, String), Uuid> = HashMap::new();
+        // ── pre-pass: extract + validate every record ─────────────────────────
+        // This used to do one DB SELECT per record for dedup. The new shape
+        // collects every (key, data_text) once and then issues a single
+        // bulk SELECT for the whole batch — N round-trips → 1 round-trip.
+        struct Extracted {
+            id:        Uuid,
+            ts:        i64,
+            key:       String,
+            data:      JsonValue,
+            data_text: String,
+            metadata:  JsonValue,
+        }
+
+        let mut extracted: Vec<Extracted> = Vec::with_capacity(docs.len());
+        let mut pair_set: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
         for doc in docs.iter() {
             let ts_val = doc
@@ -308,31 +325,50 @@ impl ObservabilityStorage {
 
             let data_text = data_to_text(&data);
             let metadata = build_metadata(doc);
-            let dedup_key = (key.clone(), data_text.clone());
+            pair_set.insert((key.clone(), data_text.clone()));
+            extracted.push(Extracted { id, ts, key, data, data_text, metadata });
+        }
 
-            // Intra-batch duplicate?
+        // ── one bulk SELECT for every distinct (key, data_text) in the batch ──
+        let unique_pairs: Vec<(String, String)> = pair_set.into_iter().collect();
+        let db_dedup: HashMap<(String, String), Uuid> =
+            self.bulk_dedup_lookup(&unique_pairs)?;
+
+        // ── classify in input order ───────────────────────────────────────────
+        let mut states: Vec<State> = Vec::with_capacity(extracted.len());
+        let mut new_docs: Vec<NewDoc> = Vec::new();
+        // Whatever id we settle on for a (key, data_text) — DB-existing id for
+        // a DB-duplicate, or the just-minted id for the first occurrence in
+        // this batch — is used to fold subsequent intra-batch duplicates.
+        let mut batch_seen: HashMap<(String, String), Uuid> = HashMap::new();
+
+        for e in extracted.into_iter() {
+            let dedup_key = (e.key.clone(), e.data_text.clone());
+
+            // Intra-batch duplicate of something earlier in this batch.
             if let Some(&existing_id) = batch_seen.get(&dedup_key) {
-                self.record_duplicate(&key, &data_text, ts)?;
+                self.record_duplicate(&e.key, &e.data_text, e.ts)?;
                 states.push(State::Duplicate(existing_id));
                 continue;
             }
 
-            // DB duplicate?
-            let existing = self.engine.select_all(&format!(
-                "SELECT id FROM telemetry WHERE key = '{}' AND data_text = '{}'",
-                sql_escape(&key),
-                sql_escape(&data_text),
-            ))?;
-
-            if let Some(row) = existing.into_iter().next() {
-                let existing_id = parse_uuid_field(row, 0, "telemetry.id")?;
+            // DB duplicate (resolved by the single bulk SELECT above).
+            if let Some(&existing_id) = db_dedup.get(&dedup_key) {
                 batch_seen.insert(dedup_key, existing_id);
-                self.record_duplicate(&key, &data_text, ts)?;
+                self.record_duplicate(&e.key, &e.data_text, e.ts)?;
                 states.push(State::Duplicate(existing_id));
             } else {
+                // Genuinely new.
                 let idx = new_docs.len();
-                batch_seen.insert(dedup_key, id);
-                new_docs.push(NewDoc { id, ts, key, data, data_text, metadata });
+                batch_seen.insert(dedup_key, e.id);
+                new_docs.push(NewDoc {
+                    id:        e.id,
+                    ts:        e.ts,
+                    key:       e.key,
+                    data:      e.data,
+                    data_text: e.data_text,
+                    metadata:  e.metadata,
+                });
                 states.push(State::New(idx));
             }
         }
@@ -1137,6 +1173,59 @@ impl ObservabilityStorage {
         } else {
             Ok((true, None))
         }
+    }
+
+    /// Bulk-resolve existing `(key, data_text)` → `id` for every pair.
+    ///
+    /// Replaces N per-record `SELECT id FROM telemetry WHERE key=? AND
+    /// data_text=?` queries with a single tuple-IN query. The query is
+    /// chunked at [`BULK_DEDUP_CHUNK`] pairs to keep individual SQL
+    /// strings bounded for very large batches.
+    ///
+    /// Returns only the pairs that were already in the DB; missing pairs
+    /// are absent from the map (caller treats absence as "new").
+    fn bulk_dedup_lookup(
+        &self,
+        pairs: &[(String, String)],
+    ) -> Result<HashMap<(String, String), Uuid>> {
+        let mut result: HashMap<(String, String), Uuid> = HashMap::new();
+        if pairs.is_empty() {
+            return Ok(result);
+        }
+        for chunk in pairs.chunks(BULK_DEDUP_CHUNK) {
+            let values: Vec<String> = chunk
+                .iter()
+                .map(|(k, d)| format!("('{}', '{}')", sql_escape(k), sql_escape(d)))
+                .collect();
+            let sql = format!(
+                "SELECT key, data_text, id FROM telemetry \
+                 WHERE (key, data_text) IN ({})",
+                values.join(", ")
+            );
+            let rows = self.engine.select_all(&sql)?;
+            for row in rows {
+                let mut it = row.into_iter();
+                let key = it
+                    .next()
+                    .ok_or_else(|| err_msg("bulk_dedup_lookup row missing key"))?
+                    .cast_string()
+                    .map_err(|e| err_msg(e.to_string()))?;
+                let data_text = it
+                    .next()
+                    .ok_or_else(|| err_msg("bulk_dedup_lookup row missing data_text"))?
+                    .cast_string()
+                    .map_err(|e| err_msg(e.to_string()))?;
+                let id_str = it
+                    .next()
+                    .ok_or_else(|| err_msg("bulk_dedup_lookup row missing id"))?
+                    .cast_string()
+                    .map_err(|e| err_msg(e.to_string()))?;
+                let uuid = Uuid::parse_str(&id_str)
+                    .map_err(|e| err_msg(format!("invalid uuid in bulk_dedup_lookup: {e}")))?;
+                result.insert((key, data_text), uuid);
+            }
+        }
+        Ok(result)
     }
 
     /// Append `ts` to the deduplication log for `(key, data_text)`.

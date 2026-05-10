@@ -85,6 +85,7 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | `-32003` | Shard open failed |
 | `-32004` | Observability query failed |
 | `-32005` | Relationship lookup failed |
+| `-32099` | Ingest channel overloaded — back off and retry (only from `v2/add`, `v2/add.batch`, `v2/add.file`, `v2/add.file.syslog`) |
 | `-32404` | Record not found |
 | `-32600` | Invalid parameter (bad UUID, bad duration string, etc.) |
 

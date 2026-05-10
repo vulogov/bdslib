@@ -5,8 +5,14 @@ use std::time::Duration;
 ///
 /// | Key               | Type    | Default | Description |
 /// |-------------------|---------|---------|-------------|
-/// | `pipe_batch_size` | integer | 100     | Records per batch before flushing to the shard store. |
-/// | `pipe_timeout_ms` | integer | 5000    | Milliseconds of channel inactivity before a partial batch is flushed. |
+/// | `pipe_batch_size` | integer | 500     | Records per batch before flushing to the shard store. |
+/// | `pipe_timeout_ms` | integer | 500     | Milliseconds of channel inactivity before a partial batch is flushed. |
+///
+/// The defaults trade interactive latency (~500ms worst case for a
+/// trickle of records) for throughput (large batches amortise the
+/// Tantivy-commit / DuckDB-transaction / ONNX-batch costs).  Lower
+/// `pipe_timeout_ms` for a more interactive feel; raise
+/// `pipe_batch_size` if your workload is consistently dense.
 pub struct Config {
     pub batch_size: usize,
     pub timeout_ms: u64,
@@ -37,14 +43,14 @@ impl Config {
             .get("pipe_batch_size")
             .and_then(|v| v.as_f64())
             .map(|n| n as usize)
-            .unwrap_or(100)
+            .unwrap_or(500)
             .max(1);
 
         let timeout_ms = obj
             .get("pipe_timeout_ms")
             .and_then(|v| v.as_f64())
             .map(|n| n as u64)
-            .unwrap_or(5000)
+            .unwrap_or(500)
             .max(1);
 
         Ok(Some(Config { batch_size, timeout_ms }))

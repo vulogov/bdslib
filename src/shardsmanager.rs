@@ -378,38 +378,92 @@ impl ShardsManager {
         // Sort so all docs for the same shard are contiguous.
         tagged.sort_by_key(|t| t.shard_start);
 
-        let mut result_ids = vec![Uuid::nil(); tagged.len()];
-        let mut group_start = 0;
+        // ── partition tagged docs into per-shard groups ───────────────────────
+        // Each group owns its docs so the rayon parallel pass below can take
+        // them without borrowing across threads.
+        struct ShardGroup {
+            shard_start:  SystemTime,
+            orig_indices: Vec<usize>,
+            docs:         Vec<JsonValue>,
+        }
+        let mut groups: Vec<ShardGroup> = Vec::new();
+        {
+            let mut group_start = 0;
+            while group_start < tagged.len() {
+                let current_start = tagged[group_start].shard_start;
+                let group_end = tagged[group_start..]
+                    .partition_point(|t| t.shard_start == current_start)
+                    + group_start;
+                let span = &tagged[group_start..group_end];
+                let mut g = ShardGroup {
+                    shard_start:  current_start,
+                    orig_indices: Vec::with_capacity(span.len()),
+                    docs:         Vec::with_capacity(span.len()),
+                };
+                for t in span {
+                    g.orig_indices.push(t.orig_idx);
+                    g.docs.push(t.doc.clone());
+                }
+                groups.push(g);
+                group_start = group_end;
+            }
+        }
+
+        // ── open every shard upfront (cache lookup is cheap and serialises
+        //    on a single mutex; doing it in parallel buys nothing and risks
+        //    contention on the cache) ──────────────────────────────────────────
+        let mut opened: Vec<(crate::shard::Shard, ShardGroup)> =
+            Vec::with_capacity(groups.len());
         let mut first_shard: Option<crate::shard::Shard> = None;
-
-        while group_start < tagged.len() {
-            let current_start = tagged[group_start].shard_start;
-
-            // Find the end of this shard's group.
-            let group_end = tagged[group_start..]
-                .partition_point(|t| t.shard_start == current_start)
-                + group_start;
-
-            // Open the shard once; lock is released before any document work.
-            let shard = self.cache.shard(current_start)?;
+        for g in groups {
+            let shard = self.cache.shard(g.shard_start)?;
             if first_shard.is_none() {
                 first_shard = Some(shard.clone());
             }
+            opened.push((shard, g));
+        }
 
-            let group = &tagged[group_start..group_end];
-            let shard_docs: Vec<JsonValue> =
-                group.iter().map(|t| t.doc.clone()).collect();
-            let shard_ids = shard.add_batch(shard_docs)?;
+        // ── per-shard add_batch in parallel ───────────────────────────────────
+        // Each Shard's storage engines (DuckDB pool, Tantivy index, VecStore)
+        // are independent, so concurrent writes don't contend on shared state.
+        // The only cross-shard work is the per-doc jsoncache insert, which is
+        // done sequentially below to avoid making the parallel closure return
+        // a tuple of (id, full doc) for every document.
+        struct ShardOutcome {
+            orig_indices: Vec<usize>,
+            docs:         Vec<JsonValue>,
+            ids:          Vec<Uuid>,
+        }
+        let per_shard: Vec<Result<ShardOutcome>> = opened
+            .into_par_iter()
+            .map(|(shard, g)| {
+                // `add_batch` consumes the docs Vec; re-clone for cache replay.
+                let cache_docs = g.docs.clone();
+                let ids = shard.add_batch(g.docs)?;
+                Ok(ShardOutcome {
+                    orig_indices: g.orig_indices,
+                    docs:         cache_docs,
+                    ids,
+                })
+            })
+            .collect();
 
-            for (t, id) in group.iter().zip(shard_ids.iter().copied()) {
-                result_ids[t.orig_idx] = id;
-                let ts_u64 = t.doc["timestamp"].as_u64().unwrap_or(0);
-                let mut cached_doc = t.doc.clone();
+        // ── hoist results back into input order, populate jsoncache ───────────
+        let mut result_ids = vec![Uuid::nil(); tagged.len()];
+        for outcome in per_shard {
+            let outcome = outcome?;
+            for ((orig_idx, id), doc) in outcome
+                .orig_indices
+                .into_iter()
+                .zip(outcome.ids.into_iter())
+                .zip(outcome.docs.into_iter())
+            {
+                result_ids[orig_idx] = id;
+                let ts_u64 = doc["timestamp"].as_u64().unwrap_or(0);
+                let mut cached_doc = doc;
                 cached_doc["id"] = serde_json::json!(id.to_string());
                 self.jsoncache.insert(id.to_string(), ts_u64, cached_doc);
             }
-
-            group_start = group_end;
         }
 
         // Record "seen now" observations for every unique template matched in this batch.

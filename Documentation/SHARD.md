@@ -140,6 +140,42 @@ assert_eq!(id, same_id);
 
 ---
 
+### `add_batch`
+
+```rust
+fn add_batch(&self, docs: Vec<JsonValue>) -> Result<Vec<Uuid>>
+```
+
+Stores a batch of telemetry events with three batched optimisations:
+
+1. `ObservabilityStorage::add_batch` — one bulk dedup `SELECT` for
+   every `(key, data_text)` pair (replaces N per-record SELECTs), one
+   ONNX `embed_batch` for all new primaries, one `BEGIN…COMMIT`
+   transaction for every INSERT.
+2. `VectorEngine::store_vectors_batch` — every primary's vector is
+   upserted under **one HNSW lock acquisition** rather than one per
+   record.
+3. `FTSEngine::add_documents_batch` — one Tantivy `commit()` for the
+   whole batch (Tantivy's per-record commit is the antipattern this
+   path is built to avoid).
+
+Returns UUIDs in the same order as the input documents. Use
+`add_batch` for any non-trivial volume; the per-record overhead of
+`add` makes it ~5–10× more expensive per record than `add_batch`
+once batches reach a few hundred records.
+
+```rust
+let docs = vec![
+    json!({ "timestamp": 1_700_000_000, "key": "cpu.usage", "data": 72 }),
+    json!({ "timestamp": 1_700_000_001, "key": "cpu.usage", "data": 74 }),
+    json!({ "timestamp": 1_700_000_002, "key": "mem.free",  "data": 4096 }),
+];
+let ids = shard.add_batch(docs)?;
+assert_eq!(ids.len(), 3);
+```
+
+---
+
 ### `delete`
 
 ```rust
