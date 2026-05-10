@@ -16,7 +16,7 @@
   ingest_channel_capacity: 10000
 
   // ── Test-friendly: disable background bits that aren't being tested ──
-  drain_enabled:        false
+  drain_enabled:        true
   scheduler_interval_secs: 0
   sync_interval_secs:      0
   n_workers:            2

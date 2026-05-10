@@ -121,6 +121,13 @@ async fn run(
                     }
                 }
 
+                // Recovery probe — try to wake one Suspect/Dead peer.  Without
+                // this, peers that were Dead at startup (or stuck Dead through
+                // a previous outage) never get re-checked: pick_random_alive
+                // ignores them and pick_random_non_alive isn't invoked anywhere
+                // else.  No-op when every peer is already Alive.
+                let _ = gossip::probe_recovery(&cluster, &http).await;
+
                 // Hint replay tick — runs independently of gossip cadence
                 // so a slow gossip interval doesn't starve replication.
                 if last_hint_tick.elapsed() >= hint_interval {

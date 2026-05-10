@@ -66,6 +66,12 @@ mode is informational until Phase 3 lands `v3/add` / `v3/add.batch`.
 2. Pick a random `Alive` peer.
 3. `v3/cluster.ping` it (1–2 s timeout).
 4. Every 3rd tick, also `v3/cluster.peers` and merge the result.
+5. **Recovery probe**: pick a random `Suspect`/`Dead` peer and ping it. On
+   success, transition it back to `Alive` and persist. Without this step a
+   peer marked Dead would never be re-checked, because the regular gossip
+   tick only picks Alive peers — so a transient outage (or a fan-out blip)
+   could leave the cluster stuck in Standalone mode even after every peer
+   has come back. No-op when every peer is already Alive.
 
 The peer table is persisted to disk on every successful merge, so a restart
 can reconnect without depending on the configured bootstrap being up.

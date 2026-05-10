@@ -181,6 +181,18 @@ impl PeerTable {
         alive.choose(&mut rng).map(|p| (*p).clone())
     }
 
+    /// Pick a random peer that is **not** currently Alive — i.e. Suspect or
+    /// Dead.  Used by the recovery probe so peers marked Dead don't stay
+    /// dead forever after a transient outage.  Returns `None` when every
+    /// peer is currently Alive.
+    pub fn pick_random_non_alive(&self) -> Option<Peer> {
+        let candidates: Vec<&Peer> = self.peers.values()
+            .filter(|p| p.state != PeerState::Alive)
+            .collect();
+        let mut rng = rand::thread_rng();
+        candidates.choose(&mut rng).map(|p| (*p).clone())
+    }
+
     /// Snapshot every peer (any state) for serialisation or the cluster page.
     pub fn snapshot(&self) -> Vec<Peer> {
         self.peers.values().cloned().collect()

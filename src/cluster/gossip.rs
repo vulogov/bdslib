@@ -164,6 +164,38 @@ pub enum GossipTickResult {
     PeersFailed  { peer: String, reason: String },
 }
 
+/// Try to resurrect one non-Alive peer.  Pinged separately from the main
+/// `tick` Alive-peer gossip so a node whose peers all went Dead has a way
+/// out — without this, `pick_random_alive` returns None forever and
+/// gossip never re-checks the Dead peers, leaving the node permanently
+/// Standalone even after the others come back.
+///
+/// Returns `Some(peer_url)` when a peer transitioned back to Alive;
+/// `None` when every peer is already Alive, no candidate exists, or the
+/// probe failed.
+pub async fn probe_recovery(
+    cluster: &Arc<Cluster>,
+    http:    &reqwest::Client,
+) -> Option<String> {
+    let target = cluster.peers.read().pick_random_non_alive()?;
+    let cfg = &cluster.config;
+    let timeout = Duration::from_secs(cfg.peer_rpc_timeout_secs);
+
+    match rpc_client::cluster_ping(http, &target.url, &cfg.shared_secret, timeout).await {
+        Ok(_) => {
+            cluster.peers.write().record_alive(target.node_id);
+            log::info!("[cluster] recovery probe: {} -> Alive (was {:?})", target.url, target.state);
+            // Persist immediately so the next restart doesn't lose this transition.
+            cluster.persist_peers_best_effort();
+            Some(target.url)
+        }
+        Err(e) => {
+            log::debug!("[cluster] recovery probe: {} still unreachable: {e}", target.url);
+            None
+        }
+    }
+}
+
 /// Re-exported helper so `mod.rs` can call this from `Cluster::init`.
 pub fn build_initial_table(self_id: Uuid, persisted: Vec<Peer>) -> SharedPeerTable {
     let mut t = PeerTable::new(self_id);

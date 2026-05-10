@@ -11,7 +11,7 @@
   max_open_shards:      8
   ingest_channel_capacity: 10000
 
-  drain_enabled:        false
+  drain_enabled:        true
   scheduler_interval_secs: 0
   sync_interval_secs:      0
   n_workers:            2
