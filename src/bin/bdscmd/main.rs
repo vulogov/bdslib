@@ -119,6 +119,12 @@ enum Commands {
     /// Extractive TextRank summary of every drain3 template observed in a window
     TextrankTemplates(cmd::textrank_templates::Cmd),
 
+    /// N-gram anomaly detection over recent primary records (phrase-structure outliers)
+    AnomalyRecent(cmd::anomaly_recent::Cmd),
+
+    /// N-gram noise removal over recent primary records (signal vs noise split)
+    DenoiseRecent(cmd::denoise_recent::Cmd),
+
     /// Number of result queues currently tracked, with their UUIDs
     ResultsLen(cmd::results_len::Cmd),
 
@@ -278,6 +284,8 @@ fn main() -> Result<()> {
         Commands::Rca(a)                      => cmd::rca::run(&url, &session, a),
         Commands::RcaTemplates(a)             => cmd::rca_templates::run(&url, &session, a),
         Commands::TextrankTemplates(a)        => cmd::textrank_templates::run(&url, &session, a),
+        Commands::AnomalyRecent(a)            => cmd::anomaly_recent::run(&url, &session, a),
+        Commands::DenoiseRecent(a)            => cmd::denoise_recent::run(&url, &session, a),
         Commands::ResultsLen(a)               => cmd::results_len::run(&url, &session, a),
         Commands::ResultsPush(a)              => cmd::results_push::run(&url, &session, a),
         Commands::ResultsPull(a)              => cmd::results_pull::run(&url, &session, a),

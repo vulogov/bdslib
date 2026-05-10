@@ -57,6 +57,8 @@ mod results_len;
 mod results_pull;
 mod results_push;
 mod status;
+mod anomaly_recent;
+mod denoise_recent;
 mod summary_for_query;
 mod summary_for_recent;
 mod summary_lsa_for_query;
@@ -134,6 +136,8 @@ pub fn build_module() -> RpcModule<()> {
     summary_for_query::register(&mut module);
     summary_lsa_for_recent::register(&mut module);
     summary_lsa_for_query::register(&mut module);
+    anomaly_recent::register(&mut module);
+    denoise_recent::register(&mut module);
     script_add::register(&mut module);
     scripts::register(&mut module);
     script::register(&mut module);

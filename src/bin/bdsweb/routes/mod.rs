@@ -1,6 +1,8 @@
+pub mod anomaly_recent;
 pub mod bund;
 pub mod chat;
 pub mod dashboard;
+pub mod denoise_recent;
 pub mod docs;
 pub mod logs;
 pub mod primary_lsa_query_summary;

@@ -51,6 +51,8 @@ output suitable for piping into `jq`.
     - [rca](#114-rca)
     - [rca-templates](#115-rca-templates)
     - [textrank-templates](#116-textrank-templates)
+    - [anomaly-recent](#117-anomaly-recent)
+    - [denoise-recent](#118-denoise-recent)
 12. [Commands — Template Store](#12-commands--template-store)
     - [tpl-add](#121-tpl-add)
     - [tpl-get](#122-tpl-get)
@@ -1220,6 +1222,148 @@ bdscmd --raw textrank-templates -d 24h | jq -r '.summary'
 
 When no templates were observed in the window, `summary` is the empty string —
 no error is raised.
+
+---
+
+### 11.7 `anomaly-recent`
+
+N-gram anomaly detection over recent primary records. bdsnode fetches every
+primary record observed in the lookback window, fingerprints each (the
+record's `key` + `json_fingerprint(data)`), and feeds the resulting strings
+to `bdslib::analysis::ngram::ngram_anomaly_with`. The function's JSON output
+is returned verbatim — see [Algorithm/NGRAM_ANOMALY.md](Algorithm/NGRAM_ANOMALY.md)
+for the full output shape.
+
+This is the **phrase-structure** anomaly detector: it surfaces lines built
+from phrase combinations that don't typically appear elsewhere in the
+corpus, complementary to vocabulary-overlap-based outlier detection.
+
+```
+bdscmd anomaly-recent --duration <DUR> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window, e.g. `"1h"`, `"30min"`, `"7days"` |
+| `-n, --n` | `2` | N-gram length (1 = unigram, 2 = bigram, 3 = trigram) |
+| `--min-word-len` | `2` | Tokens shorter than this are dropped before n-gram construction |
+| `--anomaly-threshold` | `0.7` | Mean rarity above this flags a fingerprint as anomalous (range `[0, 1]`) |
+| `--max-anomalies` | `20` | Cap on the response `anomalies` array (true total in `n_anomalies`) |
+| `--max-novel-ngrams` | `5` | Per-anomaly cap on the explanatory `novel_ngrams` array |
+
+**Examples:**
+
+```bash
+# default-config sweep over the last hour
+bdscmd anomaly-recent -d 1h
+
+# strict threshold — only the most extreme outliers
+bdscmd anomaly-recent -d 6h --anomaly-threshold 0.9
+
+# trigrams catch trailing-token differences bigrams smooth over
+bdscmd anomaly-recent -d 24h -n 3 --max-anomalies 50
+
+# extract just the anomalous fingerprints
+bdscmd --raw anomaly-recent -d 1h | jq -r '.anomalies[] | "\(.rarity) \(.text)"'
+```
+
+**Output:**
+
+```json
+{
+  "n_logs": 120,
+  "n": 2,
+  "n_unique_ngrams": 543,
+  "anomaly_threshold": 0.7,
+  "n_anomalies": 7,
+  "mean_rarity": 0.41,
+  "anomalies": [
+    {
+      "idx": 84,
+      "text": "log app  level: error  msg: manual intervention required ...",
+      "rarity": 0.93,
+      "novel_ngrams": ["manual intervention", "intervention required"]
+    }
+  ]
+}
+```
+
+The `text` field is the **fingerprint string** that scored as anomalous, not
+the original record. To recover the original record, run `primaries-get`
+with the matching `key` and timestamp range.
+
+When the window contains no primary records, the response is the empty shape
+(`n_logs=0`, empty `anomalies`). No error is raised.
+
+---
+
+### 11.8 `denoise-recent`
+
+N-gram noise removal over recent primary records — the dual of
+`anomaly-recent`. Same fingerprinting pipeline, scored on the opposite axis:
+each fingerprint is classified as **kept** (signal — distinctive phrases) or
+**removed** (noise — heavily-repeated phrases) by mean n-gram commonness.
+
+Useful as a pre-processing step for downstream summarisation: pipe the
+`kept` array into TextRank or LSA to summarise the actual signal in a
+high-traffic corpus.
+
+```
+bdscmd denoise-recent --duration <DUR> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window, e.g. `"1h"`, `"30min"`, `"7days"` |
+| `-n, --n` | `2` | N-gram length (1 = unigram, 2 = bigram, 3 = trigram) |
+| `--min-word-len` | `2` | Tokens shorter than this are dropped before n-gram construction |
+| `--noise-threshold` | `0.85` | Mean commonness above this classifies a fingerprint as noise (range `[0, 1]`) |
+| `--max-kept` | `100` | Cap on the response `kept` array (true total in `n_kept`) |
+| `--max-removed` | `100` | Cap on the response `removed` array (true total in `n_removed`) |
+
+The default `--noise-threshold` of `0.85` is intentionally strict — for
+typical operational streams (where the noise floor is ~30–60% of the corpus)
+a value in the `0.3–0.6` range gives more visible denoising.
+
+**Examples:**
+
+```bash
+# default sweep — usually conservative
+bdscmd denoise-recent -d 1h
+
+# more aggressive denoising for typical heartbeat-heavy streams
+bdscmd denoise-recent -d 1h --noise-threshold 0.5
+
+# extract just the kept (signal) fingerprints
+bdscmd --raw denoise-recent -d 1h --noise-threshold 0.5 | jq -r '.kept[].text'
+
+# count how much was removed vs kept
+bdscmd --raw denoise-recent -d 6h --noise-threshold 0.4 | \
+  jq '{n_logs, n_kept, n_removed, ratio_kept: (.n_kept / .n_logs)}'
+```
+
+**Output:**
+
+```json
+{
+  "n_logs": 120,
+  "n": 2,
+  "n_unique_ngrams": 543,
+  "noise_threshold": 0.85,
+  "n_kept": 18,
+  "n_removed": 102,
+  "kept": [
+    { "idx": 4, "text": "log alerts  msg: memory pressure on node5 ...", "commonness": 0.21 }
+  ],
+  "removed": [
+    { "idx": 0, "text": "monitor heartbeats  msg: heartbeat ok node1 ...", "commonness": 0.91 }
+  ]
+}
+```
+
+`n_kept + n_removed == n_logs` for every output. The `kept` array is in
+input order so it can be read sequentially as the denoised corpus; the
+`removed` array is sorted from most-noise-like to least.
 
 ---
 

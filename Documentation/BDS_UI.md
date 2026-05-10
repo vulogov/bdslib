@@ -26,16 +26,18 @@ component-oriented.
 9. [Analysis → Templates Summary — TextRank over templates](#9-analysis--templates-summary--textrank-over-templates)
 10. [Analysis → Primary Summary / Query Summary — TextRank over records](#10-analysis--primary-summary--query-summary--textrank-over-records)
 11. [Analysis → Primary LSA Summary / LSA Query Summary — LSA equivalents](#11-analysis--primary-lsa-summary--lsa-query-summary--lsa-equivalents)
-12. [RCA → Telemetry RCA — co-occurrence + causal ranking](#12-rca--telemetry-rca--co-occurrence--causal-ranking)
-13. [RCA → Template RCA — same algorithm on drain3 templates](#13-rca--template-rca--same-algorithm-on-drain3-templates)
-14. [Documents — semantic knowledge-base search](#14-documents--semantic-knowledge-base-search)
-15. [Scripts — store, run, and schedule BUND scripts](#15-scripts--store-run-and-schedule-bund-scripts)
-16. [Signals — emit and search named events](#16-signals--emit-and-search-named-events)
-17. [Bund — interactive scripting workbench](#17-bund--interactive-scripting-workbench)
-18. [Chat — Ollama-powered RAG assistant](#18-chat--ollama-powered-rag-assistant)
-19. [Common interaction patterns](#19-common-interaction-patterns)
-20. [Cookbook — typical workflows end to end](#20-cookbook--typical-workflows-end-to-end)
-21. [Troubleshooting](#21-troubleshooting)
+12. [Analysis → Detect anomalies — n-gram phrase-rarity outliers](#12-analysis--detect-anomalies--n-gram-phrase-rarity-outliers)
+13. [Analysis → Denoise primaries — n-gram noise removal](#13-analysis--denoise-primaries--n-gram-noise-removal)
+14. [RCA → Telemetry RCA — co-occurrence + causal ranking](#14-rca--telemetry-rca--co-occurrence--causal-ranking)
+15. [RCA → Template RCA — same algorithm on drain3 templates](#15-rca--template-rca--same-algorithm-on-drain3-templates)
+16. [Documents — semantic knowledge-base search](#16-documents--semantic-knowledge-base-search)
+17. [Scripts — store, run, and schedule BUND scripts](#17-scripts--store-run-and-schedule-bund-scripts)
+18. [Signals — emit and search named events](#18-signals--emit-and-search-named-events)
+19. [Bund — interactive scripting workbench](#19-bund--interactive-scripting-workbench)
+20. [Chat — Ollama-powered RAG assistant](#20-chat--ollama-powered-rag-assistant)
+21. [Common interaction patterns](#21-common-interaction-patterns)
+22. [Cookbook — typical workflows end to end](#22-cookbook--typical-workflows-end-to-end)
+23. [Troubleshooting](#23-troubleshooting)
 
 ---
 
@@ -401,7 +403,153 @@ algorithmic details.
 
 ---
 
-## 12. RCA → Telemetry RCA — co-occurrence + causal ranking
+## 12. Analysis → Detect anomalies — n-gram phrase-rarity outliers
+
+**URL:** `/anomaly_recent`
+
+Surface log lines whose **phrase structure** is unusual relative to the
+rest of the lookback window. bdsnode fetches every primary record in
+the chosen window, fingerprints each (the record's `key` plus a
+flattened `json_fingerprint(data)`), and runs n-gram anomaly detection
+over the resulting strings. The page renders a stat row plus a table
+of the most rare-phrase fingerprints.
+
+This is **not** a vocabulary outlier ("what words are rare?"); it's a
+phrase outlier ("what *combinations* of words are rare?"). A line built
+entirely of common words can still be flagged when the words are
+arranged in an unusual sequence — the algorithm's whole point.
+
+### Controls
+
+- **Duration** — lookback window (`15min` … `7days`).
+- **N-gram** — `1` (unigram, ≈ rare-word detection), `2` (bigram, the
+  default), `3` (trigram, catches trailing-token differences bigrams
+  smooth over).
+- **Min word len** — drop short tokens before n-gram construction
+  (default 2).
+- **Threshold** — mean rarity above which a fingerprint is flagged as
+  anomalous, range `[0, 1]`. Default 0.7. Lower (~0.5) on small or
+  homogeneous corpora; raise to 0.9+ to surface only the most striking
+  outliers.
+- **Max anomalies** — cap on the number of rows shown. The true total
+  is always reported in the stat tile.
+- **Detect** button — runs the analysis.
+
+### Reading the output
+
+**Stat tiles:**
+- *Records scanned* — total primary records in the window.
+- *Unique n-grams* — size of the corpus n-gram vocabulary.
+- *Anomalies* — true count above threshold (turns red when > 0).
+- *Mean rarity* — informational; the corpus-wide average.
+
+**Anomalies table:** one row per flagged fingerprint, sorted by rarity
+descending. Each row shows:
+- *#* — display position.
+- *Idx* — index back into the per-call fingerprint vector.
+- *Rarity* — score in `[0, 1]`.
+- *Novel n-grams* — the rarest distinct phrases in this fingerprint
+  (chips, sorted by ascending document frequency). This is the
+  per-line explanation of *why* the line was flagged.
+- *Fingerprint* — the actual fingerprint string scored. Note this is
+  the flattened `key + json_fingerprint(data)` form, not the original
+  record JSON. To resolve back to the record, take the `key` portion
+  and run a `bdscmd primaries-get` for it within the same window.
+
+### When to use it
+
+- *"Show me the weirdest lines from the last hour."* — quick triage.
+- *"Has anything new started firing?"* — drift detection. The first
+  few firings of a new template surface as anomalies; once the
+  template becomes baseline, anomalies for it disappear automatically.
+- Pre-LLM context cleanup — remove the obviously-anomalous edge cases
+  before passing a corpus to a chat assistant.
+
+For the algorithm internals see
+[`Algorithm/NGRAM_ANOMALY.md`](Algorithm/NGRAM_ANOMALY.md). The companion
+**Denoise primaries** page (next section) is the dual: same fingerprint
+pipeline, scored on the opposite axis to *remove* repetition rather
+than flag uniqueness.
+
+---
+
+## 13. Analysis → Denoise primaries — n-gram noise removal
+
+**URL:** `/denoise_recent`
+
+Strip the boring repetitive lines from a recent batch of primary
+records, leaving only those that actually carry distinct information.
+The page splits the corpus into two tables: **kept** (signal) and
+**removed** (noise), classified by mean n-gram **commonness** of each
+fingerprint.
+
+This is the dual of *Detect anomalies*: same fingerprinting, same
+n-gram pipeline, scored on the opposite axis. A line classified as
+noise here will *survive* an anomaly scan; a line flagged as anomalous
+there will *survive* this denoise cut.
+
+### Controls
+
+- **Duration** — lookback window.
+- **N-gram** — `1`, `2` (default), or `3`.
+- **Min word len** — short-token filter (default 2).
+- **Threshold** — mean commonness at-or-above which a fingerprint is
+  classified as noise. Default 0.85 is **intentionally strict** —
+  for typical operational streams (heartbeat-heavy traffic where the
+  noise floor is 30–60% of the corpus) a value in the `0.3–0.6` range
+  produces visible denoising.
+- **Max kept** / **Max removed** — caps on the response arrays. The
+  stat tiles always show the true totals.
+- **Denoise** button — runs the analysis.
+
+### Reading the output
+
+**Stat tiles:**
+- *Records scanned* — total primary records in the window.
+- *Unique n-grams* — size of the corpus n-gram vocabulary.
+- *Kept (signal)* — true count below threshold (green).
+- *Removed (noise)* — true count at-or-above threshold (red).
+
+**Kept table** (signal, upper):
+- Rendered in **input order**, so it reads sequentially as the
+  denoised corpus.
+- *Commonness* values are low (the lower, the more distinctive).
+
+**Removed table** (noise, lower):
+- Sorted by **commonness descending** — the most-noise-like first.
+- Use this to verify the denoiser isn't aggressively removing
+  meaningful traffic; if real signal is appearing here, raise the
+  threshold.
+
+### When to use it
+
+- *"Pre-process the last hour before summarising it."* — pipe the kept
+  array into TextRank or LSA to summarise the actual signal, not the
+  heartbeat floor.
+- *"What's actually new in this hour vs. the typical pattern?"* — the
+  kept table is exactly the answer.
+- *"Reduce LLM context cost."* — denoise before passing a corpus to a
+  chat assistant; the same answer at a fraction of the token count.
+
+For the algorithm internals see
+[`Algorithm/NGRAM_NOISE.md`](Algorithm/NGRAM_NOISE.md).
+
+### Tip on threshold tuning
+
+If "Removed" is empty on first run, lower the threshold. A useful
+calibration loop:
+
+1. Start at `0.85` (default). Observe the commonness range in the
+   *kept* table.
+2. Pick a threshold just below the highest commonness you'd consider
+   noise (e.g. if your repetitive heartbeat sits at 0.6 commonness,
+   set threshold 0.5).
+3. Re-run. The *Removed* table should now contain the heartbeat-style
+   lines; the *Kept* table the genuine signal.
+
+---
+
+## 14. RCA → Telemetry RCA — co-occurrence + causal ranking
 
 **URL:** `/rca`
 
@@ -444,7 +592,7 @@ The full algorithm is documented in
 
 ---
 
-## 13. RCA → Template RCA — same algorithm on drain3 templates
+## 15. RCA → Template RCA — same algorithm on drain3 templates
 
 **URL:** `/rca/templates`
 
@@ -458,7 +606,7 @@ you can read them at a glance instead of cross-referencing UUIDs.
 
 ---
 
-## 14. Documents — semantic knowledge-base search
+## 16. Documents — semantic knowledge-base search
 
 **URL:** `/docs`
 
@@ -487,7 +635,7 @@ content. Long content is truncated with a "Show more" button.
 
 ---
 
-## 15. Scripts — store, run, and schedule BUND scripts
+## 17. Scripts — store, run, and schedule BUND scripts
 
 **URL:** `/scripts`
 
@@ -570,7 +718,7 @@ queue id so you can pull results later via `bdscmd results-pull`.
 
 ---
 
-## 16. Signals — emit and search named events
+## 18. Signals — emit and search named events
 
 **URL:** `/signals`
 
@@ -607,7 +755,7 @@ Severities are colour-coded: green / yellow / orange / red.
 
 ---
 
-## 17. Bund — interactive scripting workbench
+## 19. Bund — interactive scripting workbench
 
 **URL:** `/bund`
 
@@ -654,7 +802,7 @@ If the script throws an error, the error message appears in red.
 
 ---
 
-## 18. Chat — Ollama-powered RAG assistant
+## 20. Chat — Ollama-powered RAG assistant
 
 **URL:** `/chat`
 
@@ -694,7 +842,7 @@ question + context to Ollama for an answer.
 
 ---
 
-## 19. Common interaction patterns
+## 21. Common interaction patterns
 
 A few UI conventions repeat across pages:
 
@@ -737,7 +885,7 @@ re-submit the form to refresh.
 
 ---
 
-## 20. Cookbook — typical workflows end to end
+## 22. Cookbook — typical workflows end to end
 
 ### Triage an unfamiliar alert
 
@@ -789,9 +937,27 @@ re-submit the form to refresh.
 3. **Chat** — ask questions; the assistant retrieves from both
    the document store and the telemetry stream.
 
+### Triage with n-gram tooling
+
+A two-page workflow that mirrors the algorithmic dual:
+
+1. **Analysis → Detect anomalies** — duration 1h, default threshold.
+   Skim the table for any rarity-flagged fingerprints; click into the
+   underlying records via *Telemetry → Logs* if anything looks worth
+   investigating.
+2. **Analysis → Denoise primaries** — same window, threshold lowered
+   to ~0.4 (or whatever fits your noise floor — see the per-page tip).
+   The *Kept* table gives you the same hour with the routine traffic
+   stripped out, ready to read top-to-bottom.
+
+The two pages answer complementary questions: anomalies tells you
+"what stood out?", denoise tells you "what was *not* boring?". On a
+healthy hour the anomaly table is empty and the kept-from-denoise
+table is short — both are quick negative checks.
+
 ---
 
-## 21. Troubleshooting
+## 23. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
