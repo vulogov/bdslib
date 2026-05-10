@@ -26,81 +26,91 @@ pub fn register(module: &mut RpcModule<()>) {
         .register_async_method("v3/add.batch", |params, _ctx, _| async move {
             log::debug!("v3/add.batch: start");
             let p: Params = params.parse()?;
-            if p.docs.is_empty() {
-                return Ok::<JsonValue, ErrorObject>(serde_json::json!({
-                    "ids": [],
-                    "replicas_dispatched": 0,
-                    "mode": "standalone",
-                }));
-            }
-
-            // Pre-assign UUIDs (or accept caller-supplied ids) so every
-            // replica writes under the same identity.
-            let mut docs = p.docs;
-            for d in docs.iter_mut() {
-                let id = match d.get("id").and_then(|v| v.as_str()) {
-                    Some(s) => Uuid::parse_str(s)
-                        .map_err(|e| rpc_err(-32602, format!("invalid id: {e}")))?,
-                    None => Uuid::now_v7(),
-                };
-                d["id"] = JsonValue::String(id.to_string());
-            }
-
-            // Local batch write.
-            let local_docs = docs.clone();
-            let local_ids = tokio::task::spawn_blocking(move || {
-                let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
-                db.add_batch(local_docs).map_err(|e| rpc_err(-32004, e))
-            })
-            .await
-            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??;
-
-            // The local add_batch may have collapsed some duplicates onto
-            // existing UUIDs.  Rewrite the docs we replicate so peers
-            // receive the same final identities.
-            for (d, id) in docs.iter_mut().zip(local_ids.iter()) {
-                d["id"] = JsonValue::String(id.to_string());
-            }
-
-            let cluster = bdslib::get_db().ok().and_then(|d| d.cluster().cloned());
-            let (mode, n_dispatched, n_alive, rf_effective) = match &cluster {
-                Some(c) => {
-                    let rf = p.replication_factor.unwrap_or(c.config.replication_factor).max(1);
-                    let need = rf.saturating_sub(1);
-                    let replicas = replication::pick_random_alive(c, need);
-                    let n_alive  = c.peers.read().alive_count();
-                    let n_disp   = replicas.len();
-                    let mode     = c.mode();
-                    if !replicas.is_empty() {
-                        let cluster_t = c.clone();
-                        let docs_t = docs.clone();
-                        tokio::spawn(async move {
-                            replicate_batch_to_peers(cluster_t, replicas, docs_t).await;
-                        });
-                    }
-                    (mode, n_disp, n_alive, rf)
-                }
-                None => (ClusterMode::Standalone, 0, 0, 1),
-            };
-
-            let under_replicated = n_dispatched + 1 < rf_effective;
-            let ids_str: Vec<JsonValue> = local_ids.iter()
-                .map(|u| JsonValue::String(u.to_string()))
-                .collect();
-
-            log::debug!("v3/add.batch: done n={} dispatched={n_dispatched}", ids_str.len());
-            Ok::<JsonValue, ErrorObject>(serde_json::json!({
-                "ids":                 ids_str,
-                "n":                   ids_str.len(),
-                "replication_factor":  rf_effective,
-                "replicas_dispatched": n_dispatched,
-                "alive_peers":         n_alive,
-                "under_replicated":    under_replicated,
-                "mode":                mode.as_str(),
-                "cluster_meta":        v3_cluster_meta(None::<FanOutResults>),
-            }))
+            ingest_batch(p.docs, p.replication_factor).await
         })
         .unwrap();
+}
+
+/// Replicated batch ingest used by both `v3/add.batch` and `v3/add.file`
+/// / `v3/add.file.syslog`.  Pre-assigns UUIDs, writes locally, and
+/// fire-and-forget fans out to RF-1 random Alive peers (failures hint).
+pub async fn ingest_batch(
+    mut docs: Vec<JsonValue>,
+    replication_factor: Option<usize>,
+) -> Result<JsonValue, ErrorObject<'static>> {
+    if docs.is_empty() {
+        return Ok(serde_json::json!({
+            "ids": [],
+            "n":                  0,
+            "replicas_dispatched": 0,
+            "mode":                "standalone",
+        }));
+    }
+
+    // Pre-assign UUIDs (or accept caller-supplied ids) so every replica
+    // writes under the same identity.
+    for d in docs.iter_mut() {
+        let id = match d.get("id").and_then(|v| v.as_str()) {
+            Some(s) => Uuid::parse_str(s)
+                .map_err(|e| rpc_err(-32602, format!("invalid id: {e}")))?,
+            None => Uuid::now_v7(),
+        };
+        d["id"] = JsonValue::String(id.to_string());
+    }
+
+    // Local batch write.
+    let local_docs = docs.clone();
+    let local_ids = tokio::task::spawn_blocking(move || {
+        let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
+        db.add_batch(local_docs).map_err(|e| rpc_err(-32004, e))
+    })
+    .await
+    .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??;
+
+    // Local add_batch may have collapsed some duplicates onto existing
+    // UUIDs.  Rewrite the docs we replicate so peers see the same
+    // final identities.
+    for (d, id) in docs.iter_mut().zip(local_ids.iter()) {
+        d["id"] = JsonValue::String(id.to_string());
+    }
+
+    let cluster = bdslib::get_db().ok().and_then(|d| d.cluster().cloned());
+    let (mode, n_dispatched, n_alive, rf_effective) = match &cluster {
+        Some(c) => {
+            let rf = replication_factor.unwrap_or(c.config.replication_factor).max(1);
+            let need = rf.saturating_sub(1);
+            let replicas = replication::pick_random_alive(c, need);
+            let n_alive  = c.peers.read().alive_count();
+            let n_disp   = replicas.len();
+            let mode     = c.mode();
+            if !replicas.is_empty() {
+                let cluster_t = c.clone();
+                let docs_t = docs.clone();
+                tokio::spawn(async move {
+                    replicate_batch_to_peers(cluster_t, replicas, docs_t).await;
+                });
+            }
+            (mode, n_disp, n_alive, rf)
+        }
+        None => (ClusterMode::Standalone, 0, 0, 1),
+    };
+
+    let under_replicated = n_dispatched + 1 < rf_effective;
+    let ids_str: Vec<JsonValue> = local_ids.iter()
+        .map(|u| JsonValue::String(u.to_string()))
+        .collect();
+
+    log::debug!("v3/add.batch: done n={} dispatched={n_dispatched}", ids_str.len());
+    Ok(serde_json::json!({
+        "ids":                 ids_str,
+        "n":                   local_ids.len(),
+        "replication_factor":  rf_effective,
+        "replicas_dispatched": n_dispatched,
+        "alive_peers":         n_alive,
+        "under_replicated":    under_replicated,
+        "mode":                mode.as_str(),
+        "cluster_meta":        v3_cluster_meta(None::<FanOutResults>),
+    }))
 }
 
 async fn replicate_batch_to_peers(

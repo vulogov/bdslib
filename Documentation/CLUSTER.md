@@ -1,7 +1,7 @@
-# Cluster mode (Phases 1–5: membership, distributed reads, replicated writes, fully-replicated stores, ops polish)
+# Cluster mode (Phases 1–6)
 
-`bdsnode` can run as a peer in a P2P, serverless cluster. The cluster
-layer is now feature-complete across five phases:
+`bdsnode` can run as a peer in a P2P, serverless cluster.  The cluster
+layer is now feature-complete across six phases:
 
 | Phase | What shipped |
 |---|---|
@@ -10,6 +10,7 @@ layer is now feature-complete across five phases:
 | 3 | Sharded write replication (`v3/add`, `v3/add.batch`) with hinted handoff |
 | 4 | Fully-replicated stores (`v3/doc.*`, `v3/signal.emit`, `v3/script.*`) with tombstones + anti-entropy |
 | 5 | Operations polish: `v3/cluster.sync`, AE telemetry, distinct-count, LWW for v3 updates, signal anti-entropy fill, dashboard improvements |
+| 6 | Cluster-wide read coverage for the rest of the v2/* read surface: `v3/add.file*`, `v3/fulltext*`, `v3/keys*`, `v3/primaries*`, `v3/topics*`, `v3/signals*`, `v3/tpl.*` (read), `v3/search.get` |
 
 This document covers the design, configuration, and operational tooling
 of the cluster layer in its current form.

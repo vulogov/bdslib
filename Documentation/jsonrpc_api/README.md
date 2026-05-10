@@ -121,6 +121,15 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v3/script.delete`](v3_script_delete.md) | Fully-replicated BUND script delete with tombstone. |
 | [`v3/cluster.sync`](v3_cluster_sync.md) | HMAC-authenticated admin RPC: force an immediate hint replay + anti-entropy tick. Phase 5 of the [cluster layer](../CLUSTER.md). |
 | [`v2/signal.get`](v2_signal_get.md) | Fetch a single signal's metadata by UUID. Used by anti-entropy to pull a missing signal. |
+| `v3/add.file` | Replicated NDJSON ingest: coordinator parses the file, then submits the records through the `v3/add.batch` path. Phase 6 of the [cluster layer](../CLUSTER.md). |
+| `v3/add.file.syslog` | Replicated RFC 3164 syslog ingest: same recipe as `v3/add.file` but uses the syslog parser. |
+| `v3/fulltext`, `v3/fulltext.get`, `v3/fulltext.recent` | Cluster-wide BM25 full-text search; UUID dedup, score average / first-seen / newest-first per method. |
+| `v3/keys`, `v3/keys.all`, `v3/keys.get` | Cluster-wide key enumeration; sorted string union plus per-key UUID-set merge. |
+| `v3/primaries`, `v3/primaries.explore`(`.telemetry`), `v3/primaries.get`(`.telemetry`) | Cluster-wide primary record listings; UUID dedup or per-key count + UUID-set merge. |
+| `v3/topics`, `v3/topics.all` | Cluster-wide LDA topic analysis; pick the largest-corpus result per key (LDA isn't directly mergeable). |
+| `v3/signals`, `v3/signals_query` | Cluster-wide signal queries; UUID dedup with score average for semantic search. |
+| `v3/tpl.list`, `v3/tpl.search`, `v3/tpl.get`, `v3/tpl.template_by_id`, `v3/tpl.templates_recent`, `v3/tpl.templates_by_timestamp` | Cluster-wide template-store reads; UUID dedup with first-non-null-peer-wins for single-record fetches. |
+| `v3/search.get` | Cluster-wide semantic vector search returning full documents. UUID dedup + score average. |
 | [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence |
 | [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence |
 | [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion |
