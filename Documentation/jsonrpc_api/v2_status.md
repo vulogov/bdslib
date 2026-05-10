@@ -24,6 +24,7 @@ This method accepts no parameters.  The `params` field may be omitted or set to 
   "jsoncache_pct":      72,
   "jsoncache_len":      7234,
   "jsoncache_capacity": 10000,
+  "embedding_model":    "AllMiniLML6V2",
   "n_results":          3,
   "n_bunds":            2,
   "recent_scripts": [
@@ -51,6 +52,7 @@ This method accepts no parameters.  The `params` field may be omitted or set to 
 | `jsoncache_pct` | integer | In-memory primary-record JSON cache utilisation as an integer percentage `[0, 100]`. |
 | `jsoncache_len` | integer | Number of entries currently held in the JSON cache (including stale entries not yet swept). |
 | `jsoncache_capacity` | integer | Maximum number of entries the JSON cache can hold before LRU eviction. |
+| `embedding_model` | string \| null | Name of the loaded fastembed `EmbeddingModel` variant (Rust Debug form, e.g. `"AllMiniLML6V2"`). Configured via `embedding_model` in `bds.hjson` and resolved at startup; `null` only in degenerate cases (manager built via `with_embedding`, no global DB initialised, or the field is missing on older bdsnode versions). |
 | `n_results` | integer | Number of distinct queue ids tracked in the global `RESULTS` queue (`bdslib::vm::RESULTS`). Each `v2/eval.queued` submission and `v2/results.push` call creates or appends to one queue. |
 | `n_bunds` | integer | Number of named BUND VM contexts currently held in `bdslib::vm::context::BUNDS`. Increases on each new `v2/eval` context name; entries are evicted after `bund_ttl_secs` of inactivity. |
 | `recent_scripts` | array | Most-recent-first list of the last 5 jobs accepted by the `BundWorkerPool` (`v2/eval.queued`, the scheduler, and any direct `submit_script_with_id` callers). Each entry is `{ "id": "<uuidv7>", "submitted_at": <unix_secs> }`. |
@@ -98,6 +100,7 @@ curl -s -X POST http://127.0.0.1:9000 \
     "jsoncache_pct":     0,
     "jsoncache_len":     0,
     "jsoncache_capacity": 10000,
+    "embedding_model":    "AllMiniLML6V2",
     "n_results":         0,
     "n_bunds":           0,
     "recent_scripts":    [],

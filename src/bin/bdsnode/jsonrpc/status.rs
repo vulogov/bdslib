@@ -25,14 +25,15 @@ pub fn register(module: &mut RpcModule<()>) {
                 .ok()
                 .and_then(|g| g.clone());
 
-            let (jsoncache_pct, jsoncache_len, jsoncache_capacity) =
+            let (jsoncache_pct, jsoncache_len, jsoncache_capacity, embedding_model) =
                 match bdslib::get_db() {
                     Ok(db) => (
                         db.jsoncache_utilization_pct(),
                         db.jsoncache_len() as u64,
                         db.jsoncache_capacity() as u64,
+                        db.embedding_model_name(),
                     ),
-                    Err(_) => (0, 0, 0),
+                    Err(_) => (0, 0, 0, None),
                 };
 
             // BUND runtime stats (BundWorkerPool + result queues + named contexts).
@@ -69,6 +70,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 "jsoncache_pct":      jsoncache_pct,
                 "jsoncache_len":      jsoncache_len,
                 "jsoncache_capacity": jsoncache_capacity,
+                "embedding_model":    embedding_model,
                 "n_results":          n_results,
                 "n_bunds":            n_bunds,
                 "recent_scripts":     recent_scripts,

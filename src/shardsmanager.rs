@@ -8,6 +8,7 @@ use crate::shardscache::ShardsCache;
 use crate::vectorengine::json_fingerprint;
 use crate::EmbeddingEngine;
 use fastembed::EmbeddingModel;
+use std::path::PathBuf;
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -26,7 +27,20 @@ struct ManagerConfig {
     jsoncache_ttl_secs: u64,
     r2d2_thread_pool_size: usize,
     max_open_shards: usize,
+    /// Optional fastembed `EmbeddingModel` variant name (matches the Rust
+    /// Debug form, case-insensitive — e.g. `"AllMiniLML6V2"`,
+    /// `"BGESmallENV15"`).  When `None`, [`DEFAULT_EMBEDDING_MODEL`] is used.
+    embedding_model: Option<String>,
+    /// Optional override for the fastembed model cache directory.  When
+    /// `None`, fastembed's default is used (`~/.cache/huggingface/hub` or
+    /// `$HF_HOME`).
+    embedding_cache_dir: Option<String>,
 }
+
+/// Fallback when the config does not pin an `embedding_model`.  Matches
+/// the historical hardcoded choice; existing dbpaths keep working with no
+/// config change.
+pub(crate) const DEFAULT_EMBEDDING_MODEL: EmbeddingModel = EmbeddingModel::AllMiniLML6V2;
 
 fn parse_config(raw: &str) -> Result<ManagerConfig> {
     let val: serde_hjson::Value = serde_hjson::from_str(raw)
@@ -93,6 +107,16 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         .map(|n| n as usize)
         .unwrap_or(16);
 
+    let embedding_model = obj
+        .get("embedding_model")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
+    let embedding_cache_dir = obj
+        .get("embedding_cache_dir")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
     Ok(ManagerConfig {
         dbpath,
         shard_duration,
@@ -104,6 +128,20 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         jsoncache_ttl_secs,
         r2d2_thread_pool_size,
         max_open_shards,
+        embedding_model,
+        embedding_cache_dir,
+    })
+}
+
+/// Resolve a `&str` model name to a fastembed `EmbeddingModel`.  Matches
+/// the variant name case-insensitively (`"BGESmallENV15"`, `"bgesmallenv15"`,
+/// and `"BgeSmallEnV15"` all work).
+fn parse_embedding_model(name: &str) -> Result<EmbeddingModel> {
+    name.parse::<EmbeddingModel>().map_err(|e| {
+        err_msg(format!(
+            "invalid embedding_model {name:?}: {e}. \
+             See fastembed::EmbeddingModel for accepted variant names."
+        ))
     })
 }
 
@@ -144,17 +182,63 @@ pub struct ShardsManager {
     /// In-memory LRU cache keyed by `(id, timestamp)`.  Populated on every
     /// write and on every search result fetch; consulted before any DB round-trip.
     pub(crate) jsoncache: JsonCache,
+    /// Resolved name of the loaded embedding model (Rust Debug form, e.g.
+    /// `"AllMiniLML6V2"`).  Populated by [`Self::new`]; left `None` when the
+    /// caller used [`Self::with_embedding`] directly (typically tests, where
+    /// no model name is meaningful).
+    pub(crate) embedding_model_name: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ShardsManager {
     /// Open or create a shard manager described by the hjson config at `config_path`.
     ///
-    /// Loads [`EmbeddingModel::AllMiniLML6V2`]. Use [`with_embedding`](Self::with_embedding)
-    /// to supply a pre-loaded model and avoid repeated download/initialisation costs.
+    /// Reads two optional config keys to pick the embedding model:
+    ///
+    /// - `embedding_model` — fastembed [`EmbeddingModel`] variant name
+    ///   (matches Rust Debug form, case-insensitive).  Defaults to
+    ///   [`DEFAULT_EMBEDDING_MODEL`] (`AllMiniLML6V2`) when absent.
+    /// - `embedding_cache_dir` — override for the fastembed model cache
+    ///   directory.  Defaults to fastembed's internal default
+    ///   (`~/.cache/huggingface/hub` or `$HF_HOME`) when absent.
+    ///
+    /// **Dimension lock-in.** The embedding dimension is fixed at first
+    /// vector insert.  Switching `embedding_model` on an existing
+    /// `dbpath` will break vector search; rebuild the dbpath with
+    /// `bdsnode --new` to switch models.
+    ///
+    /// Use [`with_embedding`](Self::with_embedding) to supply a
+    /// pre-loaded model directly (used by tests to share one model
+    /// across runs).
     pub fn new(config_path: &str) -> Result<Self> {
-        let embedding = EmbeddingEngine::new(EmbeddingModel::AllMiniLML6V2, None)
-            .map_err(|e| err_msg(format!("failed to load embedding model: {e}")))?;
-        Self::with_embedding(config_path, embedding)
+        // Pre-parse the config so we can resolve the embedding model
+        // before we load it.  `with_embedding` re-parses the same file
+        // — that's cheap and keeps both entry points self-contained.
+        let raw = std::fs::read_to_string(config_path)
+            .map_err(|e| err_msg(format!("cannot read config '{config_path}': {e}")))?;
+        let cfg = parse_config(&raw)
+            .map_err(|e| err_msg(format!("invalid config '{config_path}': {e}")))?;
+
+        let model = match &cfg.embedding_model {
+            Some(name) => parse_embedding_model(name)?,
+            None       => DEFAULT_EMBEDDING_MODEL,
+        };
+        let cache_dir = cfg.embedding_cache_dir.as_deref().map(PathBuf::from);
+
+        log::info!(
+            "loading embedding model {model:?} (cache_dir={:?})",
+            cache_dir.as_deref().map(std::path::Path::display)
+        );
+
+        let embedding = EmbeddingEngine::new(model.clone(), cache_dir)
+            .map_err(|e| err_msg(format!("failed to load embedding model {model:?}: {e}")))?;
+
+        let mgr = Self::with_embedding(config_path, embedding)?;
+        // Stash the resolved name so callers (v2/status) can echo it back
+        // without having to re-parse the config or interrogate fastembed.
+        if let Ok(mut slot) = mgr.embedding_model_name.lock() {
+            *slot = Some(format!("{model:?}"));
+        }
+        Ok(mgr)
     }
 
     /// Open or create a shard manager with a pre-loaded embedding model.
@@ -211,6 +295,9 @@ impl ShardsManager {
             drain: None,
             drain_cluster_map: Arc::new(Mutex::new(HashMap::new())),
             jsoncache,
+            // `with_embedding` doesn't know which model variant produced the
+            // engine — `Self::new` populates this slot after construction.
+            embedding_model_name: Arc::new(std::sync::Mutex::new(None)),
         };
 
         if cfg.drain_enabled {
@@ -965,6 +1052,25 @@ impl ShardsManager {
     /// Borrow the embedded [`DocumentStorage`].
     pub fn docstore(&self) -> &DocumentStorage {
         &self.docstore
+    }
+
+    /// Resolved name of the embedding model loaded into this manager,
+    /// e.g. `"AllMiniLML6V2"` or `"BGESmallENV15"`.
+    ///
+    /// Returns `None` when the manager was constructed via
+    /// [`Self::with_embedding`] (the model identity is opaque to that
+    /// constructor — it accepts a pre-loaded `EmbeddingEngine` and has no
+    /// way to introspect which variant it came from).  In production
+    /// (anything that goes through [`Self::new`]) this always returns
+    /// `Some`; tests typically use `with_embedding` and see `None`.
+    ///
+    /// Used by `v2/status` so operators can confirm which model is
+    /// currently loaded without re-parsing the config file.
+    pub fn embedding_model_name(&self) -> Option<String> {
+        self.embedding_model_name
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Number of entries currently held in the JSON cache (including stale

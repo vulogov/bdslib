@@ -685,6 +685,27 @@ opening the database. There is no "drop a single shard" API beyond
 the catalog entry — typically not needed; let the LRU naturally evict
 old shards.
 
+### Choosing the embedding model
+
+The fastembed `EmbeddingModel` variant is selected via two `bds.hjson`
+keys, both optional:
+
+```hjson
+embedding_model:     "AllMiniLML6V2"          // default
+embedding_cache_dir: "/var/lib/bdslib/models" // optional, fastembed default otherwise
+```
+
+The resolved name appears in `v2/status` and on the bdsweb Dashboard
+so operators can confirm which model is loaded.
+
+**Pick the model at deployment time.** The HNSW vector index dimension
+is fixed at first vector insert, so changing `embedding_model` later
+will break vector search on the existing data. To switch models,
+rebuild the dbpath: `bdsnode --new --config bds.hjson`. The full
+explanation of the dimension-lock-in constraint and the list of common
+variants live in
+[`EMBEDDINGENGINE.md`](EMBEDDINGENGINE.md#configuring-the-model-via-bdshjson).
+
 ### Sizing
 
 Rough storage cost per primary record:

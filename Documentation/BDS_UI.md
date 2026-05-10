@@ -102,10 +102,18 @@ Conventions:
 - The bar always shows at the top while you scroll; long pages won't
   hide it.
 
-The footer of every page reports the bdsweb and bdsnode versions
-side by side. If they disagree, pin the older one until you upgrade
-both — most newer-format JSON-RPC responses are forward-compatible
-but newer query parameters won't be understood by an older bdsnode.
+The footer of every page reports three version strings side by side:
+
+- **bdsweb** — version of the bdsweb binary you're talking to.
+- **bdsnode** — version of the bdsnode it's connected to (fetched
+  live from `v2/status`).
+- **bundcore** — version of the BUND VM crate compiled into bdsweb;
+  bdsnode loads the same crate so they normally match.
+
+If bdsweb and bdsnode versions disagree, pin the older one until you
+upgrade both — newer-format JSON-RPC responses are mostly
+forward-compatible but newer query parameters won't be understood by
+an older bdsnode.
 
 ---
 
@@ -118,7 +126,7 @@ configurable interval; click **Reload** to force an immediate refresh.
 
 ### What's on the page
 
-**Status row — four cards across the top:**
+**Status row — five cards across the top:**
 - **Node ID** — the unique identifier of the connected bdsnode.
   Click-and-drag to copy.
 - **Hostname** — OS hostname of the machine running bdsnode.
@@ -126,6 +134,12 @@ configurable interval; click **Reload** to force an immediate refresh.
   resets unexpectedly while the Node ID stays the same, the process
   was restarted.
 - **Total Records** — count of every primary record across all shards.
+- **Embedding model** — name of the fastembed model bdsnode is using
+  for vector indexing (e.g. `AllMiniLML6V2`, `BGESmallENV15`). Set via
+  `embedding_model` in `bds.hjson` and locked to the dbpath after
+  first vector insert — see [`EMBEDDINGENGINE.md`](EMBEDDINGENGINE.md#dimension-lock-in)
+  for the dimension-lock-in note. A dash (`—`) means bdsnode hasn't
+  reported one (e.g. older bdsnode build).
 
 **JSON Cache row** — a horizontal bar showing how full bdsnode's
 in-memory record cache is. Green ≤ 70%, yellow ≤ 90%, red above. A

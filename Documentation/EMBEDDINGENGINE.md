@@ -106,12 +106,61 @@ let sim = EmbeddingEngine::compare_embeddings(&e1, &e2)?;
 
 | Variant | Dimensions | Notes |
 |---|---|---|
-| `Model::AllMiniLML6V2` | 384 | Small, fast; good general-purpose baseline |
+| `Model::AllMiniLML6V2` | 384 | Small, fast; good general-purpose baseline (**default**) |
+| `Model::AllMiniLML6V2Q` | 384 | Quantized variant of the above (~6 MB, slightly lower fidelity) |
 | `Model::BGESmallENV15` | 384 | Strong retrieval performance |
 | `Model::BGEBaseENV15` | 768 | Higher quality, larger download |
 | `Model::BGELargeENV15` | 1024 | Highest quality, largest download |
+| `Model::MultilingualE5Small` | 384 | Multilingual; useful for non-English corpora |
+| `Model::NomicEmbedTextV15` | 768 | Longer context window |
+| `Model::JinaEmbeddingsV2BaseEN` | 768 | 8K-token context |
 
-All variants are downloaded on first use and cached automatically.
+See `fastembed::EmbeddingModel` for the full list (~40 variants). All variants
+are downloaded on first use and cached automatically.
+
+---
+
+## Configuring the model via `bds.hjson`
+
+When `bdsnode` (or `bdscli`) initialises the global database via
+`ShardsManager::new(config_path)`, the embedding model is read from two
+optional config keys:
+
+```hjson
+{
+  // Variant name from `fastembed::EmbeddingModel`, matching Rust's Debug
+  // form (case-insensitive).  Defaults to "AllMiniLML6V2" when absent.
+  embedding_model: "BGESmallENV15"
+
+  // Optional override for the fastembed model cache directory.
+  // Defaults to ~/.cache/huggingface/hub or $HF_HOME.
+  embedding_cache_dir: "/var/lib/bdslib/models"
+}
+```
+
+The resolved name is reported back in `v2/status` as `embedding_model`
+and surfaced on the bdsweb Dashboard so operators can confirm what's
+loaded without re-parsing the config file.
+
+### Dimension lock-in
+
+The HNSW vector index dimension is **fixed at first vector insert**.
+Switching `embedding_model` on an existing dbpath will break vector
+search because the existing HNSW indexes don't know how to store the new
+dimension. To switch models, rebuild the dbpath:
+
+```bash
+bdsnode --new --config bds.hjson
+```
+
+This is by design — embedding migration would require re-embedding the
+entire corpus, which is a separate operation outside the scope of the
+config knob. Pick the model when you set up a deployment; treat changes
+as a fresh install.
+
+`with_embedding` (the test/library entry point that takes a pre-loaded
+`EmbeddingEngine`) bypasses this config layer, so test fixtures can still
+mix-and-match models per-test.
 
 ---
 

@@ -3,7 +3,7 @@
 </div>
 
 <!-- Status cards -->
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+<div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
   <div class="card rounded-lg p-4">
     <div class="text-xs text-slate-500 mb-1">Node ID</div>
     <div class="text-sm font-mono text-blue-300 truncate" title="{{ node_id }}">{{ node_id }}</div>
@@ -19,6 +19,11 @@
   <div class="card rounded-lg p-4">
     <div class="text-xs text-slate-500 mb-1">Total Records</div>
     <div class="text-2xl font-bold text-white">{{ total_count }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Embedding model</div>
+    <div class="text-sm font-mono text-purple-300 truncate" title="{{ embedding_model }}">{{ embedding_model }}</div>
+    <div class="text-xs text-slate-600 mt-0.5">fastembed</div>
   </div>
 </div>
 

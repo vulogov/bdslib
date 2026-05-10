@@ -79,6 +79,7 @@ struct DashboardData {
     jsoncache_pct:        u64,
     jsoncache_len:        u64,
     jsoncache_capacity:   u64,
+    embedding_model:      String,
     // ── BUND runtime stats (formerly on /bund) ──────────────────────────────
     n_results:            u64,
     n_bunds:              u64,
@@ -178,6 +179,7 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         jsoncache_pct:        u64_val(&snap.status, "jsoncache_pct"),
         jsoncache_len:        u64_val(&snap.status, "jsoncache_len"),
         jsoncache_capacity:   u64_val(&snap.status, "jsoncache_capacity"),
+        embedding_model:      str_val(&snap.status, "embedding_model"),
         n_results:            u64_val(&snap.status, "n_results"),
         n_bunds:              u64_val(&snap.status, "n_bunds"),
         n_recent,

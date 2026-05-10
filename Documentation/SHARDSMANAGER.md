@@ -59,15 +59,31 @@ All methods return `bdslib::common::error::Result<T>`.
 ShardsManager::new(config_path: &str) -> Result<ShardsManager>
 ```
 
-Read and parse the hjson config at `config_path`, then open or create the shard store. Loads the default embedding model (`AllMiniLML6V2`) which may download model weights on first use.
+Read and parse the hjson config at `config_path`, then open or create the shard store. Resolves the embedding model from two optional config keys:
 
-Returns `Err` if the file cannot be read, the hjson is invalid, a required key is missing, or `shard_duration` cannot be parsed.
+| hjson key | Default | Effect |
+|---|---|---|
+| `embedding_model` | `"AllMiniLML6V2"` | fastembed `EmbeddingModel` variant name (Rust Debug form, case-insensitive). |
+| `embedding_cache_dir` | fastembed default (`~/.cache/huggingface/hub` or `$HF_HOME`) | Override for the model cache location. |
+
+Both are optional; existing deployments keep working unchanged. The resolved variant name is exposed via [`embedding_model_name`](#embedding_model_name) and reported in `v2/status` so operators can confirm which model is loaded.
+
+Model weights download on first use; subsequent calls load from cache.
+
+Returns `Err` if the file cannot be read, the hjson is invalid, a required key is missing, `shard_duration` cannot be parsed, or `embedding_model` does not match any known fastembed variant.
 
 ```rust
 use bdslib::ShardsManager;
 
 let mgr = ShardsManager::new("/etc/myapp/shards.hjson")?;
 ```
+
+> **Dimension lock-in.** The HNSW vector index dimension is fixed at first
+> vector insert. Switching `embedding_model` on an existing dbpath will
+> break vector search. To switch, rebuild the dbpath:
+> `bdsnode --new --config bds.hjson`. See
+> [`EMBEDDINGENGINE.md`](EMBEDDINGENGINE.md#dimension-lock-in) for the full
+> note.
 
 ---
 
@@ -82,6 +98,8 @@ ShardsManager::with_embedding(
 
 Same as `new` but accepts a pre-loaded [`EmbeddingEngine`](EMBEDDINGENGINE.md). Use this constructor to share a single model instance across multiple `ShardsManager` instances or in tests where loading the model once is preferable.
 
+`with_embedding` ignores the `embedding_model` / `embedding_cache_dir` config keys (the model is supplied directly), so [`embedding_model_name`](#embedding_model_name) returns `None` for managers built this way.
+
 ```rust
 use bdslib::{EmbeddingEngine, ShardsManager};
 use fastembed::EmbeddingModel;
@@ -89,6 +107,18 @@ use fastembed::EmbeddingModel;
 let embedding = EmbeddingEngine::new(EmbeddingModel::AllMiniLML6V2, None)?;
 let mgr = ShardsManager::with_embedding("/etc/myapp/shards.hjson", embedding)?;
 ```
+
+---
+
+### `embedding_model_name`
+
+```rust
+fn embedding_model_name(&self) -> Option<String>
+```
+
+The variant name of the loaded embedding model (e.g. `"AllMiniLML6V2"`, `"BGESmallENV15"`). `Some(...)` when the manager was built via `new`; `None` when built via `with_embedding` (the model identity is opaque to that constructor).
+
+Used by `v2/status` to surface the resolved model name without re-parsing the config.
 
 ---
 

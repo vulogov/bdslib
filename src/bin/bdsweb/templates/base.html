@@ -224,6 +224,8 @@
     <span>bdsweb <span id="bdsweb-version">…</span></span>
     <span style="opacity:0.4;">·</span>
     <span>bdsnode <span id="bdsnode-version">…</span></span>
+    <span style="opacity:0.4;">·</span>
+    <span>bundcore <span id="bundcore-version">…</span></span>
   </footer>
   <script>
     (function () {
@@ -233,8 +235,10 @@
           if (!j) return;
           var w = document.getElementById('bdsweb-version');
           var n = document.getElementById('bdsnode-version');
-          if (w) w.textContent = j.bdsweb  || '?';
-          if (n) n.textContent = j.bdsnode || '?';
+          var b = document.getElementById('bundcore-version');
+          if (w) w.textContent = j.bdsweb   || '?';
+          if (n) n.textContent = j.bdsnode  || '?';
+          if (b) b.textContent = j.bundcore || '?';
         })
         .catch(function () {});
     })();

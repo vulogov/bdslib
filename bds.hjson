@@ -44,6 +44,43 @@
   // Default: 3
   r2d2_thread_pool_size: 3
 
+  // ── Embedding model (write-once per dbpath) ──────────────────────────────────
+
+  // Name of the fastembed::EmbeddingModel variant to load.  Matches Rust's
+  // Debug form, case-insensitive.  When unset the historical default
+  // (AllMiniLML6V2) is used, so existing deployments keep working.
+  //
+  // Common choices:
+  //   "AllMiniLML6V2"            — 384-dim, default, fast/small (~22 MB)
+  //   "AllMiniLML6V2Q"           — quantized AllMiniLM, ~6 MB
+  //   "BGESmallENV15"            — 384-dim, higher retrieval quality (~33 MB)
+  //   "BGEBaseENV15"             — 768-dim, larger model (~110 MB)
+  //   "BGELargeENV15"            — 1024-dim (~340 MB)
+  //   "MultilingualE5Small"      — 384-dim, multilingual
+  //   "NomicEmbedTextV15"        — 768-dim, longer context
+  //   "JinaEmbeddingsV2BaseEN"   — 768-dim, 8K context window
+  //
+  // See `fastembed::EmbeddingModel` for the full list (~40 variants).
+  //
+  // WARNING — dimension lock-in.  The HNSW vector index dimension is
+  // fixed at the dimension of whichever model produced the first vector
+  // insert.  Switching `embedding_model` on an existing dbpath will break
+  // vector search.  To switch models, rebuild the dbpath:
+  //
+  //     bdsnode --new --config bds.hjson
+  //
+  // The chosen model is reported in `v2/status` and shown on the bdsweb
+  // Dashboard so you can confirm what's loaded.
+  //
+  // embedding_model: "AllMiniLML6V2"
+
+  // Override the fastembed model cache directory.  When unset, fastembed
+  // uses its default (~/.cache/huggingface/hub or $HF_HOME).  Useful when
+  // you want model weights to live next to the data so backups are
+  // self-contained.
+  //
+  // embedding_cache_dir: "/var/lib/bdslib/models"
+
   // ── Deduplication ─────────────────────────────────────────────────────────────
 
   // Cosine-similarity threshold for classifying an incoming document as a

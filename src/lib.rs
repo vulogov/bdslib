@@ -58,3 +58,12 @@ pub use scheduler::Scheduler;
 pub use vm::workers::{submit_script, submit_script_with_id};
 pub use vm::{bund_eval, init_adam};
 pub mod setloglevel;
+
+/// Version string of the embedded `bundcore` BUND VM crate.
+///
+/// Re-exported here so bdsweb / bdsnode / any other binary built on top
+/// of bdslib can surface the BUND VM's version (in the footer, in
+/// `v2/status`, etc.) without taking a direct dependency on `bundcore`.
+pub fn bundcore_version() -> String {
+    bundcore::version()
+}
