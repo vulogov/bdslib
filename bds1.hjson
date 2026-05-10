@@ -46,5 +46,13 @@
 
     // All three replicated stores.
     full_replication_stores: ["docs", "signals", "scripts"]
+
+    // Floating bootstrap: when n2/n3 restart and find n1 down, they'll
+    // try every URL in their persisted peers.json in parallel — any
+    // peer that responds becomes the effective bootstrap.  Set to
+    // `false` for strict mode (only the configured `bootstrap` URL is
+    // ever tried).
+    floating_bootstrap:      true
+    bootstrap_retry_interval: "30s"
   }
 }

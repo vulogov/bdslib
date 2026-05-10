@@ -33,5 +33,9 @@
     replication_factor:      3
 
     full_replication_stores: ["docs", "signals", "scripts"]
+
+    // Floating bootstrap (see bds1.hjson for details).
+    floating_bootstrap:      true
+    bootstrap_retry_interval: "30s"
   }
 }

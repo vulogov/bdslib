@@ -58,6 +58,7 @@ pub fn register(module: &mut RpcModule<()>) {
                     "uptime_secs":         c.uptime().as_secs(),
                     "hint_backlog":        hint_backlog,
                     "tombstone_total":     tombstone_total,
+                    "bootstrap_mode": if c.config.floating_bootstrap { "floating" } else { "strict" },
                     "stats": serde_json::json!({
                         "last_hint_tick":           stats.last_hint_tick,
                         "last_hint_tick_replayed":  stats.last_hint_tick_replayed,
@@ -65,6 +66,10 @@ pub fn register(module: &mut RpcModule<()>) {
                         "last_ae_tick_pulled":      stats.last_ae_tick_pulled,
                         "last_ae_tick_tombstones":  stats.last_ae_tick_tombstones,
                         "last_ae_tick_pruned":      stats.last_ae_tick_pruned,
+                        "last_bootstrap_attempt":   stats.last_bootstrap_attempt,
+                        "last_bootstrap_success":   stats.last_bootstrap_success,
+                        "last_bootstrap_attempted": stats.last_bootstrap_attempted,
+                        "last_bootstrap_joined":    stats.last_bootstrap_joined,
                     }),
                     "peers":               peers,
                 })

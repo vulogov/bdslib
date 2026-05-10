@@ -77,6 +77,66 @@ mode is informational until Phase 3 lands `v3/add` / `v3/add.batch`.
 The peer table is persisted to disk on every successful merge, so a restart
 can reconnect without depending on the configured bootstrap being up.
 
+### 3.1 Bootstrap modes (floating vs strict)
+
+`cluster.floating_bootstrap` (default `true`) controls which URLs the
+node considers when bootstrapping or re-bootstrapping:
+
+| Mode | Initial pass candidates | Re-bootstrap candidates | When `cluster.bootstrap` is unset |
+|---|---|---|---|
+| **Floating** (`true`, default) | `cluster.bootstrap` + every URL in persisted `peers.json` | Same — recomputed each retry as the persisted set evolves | Allowed; the node tries only persisted peers (effectively standalone on first boot) |
+| **Strict** (`false`) | Only `cluster.bootstrap` | Only `cluster.bootstrap` (persisted peers are never bootstrap candidates) | **Rejected at startup** — `Cluster::init` returns an error |
+
+**Floating mode** is what survives the "bootstrap node died, others
+restart and need to rejoin" case the way operators expect: every peer
+the node ever met is a candidate, so as long as **any** one of them is
+up, the node finds its way back into the cluster.
+
+**Strict mode** gives operators a deterministic cluster anchor: the
+configured bootstrap node is authoritative. The node won't silently
+fall back to stale persisted peers — useful in tightly-managed
+deployments where the bootstrap address is part of the operational
+contract (DNS, load balancer, etc.).
+
+**Algorithm** — both modes use the same parallel-probe core:
+
+1. Build the candidate URL list (per mode).
+2. Spawn one `cluster.hello` per candidate via `tokio::JoinSet` with a
+   per-call timeout of `cluster.peer_rpc_timeout` (default 2 s).
+3. As each call completes, merge its response (and any peers it
+   reports) into the local table. The first success is sufficient for
+   gossip to take over; we still wait for the rest so the table
+   converges faster.
+4. Record the outcome (`attempted`, `joined`) in `cluster.stats`.
+
+**Periodic re-bootstrap** runs from the gossip background task: every
+`cluster.bootstrap_retry_interval` (default 60 s), **only when
+`alive_count() == 0`**, it re-runs the same pass. Stops as soon as one
+peer answers — regular gossip and the recovery probe take over from
+there. This complements the recovery probe (which can only revive
+peers already in the table); re-bootstrap handles the harder case
+where the table itself has been wiped (fresh node, corrupted state, or
+every persisted URL is stale).
+
+**Telemetry** — surfaced in `v2/cluster.peers` and `v3/cluster.status`:
+
+```json
+{
+  "bootstrap_mode": "floating",
+  "stats": {
+    "last_bootstrap_attempt":   1778449882,
+    "last_bootstrap_success":   1778449882,
+    "last_bootstrap_attempted": 2,
+    "last_bootstrap_joined":    1,
+    …
+  }
+}
+```
+
+`last_bootstrap_success` is left untouched when `joined == 0` so
+operators can still see when the last *successful* bootstrap was, even
+after a run of failed retries.
+
 ## 4. Authentication
 
 All `v3/cluster.*` traffic is signed with HMAC-SHA256 using
@@ -117,6 +177,10 @@ cluster: {
   dead_timeout:           "120s"
   full_mode_threshold:    3
 
+  // ── Bootstrap modes (see § 3.1) ──
+  floating_bootstrap:        true       // false = strict (bootstrap is mandatory)
+  bootstrap_retry_interval:  "60s"
+
   // ── Phase 3+ knobs (parsed now, not yet enforced) ──
   replication_factor:        3
   full_replication_stores:   ["docs", "signals", "scripts"]
@@ -138,6 +202,8 @@ cluster: {
 | `suspect_timeout` | `"30s"` | Time without contact before a peer transitions Alive → Suspect. |
 | `dead_timeout` | `"120s"` | Time without contact before a peer transitions to Dead. |
 | `full_mode_threshold` | `3` | Alive-peer count at which mode flips to `full`. |
+| `floating_bootstrap` | `true` | When `true`, bootstrap candidates include both `bootstrap` **and** every URL in persisted `peers.json`. When `false` (strict), only `bootstrap` is tried — `bootstrap` becomes mandatory at startup. See § 3.1. |
+| `bootstrap_retry_interval` | `"60s"` | Cadence for re-running the bootstrap pass when `alive_count() == 0`. |
 | `replication_factor` | `3` | (Phase 3) Target replica count for `v3/add`. |
 | `full_replication_stores` | `["docs","signals","scripts"]` | (Phase 4) Stores that replicate to **every** alive peer. |
 | `peer_rpc_timeout` | `"2s"` | Per-peer RPC deadline for gossip and (Phase 2) fan-out reads. |

@@ -92,38 +92,86 @@ pub async fn tick(
     }
 }
 
-/// One-shot bootstrap call: handshake with the configured bootstrap URL and
-/// optionally with every persisted peer (in parallel).  Errors from individual
-/// peers are logged but never propagated — bootstrap is best-effort.
-pub async fn bootstrap(cluster: &Arc<Cluster>, http: &reqwest::Client) {
+/// Outcome of one bootstrap pass.  Returned so the caller can update
+/// `cluster.stats.last_bootstrap_*` and decide whether to re-attempt.
+#[derive(Debug, Clone, Default)]
+pub struct BootstrapOutcome {
+    /// Number of candidate URLs we attempted to hello.
+    pub attempted: usize,
+    /// Number of those that responded successfully.
+    pub joined:    usize,
+    /// Bootstrap mode used for this pass — `"floating"` or `"strict"`.
+    pub mode:      &'static str,
+}
+
+/// Bootstrap pass.  In **floating** mode (default), fans out
+/// `cluster.hello` calls in parallel against the configured bootstrap URL
+/// plus every URL in the persisted peer table; one success is enough for
+/// gossip to take over.  In **strict** mode, only the configured bootstrap
+/// is tried — persisted peers are never used as candidates.
+///
+/// Errors from individual peers are logged but never propagated; bootstrap
+/// is best-effort.  Callers that need to know whether at least one peer
+/// joined inspect [`BootstrapOutcome::joined`].
+pub async fn bootstrap(cluster: &Arc<Cluster>, http: &reqwest::Client) -> BootstrapOutcome {
+    let cfg     = &cluster.config;
+    let mode    = if cfg.floating_bootstrap { "floating" } else { "strict" };
+
+    // Build the candidate list per mode.
     let mut targets: Vec<String> = Vec::new();
-    if let Some(b) = &cluster.config.bootstrap {
+    if let Some(b) = &cfg.bootstrap {
         targets.push(b.clone());
     }
-    // Also try every persisted peer (gives us reconnect-after-restart even
-    // when the configured bootstrap is down).
-    for p in cluster.peers.read().snapshot() {
-        if !targets.contains(&p.url) {
-            targets.push(p.url);
+    if cfg.floating_bootstrap {
+        // Also try every persisted peer — gives us reconnect-after-restart
+        // even when the configured bootstrap is down.
+        for p in cluster.peers.read().snapshot() {
+            if !targets.contains(&p.url) {
+                targets.push(p.url);
+            }
         }
     }
+
     if targets.is_empty() {
-        log::info!("[cluster] no bootstrap target — running standalone until peers are added");
-        return;
+        log::info!("[cluster] no bootstrap target ({mode} mode) — running standalone");
+        return BootstrapOutcome { attempted: 0, joined: 0, mode };
     }
 
-    let me   = build_node_info(cluster);
-    let secret = cluster.config.shared_secret.clone();
-    let timeout = Duration::from_secs(cluster.config.peer_rpc_timeout_secs);
+    let attempted = targets.len();
+    let me      = build_node_info(cluster);
+    let secret  = cfg.shared_secret.clone();
+    let timeout = Duration::from_secs(cfg.peer_rpc_timeout_secs);
+
+    log::info!("[cluster] bootstrap pass ({mode} mode): probing {attempted} target(s) in parallel");
+
+    // Spawn one hello per candidate in parallel.
+    let mut set: tokio::task::JoinSet<(String, crate::common::error::Result<rpc_client::HelloResponse>)>
+        = tokio::task::JoinSet::new();
+    for url in targets {
+        let http   = http.clone();
+        let secret = secret.clone();
+        let me     = me.clone();
+        set.spawn(async move {
+            let r = rpc_client::cluster_hello(&http, &url, &secret, &me, timeout).await;
+            (url, r)
+        });
+    }
 
     let mut joined = 0;
-    for url in targets {
-        match rpc_client::cluster_hello(http, &url, &secret, &me, timeout).await {
+    while let Some(joined_res) = set.join_next().await {
+        let (url, res) = match joined_res {
+            Ok(x) => x,
+            Err(e) => { log::warn!("[cluster] bootstrap probe panicked: {e:?}"); continue; }
+        };
+        match res {
             Ok(resp) => {
                 joined += 1;
                 let remote_id = match Uuid::parse_str(&resp.node_id) {
                     Ok(u) => u,
-                    Err(_) => { log::warn!("[cluster] hello from {url} returned invalid node_id"); continue; }
+                    Err(_) => {
+                        log::warn!("[cluster] hello from {url} returned invalid node_id");
+                        continue;
+                    }
                 };
                 let mut t = cluster.peers.write();
                 let self_id = t.self_id();
@@ -141,13 +189,16 @@ pub async fn bootstrap(cluster: &Arc<Cluster>, http: &reqwest::Client) {
                 }
             }
             Err(e) => {
-                log::warn!("[cluster] hello {url}: {e}");
+                log::debug!("[cluster] hello {url}: {e}");
             }
         }
     }
     cluster.persist_peers_best_effort();
-    log::info!("[cluster] bootstrap complete — joined {joined} peer(s); table now has {} entries",
-               cluster.peers.read().len());
+    log::info!(
+        "[cluster] bootstrap complete ({mode} mode) — joined {joined}/{attempted}; table={}",
+        cluster.peers.read().len(),
+    );
+    BootstrapOutcome { attempted, joined, mode }
 }
 
 #[derive(Debug)]

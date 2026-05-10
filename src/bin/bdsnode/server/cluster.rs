@@ -72,7 +72,7 @@ async fn run(
 
     // One-shot bootstrap.  Best-effort: failures are logged and we keep
     // ticking; gossip will reconcile when peers reappear.
-    gossip::bootstrap(&cluster, &http).await;
+    record_bootstrap(&cluster, gossip::bootstrap(&cluster, &http).await);
 
     let mut tick_no: u64 = 0;
     let interval = Duration::from_secs(cfg.gossip_interval_secs.max(1));
@@ -86,6 +86,14 @@ async fn run(
     // Anti-entropy on a (typically much) longer cadence.
     let ae_interval = Duration::from_secs(cfg.antientropy_interval_secs.max(60));
     let mut last_ae_tick = Instant::now();
+
+    // Floating re-bootstrap retry: when alive_count drops to 0 (we got
+    // boxed out of the cluster), re-run the bootstrap pass.  In strict
+    // mode the candidate set is just `cluster.bootstrap`; in floating
+    // mode it's that URL plus every persisted peer.  Either way the
+    // recovery probe alone can't help when the table itself is empty.
+    let bootstrap_interval = Duration::from_secs(cfg.bootstrap_retry_interval_secs.max(10));
+    let mut last_bootstrap_attempt = Instant::now();
 
     loop {
         tokio::select! {
@@ -128,6 +136,16 @@ async fn run(
                 // else.  No-op when every peer is already Alive.
                 let _ = gossip::probe_recovery(&cluster, &http).await;
 
+                // Floating re-bootstrap — only when we have zero Alive
+                // peers (otherwise gossip handles things).  Fires at most
+                // once per `bootstrap_retry_interval`.
+                if cluster.peers.read().alive_count() == 0
+                    && last_bootstrap_attempt.elapsed() >= bootstrap_interval
+                {
+                    last_bootstrap_attempt = Instant::now();
+                    record_bootstrap(&cluster, gossip::bootstrap(&cluster, &http).await);
+                }
+
                 // Hint replay tick — runs independently of gossip cadence
                 // so a slow gossip interval doesn't starve replication.
                 if last_hint_tick.elapsed() >= hint_interval {
@@ -158,6 +176,20 @@ async fn run(
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Write the bootstrap outcome into `cluster.stats`.  The success
+/// timestamp is left untouched when `joined == 0`, so operators can
+/// still see when the last *successful* bootstrap was even after a run
+/// of failed retries.
+fn record_bootstrap(cluster: &Arc<bdslib::Cluster>, outcome: bdslib::cluster::gossip::BootstrapOutcome) {
+    let mut s = cluster.stats.write();
+    s.last_bootstrap_attempt   = now_secs();
+    s.last_bootstrap_attempted = outcome.attempted as u64;
+    s.last_bootstrap_joined    = outcome.joined as u64;
+    if outcome.joined > 0 {
+        s.last_bootstrap_success = now_secs();
+    }
 }
 
 /// Drain hints for every peer that's currently Alive, retry them, and

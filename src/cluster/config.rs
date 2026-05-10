@@ -25,6 +25,17 @@ pub struct ClusterConfig {
     pub hint_max_age_secs:        u64,
     pub peer_rpc_timeout_secs:    u64,
     pub max_fingerprints_per_peer: usize,
+    /// Floating-bootstrap mode.
+    /// - `true`  (default): on startup, try `bootstrap` plus every
+    ///   peer in the persisted `peers.json` in parallel.  After total
+    ///   failure, retry every `bootstrap_retry_interval`.
+    /// - `false` (strict): try only `bootstrap`.  Persisted peers are
+    ///   never used as bootstrap candidates.  Periodic retries (also
+    ///   `bootstrap_retry_interval`) only re-attempt the configured
+    ///   URL — never fall back to peers.json.
+    pub floating_bootstrap:        bool,
+    /// Cadence for re-attempting bootstrap when no Alive peers exist.
+    pub bootstrap_retry_interval_secs: u64,
 }
 
 impl ClusterConfig {
@@ -47,6 +58,8 @@ impl ClusterConfig {
             hint_max_age_secs:        86_400,
             peer_rpc_timeout_secs:    2,
             max_fingerprints_per_peer: 100_000,
+            floating_bootstrap:       true,
+            bootstrap_retry_interval_secs: 60,
         }
     }
 
@@ -112,6 +125,21 @@ impl ClusterConfig {
             })
             .unwrap_or_else(|| vec!["docs".into(), "signals".into(), "scripts".into()]);
 
+        let floating_bootstrap = block.get("floating_bootstrap")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let bootstrap_retry_interval_secs = parse_dur("bootstrap_retry_interval", 60)?;
+
+        // Strict mode requires a configured bootstrap target — otherwise the
+        // node has nothing to try, ever (and persisted peers are excluded
+        // from the candidate set in strict mode).
+        if !floating_bootstrap && bootstrap.is_none() {
+            return Err(err_msg(
+                "cluster.bootstrap is required when cluster.floating_bootstrap = false \
+                 (strict mode has no fallback candidates)",
+            ));
+        }
+
         Ok(Self {
             enabled: true,
             shared_secret,
@@ -128,6 +156,8 @@ impl ClusterConfig {
             hint_max_age_secs:         parse_dur("hint_max_age",         86_400)?,
             peer_rpc_timeout_secs:     parse_dur("peer_rpc_timeout",     2)?,
             max_fingerprints_per_peer: parse_usize("max_fingerprints_per_peer", 100_000),
+            floating_bootstrap,
+            bootstrap_retry_interval_secs,
         })
     }
 
@@ -167,6 +197,46 @@ mod tests {
         assert!(ClusterConfig::from_hjson_str(
             r#"{ "cluster": { "enabled": true, "shared_secret": "thisisalongenoughsecret" } }"#
         ).is_err());
+    }
+
+    #[test]
+    fn strict_mode_requires_bootstrap() {
+        // floating_bootstrap=false + bootstrap=None → error
+        let raw = r#"{
+            "cluster": {
+                "enabled":            true,
+                "shared_secret":      "thisisalongenoughsecret-32",
+                "bind_url":           "http://127.0.0.1:9711",
+                "floating_bootstrap": false
+            }
+        }"#;
+        let err = ClusterConfig::from_hjson_str(raw).unwrap_err().to_string();
+        assert!(err.contains("strict"), "got: {err}");
+
+        // floating_bootstrap=false + bootstrap=Some(…) → ok
+        let raw = r#"{
+            "cluster": {
+                "enabled":            true,
+                "shared_secret":      "thisisalongenoughsecret-32",
+                "bind_url":           "http://127.0.0.1:9711",
+                "bootstrap":          "http://10.0.0.5:9000",
+                "floating_bootstrap": false
+            }
+        }"#;
+        let cfg = ClusterConfig::from_hjson_str(raw).unwrap();
+        assert!(!cfg.floating_bootstrap);
+
+        // floating_bootstrap=true + bootstrap=None → ok (default behaviour)
+        let raw = r#"{
+            "cluster": {
+                "enabled":            true,
+                "shared_secret":      "thisisalongenoughsecret-32",
+                "bind_url":           "http://127.0.0.1:9711"
+            }
+        }"#;
+        let cfg = ClusterConfig::from_hjson_str(raw).unwrap();
+        assert!(cfg.floating_bootstrap);   // default
+        assert_eq!(cfg.bootstrap_retry_interval_secs, 60);
     }
 
     #[test]

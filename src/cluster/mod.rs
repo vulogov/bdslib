@@ -103,6 +103,15 @@ pub struct ClusterStats {
     pub last_ae_tick_tombstones: u64,
     /// Tombstones GC'd in that most-recent AE tick.
     pub last_ae_tick_pruned:    u64,
+    /// Wall-clock seconds the most recent bootstrap pass attempted.
+    /// Includes the initial pass at startup and every periodic re-bootstrap.
+    pub last_bootstrap_attempt: u64,
+    /// Wall-clock seconds the most recent bootstrap pass that joined ≥1 peer.
+    pub last_bootstrap_success: u64,
+    /// Most-recent pass: candidate count.
+    pub last_bootstrap_attempted: u64,
+    /// Most-recent pass: number of those that responded.
+    pub last_bootstrap_joined:    u64,
 }
 
 impl Cluster {
