@@ -103,6 +103,7 @@ mod v3_script_delete;
 mod v3_script_update;
 mod v3_search;
 mod v3_search_get;
+mod v3_secondaries;
 mod v3_signal_emit;
 mod v3_signals;
 mod v3_timeline;
@@ -214,6 +215,7 @@ pub fn build_module() -> RpcModule<()> {
     v3_topics::register(&mut module);
     v3_signals::register(&mut module);
     v3_search_get::register(&mut module);
+    v3_secondaries::register(&mut module);
     v3_tpl::register(&mut module);
     status::register(&mut module);
     topics::register(&mut module);

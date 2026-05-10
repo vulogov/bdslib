@@ -74,8 +74,19 @@ output suitable for piping into `jq`.
     - [eval](#141-eval)
     - [Shebang scripts](#142-shebang-scripts)
 14b. [Commands — Cluster](#14b-commands--cluster)
-    - [cluster status](#cluster-status)
-    - [cluster peers](#cluster-peers)
+    - [cluster status / peers / sync / hints](#cluster-status)
+    - [cluster timeline / count / search / search-get](#cluster-timeline)
+    - [cluster knn / anomaly / denoise](#cluster-knn)
+    - [cluster add / add-batch / add-file / add-file-syslog](#cluster-add)
+    - [cluster doc-add / doc-delete](#cluster-doc-add)
+    - [cluster signal-emit / signals / signals-query](#cluster-signal-emit)
+    - [cluster script-add / script-delete](#cluster-script-add)
+    - [cluster fulltext / fulltext-get / fulltext-recent](#cluster-fulltext--cluster-fulltext-get--cluster-fulltext-recent)
+    - [cluster keys / keys-all / keys-get](#cluster-keys--cluster-keys-all--cluster-keys-get)
+    - [cluster primaries / primaries-explore / primaries-get](#cluster-primaries-cluster-primaries-explorecluster-primaries-getcluster-primaries-get-telemetry)
+    - [cluster topics / topics-all](#cluster-topics--cluster-topics-all)
+    - [cluster secondaries / secondary](#cluster-secondaries--cluster-secondary)
+    - [cluster tpl-* read family](#cluster-tpl-list-cluster-tpl-search-cluster-tpl-get-cluster-tpl-template-by-id-cluster-tpl-templates-recent-cluster-tpl-templates-by-timestamp)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -2370,6 +2381,180 @@ hint backlog, AE/hint-tick telemetry, and replication health.
 bdscmd --address http://10.0.0.7:9000 cluster hints
 ```
 
+### Phase 6 — replicated file ingest
+
+#### `cluster add-file`
+
+Calls `v3/add.file`.  The coordinator reads + parses the NDJSON file
+locally, then submits each record through `v3/add.batch` so it gets
+the standard sharded replication.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-p, --path` | required | NDJSON file path on the bdsnode's filesystem. |
+| `-r, --replication-factor` | `cluster.replication_factor` | Override the cluster default. |
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster add-file -p /var/log/events.ndjson
+```
+
+#### `cluster add-file-syslog`
+
+Same as `add-file` but parses each line as RFC 3164 syslog before
+ingesting.
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster add-file-syslog -p /var/log/messages
+```
+
+### Phase 6 — cluster-wide reads
+
+All read subcommands below fan out the matching `v2/*` method to every
+Alive peer, dedup by UUID where applicable, and return a merged result
+with a `cluster_meta` block.  None of them require `--secret`.
+
+#### `cluster fulltext` · `cluster fulltext-get` · `cluster fulltext-recent`
+
+Cluster-wide BM25 full-text search.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-q, --query` | required | Plain-text query. |
+| `-d, --duration` | required | Lookback window. |
+| `-l, --limit` | `10` | Cap on the merged result (only `fulltext` and `fulltext-recent`). |
+
+```bash
+bdscmd cluster fulltext        -q "kernel panic" -d 6h --limit 20
+bdscmd cluster fulltext-get    -q "kernel panic" -d 6h
+bdscmd cluster fulltext-recent -q "kernel panic" -d 24h --limit 50
+```
+
+#### `cluster keys` · `cluster keys-all` · `cluster keys-get`
+
+Cluster-wide key enumeration.
+
+| Subcommand | Flags | Behavior |
+|---|---|---|
+| `cluster keys` | `-d, --duration` | Sorted union of distinct keys. |
+| `cluster keys-all` | `-d, --duration`, `-k, --key <pattern>` (default `*`) | Keys matching a shell-glob. |
+| `cluster keys-get` | `-d, --duration`, `-k, --key` | Per-key UUID-set union (primary_id + secondary_ids). |
+
+```bash
+bdscmd cluster keys       -d 1h
+bdscmd cluster keys-all   -d 24h -k 'app.*'
+bdscmd cluster keys-get   -d 1h  -k 'app.error'
+```
+
+#### `cluster primaries`, `cluster primaries-explore`(`-telemetry`), `cluster primaries-get`(`-telemetry`)
+
+Cluster-wide primary record listings.
+
+| Subcommand | Flags | Result |
+|---|---|---|
+| `primaries` | `-d, --duration`, `--start-ts`, `--end-ts` (all optional) | Sorted union of primary UUIDs. |
+| `primaries-explore` | `-d, --duration` | `[{key, count, primary_id[]}]` with per-key UUID-set union. |
+| `primaries-explore-telemetry` | `-d, --duration` | Same, but only numeric-data keys. |
+| `primaries-get` | `-d, --duration`, `-k, --key` | UUID-deduped primary records for an exact key. |
+| `primaries-get-telemetry` | `-d, --duration`, `-k, --key` | Extracted numeric values only. |
+
+```bash
+bdscmd cluster primaries                       -d 1h
+bdscmd cluster primaries-explore               -d 6h
+bdscmd cluster primaries-get -d 1h -k 'app.error'
+bdscmd cluster primaries-get-telemetry -d 1h -k 'cpu.usage'
+```
+
+#### `cluster topics` · `cluster topics-all`
+
+Cluster-wide LDA topic analysis.  LDA isn't directly mergeable across
+peers (the model is corpus-relative), so the merge picks the
+**largest-corpus** result per key.
+
+| Flag (both) | Default | Description |
+|---|---|---|
+| `-d, --duration` | required | Lookback window. |
+| `-k, --k` | `3` | Number of topics. |
+| `--alpha` | `0.1` | LDA α. |
+| `--beta` | `0.01` | LDA β. |
+| `--seed` | `42` | RNG seed. |
+| `--iters` | `200` | Gibbs iterations. |
+| `--top-n` | `10` | Top-N words per topic. |
+
+`cluster topics` additionally requires `-k, --key`.
+
+```bash
+bdscmd cluster topics     -k 'app.error' -d 6h
+bdscmd cluster topics-all -d 1h --k 5
+```
+
+#### `cluster signals` · `cluster signals-query`
+
+Cluster-wide signal queries.
+
+| Subcommand | Flags | Result |
+|---|---|---|
+| `signals` | `-d, --duration` | UUID-deduped recent signals. |
+| `signals-query` | `-q, --query`, `-l, --limit` (default `20`) | Semantic search over signals; UUID dedup + score average. |
+
+```bash
+bdscmd cluster signals       -d 1h
+bdscmd cluster signals-query -q "disk full"
+```
+
+#### `cluster search-get`
+
+Cluster-wide semantic vector search returning **full** documents
+(companion to `cluster search` which returns only ids+scores).
+
+| Flag | Default | Description |
+|---|---|---|
+| `-q, --query` | required | Plain-text query. |
+| `-d, --duration` | required | Lookback window. |
+| `-l, --limit` | `10` | Cap on the merged result. |
+
+```bash
+bdscmd cluster search-get -q "kernel panic" -d 6h --limit 20
+```
+
+#### `cluster secondaries` · `cluster secondary`
+
+Cluster-wide access to the secondary records produced by per-peer
+similarity-threshold deduplication.
+
+| Subcommand | Flags | Result |
+|---|---|---|
+| `secondaries` | `-p, --primary-id` | UUID set union of secondary IDs across all peers. |
+| `secondary` | `-s, --secondary-id` | First-non-null-peer-wins fetch of a single secondary record (with `primary_id` and `duplications` injected). |
+
+```bash
+bdscmd cluster secondaries -p 019e13ce-6166-7090-ba6e-81ad243ce60b
+bdscmd cluster secondary   -s 019e13ce-6166-7090-ba6e-81b186338c77
+```
+
+#### `cluster tpl-list`, `cluster tpl-search`, `cluster tpl-get`, `cluster tpl-template-by-id`, `cluster tpl-templates-recent`, `cluster tpl-templates-by-timestamp`
+
+Cluster-wide reads of the per-shard template store.  Templates are
+node-local (each shard has its own `tplstorage`), so different peers
+typically hold different subsets — fan-out + UUID dedup gives the full
+view.
+
+| Subcommand | Flags |
+|---|---|
+| `tpl-list`                    | `-d, --duration` |
+| `tpl-search`                  | `-q, --query`, `-d, --duration`, `-l, --limit` |
+| `tpl-get`                     | `-i, --id` |
+| `tpl-template-by-id`          | `-i, --id` |
+| `tpl-templates-recent`        | `-d, --duration` |
+| `tpl-templates-by-timestamp`  | `-s, --start-ts`, `-e, --end-ts` (Unix seconds) |
+
+```bash
+bdscmd cluster tpl-list                   -d 24h
+bdscmd cluster tpl-search                 -q "user logged in" -d 24h --limit 20
+bdscmd cluster tpl-get                    -i 019e1387-7c00-7000-9000-7c00000017c0
+bdscmd cluster tpl-templates-recent       -d 6h
+bdscmd cluster tpl-templates-by-timestamp -s 1778000000 -e 1778100000
+```
+
 Architectural reference: [`Documentation/CLUSTER.md`](CLUSTER.md).
 
 **Common error responses:**
@@ -2377,6 +2562,8 @@ Architectural reference: [`Documentation/CLUSTER.md`](CLUSTER.md).
 - `-32097` — cluster mode disabled on the target node (membership subcommands only).
 - `-32098` — missing or wrong `--secret` (membership subcommands only).
 - `-32600` — invalid `duration` string.
+- `-32602` — missing required parameter (e.g. `-q`, `-k`, `-i`).
+- `-32404` — `cluster secondary <id>` not found anywhere in the cluster.
 
 ---
 

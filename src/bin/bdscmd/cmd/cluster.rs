@@ -68,6 +68,69 @@ enum Sub {
     Sync,
     /// (read) Per-peer hint backlog from `v2/cluster.peers` — no secret needed
     Hints,
+
+    // ── Phase 6: replicated file ingest ──────────────────────────────────
+    /// (replicated write) `v3/add.file` — read NDJSON file + replicate via v3/add.batch
+    AddFile(PathArgs),
+    /// (replicated write) `v3/add.file.syslog` — read RFC 3164 syslog file + replicate
+    AddFileSyslog(PathArgs),
+
+    // ── Phase 6: cluster-wide reads ──────────────────────────────────────
+    /// `v3/fulltext` — BM25 full-text search (ids+scores, UUID dedup + score average)
+    Fulltext(QueryWithLimitArgs),
+    /// `v3/fulltext.get` — BM25 full-text search returning full documents
+    FulltextGet(QueryArgs),
+    /// `v3/fulltext.recent` — BM25 full-text search, newest-first
+    FulltextRecent(QueryWithLimitArgs),
+
+    /// `v3/keys` — distinct primary-record keys in a window (sorted union)
+    Keys(DurationArgs),
+    /// `v3/keys.all` — keys matching a shell-glob pattern (sorted union)
+    KeysAll(KeysAllArgs),
+    /// `v3/keys.get` — primaries+secondaries for keys matching a pattern
+    KeysGet(KeyAndDurationArgs),
+
+    /// `v3/primaries` — UUID set union for the window
+    Primaries(WindowArgs),
+    /// `v3/primaries.explore` — keys with > 1 primary in the window
+    PrimariesExplore(DurationArgs),
+    /// `v3/primaries.explore.telemetry` — same, but only telemetry keys
+    PrimariesExploreTelemetry(DurationArgs),
+    /// `v3/primaries.get` — primary records for an exact key
+    PrimariesGet(KeyAndDurationArgs),
+    /// `v3/primaries.get.telemetry` — extracted numeric values for an exact key
+    PrimariesGetTelemetry(KeyAndDurationArgs),
+
+    /// `v3/topics` — LDA topic analysis for a single key (largest-corpus pick)
+    Topics(TopicsArgs),
+    /// `v3/topics.all` — LDA per distinct key (per-key largest-corpus pick)
+    TopicsAll(TopicsAllArgs),
+
+    /// `v3/signals` — recent signals (UUID dedup)
+    Signals(DurationArgs),
+    /// `v3/signals_query` — semantic search over signals (UUID dedup + score average)
+    SignalsQuery(SignalsQueryArgs),
+
+    /// `v3/search.get` — semantic vector search returning full docs (UUID dedup + score average)
+    SearchGet(QueryWithLimitArgs),
+
+    /// `v3/secondaries` — secondary UUIDs for a primary (cluster-wide UUID set union)
+    Secondaries(PrimaryIdArgs),
+    /// `v3/secondary` — fetch a secondary record by UUID (first-non-null-peer-wins)
+    Secondary(SecondaryIdArgs),
+
+    /// `v3/tpl.list` — list templates in a window (UUID dedup)
+    TplList(DurationArgs),
+    /// `v3/tpl.search` — semantic search over templates (UUID dedup + score average)
+    TplSearch(QueryWithLimitArgs),
+    /// `v3/tpl.get` — fetch a single template by UUID (first-non-null-peer-wins)
+    TplGet(IdArgs),
+    /// `v3/tpl.template_by_id` — fetch via FrequencyTracking (cross-shard)
+    TplTemplateById(IdArgs),
+    /// `v3/tpl.templates_recent` — templates observed in a window (UUID dedup)
+    TplTemplatesRecent(DurationArgs),
+    /// `v3/tpl.templates_by_timestamp` — templates observed in a Unix-second range
+    TplTemplatesByTimestamp(TsRangeArgs),
 }
 
 #[derive(Args)]
@@ -173,6 +236,115 @@ pub struct DenoiseArgs {
     #[arg(long, default_value_t = 0.85)] noise_threshold: f32,
     #[arg(long, default_value_t = 100)] max_kept: usize,
     #[arg(long, default_value_t = 100)] max_removed: usize,
+}
+
+// ── Phase 6 args ─────────────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct PathArgs {
+    /// File path on the receiving bdsnode's filesystem.
+    #[arg(short = 'p', long)]
+    path: String,
+    #[arg(short = 'r', long)]
+    replication_factor: Option<usize>,
+}
+
+#[derive(Args)]
+pub struct DurationArgs {
+    /// Lookback window (humantime, e.g. "1h", "30min").
+    #[arg(short, long)]
+    duration: String,
+}
+
+#[derive(Args)]
+pub struct WindowArgs {
+    /// Optional lookback window.  Omit for all-time.
+    #[arg(short, long)]
+    duration: Option<String>,
+    /// Optional explicit range start (Unix seconds).  Requires --end-ts.
+    #[arg(long)]
+    start_ts: Option<i64>,
+    /// Optional explicit range end (Unix seconds).
+    #[arg(long)]
+    end_ts: Option<i64>,
+}
+
+#[derive(Args)]
+pub struct KeyAndDurationArgs {
+    #[arg(short, long)] duration: String,
+    #[arg(short, long)] key: String,
+}
+
+#[derive(Args)]
+pub struct KeysAllArgs {
+    #[arg(short, long)] duration: String,
+    /// Shell-glob pattern (default `*` for "all keys").
+    #[arg(short, long, default_value = "*")]
+    key: String,
+}
+
+#[derive(Args)]
+pub struct QueryArgs {
+    #[arg(short, long)] query:    String,
+    #[arg(short, long)] duration: String,
+}
+
+#[derive(Args)]
+pub struct QueryWithLimitArgs {
+    #[arg(short, long)] query:    String,
+    #[arg(short, long)] duration: String,
+    #[arg(short, long, default_value_t = 10)] limit: usize,
+}
+
+#[derive(Args)]
+pub struct SignalsQueryArgs {
+    #[arg(short, long)] query: String,
+    #[arg(short, long, default_value_t = 20)] limit: usize,
+}
+
+#[derive(Args)]
+pub struct TopicsArgs {
+    #[arg(short, long)] key:      String,
+    #[arg(short, long)] duration: String,
+    #[arg(short, long, default_value_t = 3)]   k:     usize,
+    #[arg(long, default_value_t = 0.1)]   alpha: f64,
+    #[arg(long, default_value_t = 0.01)]  beta:  f64,
+    #[arg(long, default_value_t = 42)]    seed:  u64,
+    #[arg(long, default_value_t = 200)]   iters: usize,
+    #[arg(long, default_value_t = 10)]    top_n: usize,
+}
+
+#[derive(Args)]
+pub struct TopicsAllArgs {
+    #[arg(short, long)] duration: String,
+    #[arg(short, long, default_value_t = 3)]   k:     usize,
+    #[arg(long, default_value_t = 0.1)]   alpha: f64,
+    #[arg(long, default_value_t = 0.01)]  beta:  f64,
+    #[arg(long, default_value_t = 42)]    seed:  u64,
+    #[arg(long, default_value_t = 200)]   iters: usize,
+    #[arg(long, default_value_t = 10)]    top_n: usize,
+}
+
+#[derive(Args)]
+pub struct PrimaryIdArgs {
+    /// Primary record UUID.
+    #[arg(short = 'p', long)]
+    primary_id: String,
+}
+
+#[derive(Args)]
+pub struct SecondaryIdArgs {
+    /// Secondary record UUID.
+    #[arg(short = 's', long)]
+    secondary_id: String,
+}
+
+#[derive(Args)]
+pub struct TsRangeArgs {
+    #[arg(short = 's', long)]
+    start_ts: u64,
+    #[arg(short = 'e', long)]
+    end_ts: u64,
 }
 
 fn signed_call(url: &str, method: &str, secret: &str, mut params: Map<String, Value>) -> Result<Value> {
@@ -301,5 +473,80 @@ pub fn run(url: &str, _session: &str, args: Cmd) -> Result<Value> {
             }))
         }
         Sub::ScriptDelete(a) => crate::client::call(url, "v3/script.delete", json!({ "id": a.id })),
+
+        // ── Phase 6 file ingest ──────────────────────────────────────────
+        Sub::AddFile(a) => {
+            let mut params = json!({"path": a.path});
+            if let Some(rf) = a.replication_factor {
+                params["replication_factor"] = json!(rf);
+            }
+            crate::client::call(url, "v3/add.file", params)
+        }
+        Sub::AddFileSyslog(a) => {
+            let mut params = json!({"path": a.path});
+            if let Some(rf) = a.replication_factor {
+                params["replication_factor"] = json!(rf);
+            }
+            crate::client::call(url, "v3/add.file.syslog", params)
+        }
+
+        // ── Phase 6 reads ────────────────────────────────────────────────
+        Sub::Fulltext(a)       => crate::client::call(url, "v3/fulltext",
+            json!({"query": a.query, "duration": a.duration, "limit": a.limit})),
+        Sub::FulltextGet(a)    => crate::client::call(url, "v3/fulltext.get",
+            json!({"query": a.query, "duration": a.duration})),
+        Sub::FulltextRecent(a) => crate::client::call(url, "v3/fulltext.recent",
+            json!({"query": a.query, "duration": a.duration, "limit": a.limit})),
+
+        Sub::Keys(a)    => crate::client::call(url, "v3/keys",     json!({"duration": a.duration})),
+        Sub::KeysAll(a) => crate::client::call(url, "v3/keys.all", json!({"duration": a.duration, "key": a.key})),
+        Sub::KeysGet(a) => crate::client::call(url, "v3/keys.get", json!({"duration": a.duration, "key": a.key})),
+
+        Sub::Primaries(a) => {
+            let mut p = serde_json::Map::new();
+            if let Some(d) = &a.duration { p.insert("duration".into(), json!(d)); }
+            if let Some(s) = a.start_ts  { p.insert("start_ts".into(), json!(s)); }
+            if let Some(e) = a.end_ts    { p.insert("end_ts".into(),   json!(e)); }
+            crate::client::call(url, "v3/primaries", Value::Object(p))
+        }
+        Sub::PrimariesExplore(a) => crate::client::call(url, "v3/primaries.explore",
+            json!({"duration": a.duration})),
+        Sub::PrimariesExploreTelemetry(a) => crate::client::call(url, "v3/primaries.explore.telemetry",
+            json!({"duration": a.duration})),
+        Sub::PrimariesGet(a) => crate::client::call(url, "v3/primaries.get",
+            json!({"duration": a.duration, "key": a.key})),
+        Sub::PrimariesGetTelemetry(a) => crate::client::call(url, "v3/primaries.get.telemetry",
+            json!({"duration": a.duration, "key": a.key})),
+
+        Sub::Topics(a) => crate::client::call(url, "v3/topics", json!({
+            "key": a.key, "duration": a.duration,
+            "k": a.k, "alpha": a.alpha, "beta": a.beta, "seed": a.seed,
+            "iters": a.iters, "top_n": a.top_n,
+        })),
+        Sub::TopicsAll(a) => crate::client::call(url, "v3/topics.all", json!({
+            "duration": a.duration,
+            "k": a.k, "alpha": a.alpha, "beta": a.beta, "seed": a.seed,
+            "iters": a.iters, "top_n": a.top_n,
+        })),
+
+        Sub::Signals(a)      => crate::client::call(url, "v3/signals", json!({"duration": a.duration})),
+        Sub::SignalsQuery(a) => crate::client::call(url, "v3/signals_query",
+            json!({"query": a.query, "limit": a.limit})),
+
+        Sub::SearchGet(a) => crate::client::call(url, "v3/search.get",
+            json!({"query": a.query, "duration": a.duration, "limit": a.limit})),
+
+        Sub::Secondaries(a) => crate::client::call(url, "v3/secondaries", json!({"primary_id": a.primary_id})),
+        Sub::Secondary(a)   => crate::client::call(url, "v3/secondary",   json!({"secondary_id": a.secondary_id})),
+
+        Sub::TplList(a)               => crate::client::call(url, "v3/tpl.list",   json!({"duration": a.duration})),
+        Sub::TplSearch(a)             => crate::client::call(url, "v3/tpl.search",
+            json!({"query": a.query, "duration": a.duration, "limit": a.limit})),
+        Sub::TplGet(a)                => crate::client::call(url, "v3/tpl.get",            json!({"id": a.id})),
+        Sub::TplTemplateById(a)       => crate::client::call(url, "v3/tpl.template_by_id", json!({"id": a.id})),
+        Sub::TplTemplatesRecent(a)    => crate::client::call(url, "v3/tpl.templates_recent",
+            json!({"duration": a.duration})),
+        Sub::TplTemplatesByTimestamp(a) => crate::client::call(url, "v3/tpl.templates_by_timestamp",
+            json!({"start_ts": a.start_ts, "end_ts": a.end_ts})),
     }
 }
