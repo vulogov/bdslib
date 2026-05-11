@@ -173,6 +173,45 @@ impl UserStorage {
                 "no credential verifier registered for {method:?}"
             )))?;
         let credential_hash = verifier.store(raw_credential)?;
+        self.insert_raw(id, username, &credential_hash, method, metadata,
+                        now_secs, now_secs, false)
+    }
+
+    /// Add a row with an already-hashed credential — used by the
+    /// anti-entropy pull path to backfill a peer's exact stored
+    /// credential without re-hashing (which would change the hash and
+    /// break login compatibility for that user across nodes).
+    /// Idempotent on UUID.  Caller is responsible for supplying a
+    /// hash format the registered verifier can verify against.
+    pub fn add_with_hash(
+        &self,
+        id:               Uuid,
+        username:         &str,
+        credential_hash:  &str,
+        method:           AuthMethod,
+        metadata:         JsonValue,
+        created_at:       u64,
+        updated_at:       u64,
+        disabled:         bool,
+    ) -> Result<()> {
+        if self.get(id)?.is_some() {
+            return Ok(());
+        }
+        self.insert_raw(id, username, credential_hash, method, metadata,
+                        created_at, updated_at, disabled)
+    }
+
+    fn insert_raw(
+        &self,
+        id:              Uuid,
+        username:        &str,
+        credential_hash: &str,
+        method:          AuthMethod,
+        metadata:        JsonValue,
+        created_at:      u64,
+        updated_at:      u64,
+        disabled:        bool,
+    ) -> Result<()> {
         let metadata_s = serde_json::to_string(&metadata)
             .map_err(|e| err_msg(format!("metadata serialise: {e}")))?;
 
@@ -180,14 +219,15 @@ impl UserStorage {
             "INSERT INTO users \
                (id, username, credential_hash, auth_method, metadata, \
                 created_at, updated_at, disabled) \
-             VALUES ('{}', '{}', '{}', '{}', '{}', {}, {}, false)",
+             VALUES ('{}', '{}', '{}', '{}', '{}', {}, {}, {})",
             id,
             sql_escape(username),
-            sql_escape(&credential_hash),
+            sql_escape(credential_hash),
             sql_escape(&method.to_wire()),
             sql_escape(&metadata_s),
-            now_secs as i64,
-            now_secs as i64,
+            created_at as i64,
+            updated_at as i64,
+            disabled,
         );
         self.engine.execute(&sql)
     }

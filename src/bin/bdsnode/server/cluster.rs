@@ -296,7 +296,7 @@ pub async fn antientropy_tick(cluster: &Arc<bdslib::Cluster>) -> AntientropyStat
         None    => return out,  // standalone — nothing to sync against
     };
 
-    for &store in &["docs", "signals", "scripts"] {
+    for &store in &["docs", "signals", "scripts", "users"] {
         if !cluster.config.full_replication_stores.iter().any(|s| s == store) {
             continue;
         }
@@ -316,9 +316,12 @@ async fn sync_store(
     use bdslib::cluster::replication;
 
     let list_method = format!("v2/{}.list_ids",
-        if store == "scripts" { "script".to_owned() }
-        else if store == "signals" { "signal".to_owned() }
-        else { "doc".to_owned() }
+        match store {
+            "scripts" => "script",
+            "signals" => "signal",
+            "users"   => "user",
+            _         => "doc",
+        }
     );
 
     // 1. Pull peer's view.
@@ -350,6 +353,17 @@ async fn sync_store(
             "docs"    => db.docstore_list_metadata().map_err(|e| e.to_string())?,
             "signals" => db.signals_list_metadata().map_err(|e| e.to_string())?,
             "scripts" => db.scripts_with_metadata().map_err(|e| e.to_string())?,
+            "users"   => {
+                // Users store has updated_at as a top-level column;
+                // synthesise a {updated_at} metadata blob so the
+                // downstream LWW comparator just works.
+                let cluster_u = cluster_for_local.clone();
+                cluster_u.users.list_summaries()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|s| (s.id, serde_json::json!({"updated_at": s.updated_at})))
+                    .collect()
+            }
             _ => return Err(format!("unknown store {store_owned:?}")),
         };
         let live: Vec<serde_json::Value> = entries.into_iter().map(|(id, meta)| {
@@ -396,6 +410,15 @@ async fn sync_store(
                 match store_t.as_str() {
                     "docs"    => { let _ = db.doc_delete(id_t); }
                     "scripts" => { let _ = db.script_delete(id_t); }
+                    "users"   => {
+                        // Users do get deleted via v3/user.delete +
+                        // tombstone propagation; the AE pull path
+                        // mirrors the same delete here so a peer that
+                        // missed the original delete catches up.
+                        if let Some(c) = db.cluster() {
+                            let _ = c.users.delete(id_t);
+                        }
+                    }
                     _         => {}  // signals don't get deleted in Phase 4
                 }
                 cluster_t.tombstones.mark_deleted(&store_t, id_t, deleted_at_t)
@@ -513,6 +536,35 @@ async fn pull_one(
                 db.script_add_with_id(id, metadata, &body).map_err(|e| e.to_string())
             }).await.map_err(|e| e.to_string())?
         }
+        "users" => {
+            use bdslib::cluster::credential::AuthMethod;
+            // Fetch the peer's full row (including credential_hash) by id.
+            let resp = replication::call_peer_v2(cluster, &peer.url, "v2/user.get_by_id",
+                &serde_json::json!({ "id": id.to_string() })).await
+                .map_err(|e| e.to_string())?;
+            let user = match resp.get("user").filter(|v| !v.is_null()) {
+                Some(u) => u.clone(),
+                None    => return Ok(()),  // race: peer no longer has it
+            };
+            let username        = user.get("username").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let credential_hash = user.get("credential_hash").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let method_s        = user.get("auth_method").and_then(|v| v.as_str()).unwrap_or("password").to_owned();
+            let metadata        = user.get("metadata").cloned().unwrap_or_default();
+            let created_at      = user.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let updated_at      = user.get("updated_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let disabled        = user.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let db = bdslib::get_db().map_err(|e| e.to_string())?;
+                let cluster = db.cluster()
+                    .ok_or_else(|| "cluster mode disabled".to_owned())?;
+                cluster.users.add_with_hash(
+                    id, &username, &credential_hash,
+                    AuthMethod::from_wire(&method_s),
+                    metadata, created_at, updated_at, disabled,
+                ).map_err(|e| e.to_string())
+            }).await.map_err(|e| e.to_string())?
+        }
         _ => Ok(())
     }
 }
@@ -554,6 +606,42 @@ async fn overwrite_one(
             tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let db = bdslib::get_db().map_err(|e| e.to_string())?;
                 db.update_script(id, metadata, &body).map_err(|e| e.to_string())
+            }).await.map_err(|e| e.to_string())?
+        }
+        "users" => {
+            use bdslib::cluster::credential::AuthMethod;
+            // Pull the peer's full row by id, then replace ours
+            // verbatim.  The remote `updated_at > local.updated_at`
+            // check that gated this call already happened in
+            // `sync_store`, so unconditional overwrite is correct.
+            let resp = replication::call_peer_v2(cluster, &peer.url, "v2/user.get_by_id",
+                &serde_json::json!({ "id": id.to_string() })).await
+                .map_err(|e| e.to_string())?;
+            let user = match resp.get("user").filter(|v| !v.is_null()) {
+                Some(u) => u.clone(),
+                None    => return Ok(()),
+            };
+            let username        = user.get("username").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let credential_hash = user.get("credential_hash").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let method_s        = user.get("auth_method").and_then(|v| v.as_str()).unwrap_or("password").to_owned();
+            let metadata        = user.get("metadata").cloned().unwrap_or_default();
+            let created_at      = user.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let updated_at      = user.get("updated_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let disabled        = user.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let db = bdslib::get_db().map_err(|e| e.to_string())?;
+                let cluster = db.cluster()
+                    .ok_or_else(|| "cluster mode disabled".to_owned())?;
+                // Drop the old row, write the new one verbatim.  Both
+                // operations are idempotent so a partial failure on
+                // re-pull next tick converges.
+                cluster.users.delete(id).map_err(|e| e.to_string())?;
+                cluster.users.add_with_hash(
+                    id, &username, &credential_hash,
+                    AuthMethod::from_wire(&method_s),
+                    metadata, created_at, updated_at, disabled,
+                ).map_err(|e| e.to_string())
             }).await.map_err(|e| e.to_string())?
         }
         // Signals are append-only — no updates exist.

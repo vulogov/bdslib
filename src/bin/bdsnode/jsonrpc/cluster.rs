@@ -28,10 +28,20 @@ fn extract_hmac(params: &mut serde_json::Map<String, JsonValue>) -> Result<(Vec<
 fn authenticate(params: jsonrpsee::types::Params) -> Result<serde_json::Map<String, JsonValue>, ErrorObject<'static>> {
     let value: JsonValue = params.parse()
         .map_err(|e| rpc_err(-32602, format!("invalid params: {e}")))?;
-    let mut obj = match value {
+    let obj = match value {
         JsonValue::Object(m) => m,
         _ => return Err(rpc_err(-32602, "params must be a JSON object")),
     };
+    authenticate_admin_obj(obj)
+}
+
+/// Same as [`authenticate`] but operates on an already-parsed JSON
+/// object — used by v3/user.* handlers that need to peek at the
+/// params (e.g. for the first-user bootstrap bypass) before signing
+/// is verified.  Strips `_hmac` and returns the verified inner object.
+pub(crate) fn authenticate_admin_obj(
+    mut obj: serde_json::Map<String, JsonValue>,
+) -> Result<serde_json::Map<String, JsonValue>, ErrorObject<'static>> {
     let (canonical, sig) = extract_hmac(&mut obj)?;
 
     let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
@@ -42,6 +52,23 @@ fn authenticate(params: jsonrpsee::types::Params) -> Result<serde_json::Map<Stri
         return Err(rpc_err(-32098, "auth failed"));
     }
     Ok(obj)
+}
+
+/// Async wrapper that takes a JsonValue (typically the `params.parse::<JsonValue>()?`
+/// output) and returns the verified admin object.  Used by v3/user.*
+/// handlers that need to dispatch on a quick `users.is_empty()` check
+/// (the first-user bootstrap bypass) before deciding whether HMAC
+/// applies.  Spawns the blocking DB lookup like all other handlers.
+pub(crate) async fn authenticate_admin(
+    raw: JsonValue,
+) -> Result<serde_json::Map<String, JsonValue>, ErrorObject<'static>> {
+    let obj = match raw {
+        JsonValue::Object(m) => m,
+        _ => return Err(rpc_err(-32602, "params must be a JSON object")),
+    };
+    tokio::task::spawn_blocking(move || authenticate_admin_obj(obj))
+        .await
+        .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?
 }
 
 pub fn register(module: &mut RpcModule<()>) {

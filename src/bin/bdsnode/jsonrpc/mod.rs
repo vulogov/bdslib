@@ -63,6 +63,8 @@ mod results_pull;
 mod results_push;
 mod scheduler_last_seen;
 mod status;
+mod v2_user;
+mod v3_user;
 mod anomaly_recent;
 mod denoise_recent;
 mod knn;
@@ -226,6 +228,8 @@ pub fn build_module() -> RpcModule<()> {
     v3_trends::register(&mut module);
     v3_summaries::register(&mut module);
     scheduler_last_seen::register(&mut module);
+    v2_user::register(&mut module);
+    v3_user::register(&mut module);
     status::register(&mut module);
     topics::register(&mut module);
     topics_all::register(&mut module);
