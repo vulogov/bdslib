@@ -201,6 +201,31 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Phase 5 — async / offline LLM job queue.  Opens
+    // <dbpath>/llm/jobs.duckdb when a dbpath is available; standalone
+    // runs without config skip it.  The runner that consumes pending
+    // jobs is spawned later (phase 5.c wires this into the existing
+    // background-task scaffolding).
+    {
+        let dbpath = cli.config.as_deref().and_then(|p|
+            bdslib::dbpath_from_config(Some(p)).ok()
+        );
+        if let Some(dbpath) = dbpath {
+            let jobs_root = std::path::Path::new(&dbpath).join("llm");
+            match bdslib::llm::jobs::JobQueue::open(&jobs_root) {
+                Ok(q) => {
+                    let pending = q.count_in_state(bdslib::llm::jobs::JobState::Pending)
+                        .unwrap_or(0);
+                    log::info!("[llm] job queue opened at {} (pending={pending})",
+                        jobs_root.display());
+                    bdslib::llm::jobs::init(q);
+                }
+                Err(e) => log::warn!("[llm] job queue open failed at {}: {e}",
+                    jobs_root.display()),
+            }
+        }
+    }
+
     // Phase 4 — cluster-wide inference dedup runtime settings.  The
     // per-node InferenceLog lives on Cluster (init_db opens it inside
     // Cluster::init when cluster mode is on); these are the runtime

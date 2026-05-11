@@ -20,6 +20,7 @@ use crate::llm::cache::{self as cache, CacheInsert, CacheManager, CachedEntry};
 use crate::llm::chat as llm_chat;
 use crate::llm::context::{self as llm_ctx, ContextSource, RagContext};
 use crate::llm::dedup::{self, InferenceLease, InferenceState};
+use crate::llm::jobs::{self, JobInsert, JobState, ListFilter as JobListFilter};
 use crate::llm::manager;
 use crate::llm::providers::Provider;
 use crate::llm::types::{
@@ -996,6 +997,131 @@ fn compose_user_message(kind: &str, rag: &RagContext, prompt_template: &str, que
         buf.push_str(query);
     }
     buf
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Async helpers + job management
+// ─────────────────────────────────────────────────────────────────────
+
+/// `complete_async` — enqueue a [`complete`]-shaped request for the
+/// background runner.  Returns `{job_id, result_id, kind: "complete"}`.
+/// Callers poll `v2/results.pull` against `result_id` to receive the
+/// final response when the runner finishes.
+pub fn complete_async(req: Value) -> Result<Value, Error> {
+    meta::clear_llm();
+    let req_json = req_as_object(req, "vm::api::llm::complete_async")?;
+    // Sanity-check the same way the sync helper would so the caller
+    // gets a fast error before the runner ever picks it up.
+    let _ = parse_messages(&req_json)?;
+    enqueue_job("complete", req_json)
+}
+
+/// `analyze_async` — enqueue an [`analyze`]-shaped request.  Returns
+/// `{job_id, result_id, kind: "analyze:<kind>"}` so the caller knows
+/// which analyze variant they queued.
+pub fn analyze_async(req: Value) -> Result<Value, Error> {
+    meta::clear_llm();
+    let req_json = req_as_object(req, "vm::api::llm::analyze_async")?;
+    let kind = req_json.get("kind").and_then(|v| v.as_str())
+        .ok_or_else(|| err_msg("vm::api::llm::analyze_async: `kind` (string) is required"))?
+        .to_owned();
+    // Sanity-check: builds a ContextSource but doesn't actually
+    // execute it.  Catches bad params (e.g. kind=documents without ids)
+    // synchronously.
+    let _ = build_context_source(&kind, &req_json)?;
+    enqueue_job(&format!("analyze:{kind}"), req_json)
+}
+
+fn enqueue_job(kind: &str, req_json: JsonValue) -> Result<Value, Error> {
+    let q = jobs::queue().ok_or_else(|| err_msg(
+        "vm::api::llm: job queue not initialised (no llm config or runner disabled)"))?;
+    let result_id = req_json.get("result_id").and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+    let (job_id, result_id) = q.enqueue(JobInsert {
+        kind:         kind.to_owned(),
+        request_json: req_json,
+        result_id,
+    }).map_err(|e| err_msg(format!("vm::api::llm: enqueue: {e}")))?;
+    Ok(json_to_dynamic(json!({
+        "job_id":    job_id.to_string(),
+        "result_id": result_id.to_string(),
+        "kind":      kind,
+        "state":     "pending",
+    })))
+}
+
+/// `job_status` — return the current state of a queued job.  Accepts
+/// either a string UUID or a Map with `{job_id: "..."}`.
+pub fn job_status(req: Value) -> Result<Value, Error> {
+    let id = extract_job_id(req, "vm::api::llm::job_status")?;
+    let q = jobs::queue().ok_or_else(|| err_msg(
+        "vm::api::llm::job_status: job queue not initialised"))?;
+    let row = q.get(id).map_err(|e| err_msg(format!("vm::api::llm::job_status: {e}")))?
+        .ok_or_else(|| err_msg(format!("vm::api::llm::job_status: job {id} not found")))?;
+    Ok(json_to_dynamic(job_to_summary_json(&row)))
+}
+
+/// `job_cancel` — mark a pending/running job as cancelled.  Returns
+/// `{ok: true}` when the cancellation took effect, `{ok: false}` when
+/// the job was already terminal or doesn't exist.
+pub fn job_cancel(req: Value) -> Result<Value, Error> {
+    let id = extract_job_id(req, "vm::api::llm::job_cancel")?;
+    let q = jobs::queue().ok_or_else(|| err_msg(
+        "vm::api::llm::job_cancel: job queue not initialised"))?;
+    let ok = q.cancel(id).map_err(|e| err_msg(format!("vm::api::llm::job_cancel: {e}")))?;
+    Ok(json_to_dynamic(json!({ "ok": ok, "job_id": id.to_string() })))
+}
+
+/// `jobs_list` — list queued / in-flight / recently-finished jobs.
+///
+/// Accepts a Map filter:
+/// - `state`  (optional string)  — restrict to one state
+/// - `limit`  (optional integer) — cap on returned rows (default 100)
+///
+/// Returns `{jobs: [...summary...], count}`.
+pub fn jobs_list(req: Value) -> Result<Value, Error> {
+    let req_json = match req.data {
+        rust_dynamic::types::Val::Null | rust_dynamic::types::Val::Exit => JsonValue::Null,
+        _ => dynamic_to_json(req),
+    };
+    let state = req_json.get("state").and_then(|v| v.as_str())
+        .and_then(JobState::from_wire);
+    let limit = req_json.get("limit").and_then(|v| v.as_u64())
+        .map(|n| n as usize).or(Some(100));
+
+    let q = jobs::queue().ok_or_else(|| err_msg(
+        "vm::api::llm::jobs_list: job queue not initialised"))?;
+    let rows = q.list(JobListFilter { state, limit })
+        .map_err(|e| err_msg(format!("vm::api::llm::jobs_list: {e}")))?;
+    let count = rows.len();
+    let jobs: Vec<JsonValue> = rows.iter().map(job_to_summary_json).collect();
+    Ok(json_to_dynamic(json!({ "jobs": jobs, "count": count })))
+}
+
+fn extract_job_id(req: Value, ctx: &str) -> Result<Uuid, Error> {
+    let json = dynamic_to_json(req);
+    let s = if let Some(s) = json.as_str() {
+        s
+    } else if let Some(s) = json.get("job_id").and_then(|v| v.as_str()) {
+        s
+    } else {
+        bail!("{ctx}: expected a UUID string or {{job_id: \"...\"}} map");
+    };
+    Uuid::parse_str(s).map_err(|e| err_msg(format!("{ctx}: invalid job_id {s:?}: {e}")))
+}
+
+fn job_to_summary_json(row: &jobs::Job) -> JsonValue {
+    json!({
+        "job_id":       row.job_id.to_string(),
+        "result_id":    row.result_id.to_string(),
+        "kind":         row.kind,
+        "state":        row.state.as_str(),
+        "owner_node":   row.owner_node.map(|u| u.to_string()),
+        "submitted_at": row.submitted_at,
+        "started_at":   row.started_at,
+        "finished_at":  row.finished_at,
+        "error":        row.error,
+    })
 }
 
 /// `providers_list` — registered providers + the default.

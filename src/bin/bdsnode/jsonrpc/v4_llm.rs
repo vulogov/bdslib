@@ -32,6 +32,11 @@ pub fn register(module: &mut RpcModule<()>) {
     register_providers_list(module);
     register_cache_stats(module);
     register_cache_purge(module);
+    register_complete_async(module);
+    register_analyze_async(module);
+    register_jobs_list(module);
+    register_jobs_status(module);
+    register_jobs_cancel(module);
 }
 
 /// Take an unparsed `jsonrpsee::Params`, ensure it's a JSON object,
@@ -192,6 +197,76 @@ fn register_cache_purge(module: &mut RpcModule<()>) {
             .await
             .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??;
             log::debug!("v4/llm.cache.purge: done");
+            Ok::<JsonValue, ErrorObject>(resp)
+        })
+        .unwrap();
+}
+
+// ── v4/llm.complete_async ────────────────────────────────────────────
+
+fn register_complete_async(module: &mut RpcModule<()>) {
+    module
+        .register_async_method("v4/llm.complete_async", |params, _ctx, _| async move {
+            log::debug!("v4/llm.complete_async: start");
+            let verified = authenticate(params).await?;
+            let resp = run_helper(verified, api::complete_async).await?;
+            log::debug!("v4/llm.complete_async: done");
+            Ok::<JsonValue, ErrorObject>(resp)
+        })
+        .unwrap();
+}
+
+// ── v4/llm.analyze_async ─────────────────────────────────────────────
+
+fn register_analyze_async(module: &mut RpcModule<()>) {
+    module
+        .register_async_method("v4/llm.analyze_async", |params, _ctx, _| async move {
+            log::debug!("v4/llm.analyze_async: start");
+            let verified = authenticate(params).await?;
+            let resp = run_helper(verified, api::analyze_async).await?;
+            log::debug!("v4/llm.analyze_async: done");
+            Ok::<JsonValue, ErrorObject>(resp)
+        })
+        .unwrap();
+}
+
+// ── v4/llm.jobs.list ─────────────────────────────────────────────────
+
+fn register_jobs_list(module: &mut RpcModule<()>) {
+    module
+        .register_async_method("v4/llm.jobs.list", |params, _ctx, _| async move {
+            log::debug!("v4/llm.jobs.list: start");
+            let verified = authenticate(params).await?;
+            let resp = run_helper(verified, api::jobs_list).await?;
+            log::debug!("v4/llm.jobs.list: done");
+            Ok::<JsonValue, ErrorObject>(resp)
+        })
+        .unwrap();
+}
+
+// ── v4/llm.jobs.status ───────────────────────────────────────────────
+
+fn register_jobs_status(module: &mut RpcModule<()>) {
+    module
+        .register_async_method("v4/llm.jobs.status", |params, _ctx, _| async move {
+            log::debug!("v4/llm.jobs.status: start");
+            let verified = authenticate(params).await?;
+            let resp = run_helper(verified, api::job_status).await?;
+            log::debug!("v4/llm.jobs.status: done");
+            Ok::<JsonValue, ErrorObject>(resp)
+        })
+        .unwrap();
+}
+
+// ── v4/llm.jobs.cancel ───────────────────────────────────────────────
+
+fn register_jobs_cancel(module: &mut RpcModule<()>) {
+    module
+        .register_async_method("v4/llm.jobs.cancel", |params, _ctx, _| async move {
+            log::debug!("v4/llm.jobs.cancel: start");
+            let verified = authenticate(params).await?;
+            let resp = run_helper(verified, api::job_cancel).await?;
+            log::debug!("v4/llm.jobs.cancel: done");
             Ok::<JsonValue, ErrorObject>(resp)
         })
         .unwrap();
