@@ -24,6 +24,7 @@ pub mod peer_table;
 pub mod persistence;
 pub mod replication;
 pub mod rpc_client;
+pub mod scheduler_log;
 pub mod tombstones;
 
 pub use config::ClusterConfig;
@@ -81,6 +82,11 @@ pub struct Cluster {
     /// Read by anti-entropy so deletes don't get resurrected from peers
     /// that haven't yet learned about them.
     pub tombstones: tombstones::TombstoneStorage,
+    /// Per-node log of stored-script executions.  Read by the cluster-
+    /// aware Scheduler before firing each script (via the local log +
+    /// `v2/scheduler.last_seen` fan-out) to skip ticks that another
+    /// node already serviced within `scheduler_dedup_window`.
+    pub scheduler_log: scheduler_log::SchedulerLog,
     /// Live counters surfaced through `v2/cluster.peers` and the bdsweb
     /// dashboard so operators can see when the background tasks last ran
     /// and how many entries they touched.
@@ -126,6 +132,7 @@ impl Cluster {
         let peers       = gossip::build_initial_table(node_id, persisted);
         let hints       = hints::HintStorage::open(&network_dir)?;
         let tombstones  = tombstones::TombstoneStorage::open(&network_dir)?;
+        let scheduler_log = scheduler_log::SchedulerLog::open(&network_dir)?;
 
         // Per-Client connection pool.  The default timeout is generous
         // (peer_rpc_timeout + 2s grace); individual calls override with
@@ -152,6 +159,7 @@ impl Cluster {
             http,
             hints,
             tombstones,
+            scheduler_log,
             stats: RwLock::new(ClusterStats::default()),
         }))
     }

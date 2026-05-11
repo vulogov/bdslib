@@ -112,7 +112,17 @@ async fn run(interval_secs: u64, mut shutdown_rx: oneshot::Receiver<()>) {
                             return;
                         }
                     };
-                    let s = bdslib::Scheduler::new(db.clone());
+                    // Cluster-aware Scheduler when this node is part of
+                    // a cluster — peers will be queried via
+                    // v2/scheduler.last_seen before each fire.
+                    // Standalone nodes keep the old per-node behaviour.
+                    let s = match db.cluster() {
+                        Some(c) => {
+                            let window = c.config.scheduler_dedup_window_secs;
+                            bdslib::Scheduler::with_cluster(db.clone(), c.clone(), window)
+                        }
+                        None => bdslib::Scheduler::new(db.clone()),
+                    };
                     match s.run() {
                         Ok(0)  => log::debug!("[scheduler] tick: no scripts due"),
                         Ok(n)  => log::info!("[scheduler] tick: dispatched {n} script(s)"),

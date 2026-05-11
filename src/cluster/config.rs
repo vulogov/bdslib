@@ -36,6 +36,12 @@ pub struct ClusterConfig {
     pub floating_bootstrap:        bool,
     /// Cadence for re-attempting bootstrap when no Alive peers exist.
     pub bootstrap_retry_interval_secs: u64,
+    /// How recently a stored script must have been executed by **any**
+    /// node for the cluster-aware Scheduler to suppress this node's
+    /// fire of the same script.  Standalone nodes ignore this knob.
+    /// Default: 5 minutes.  Set generously: it should comfortably
+    /// exceed the largest plausible inter-node clock skew + tick jitter.
+    pub scheduler_dedup_window_secs: u64,
 }
 
 impl ClusterConfig {
@@ -60,6 +66,7 @@ impl ClusterConfig {
             max_fingerprints_per_peer: 100_000,
             floating_bootstrap:       true,
             bootstrap_retry_interval_secs: 60,
+            scheduler_dedup_window_secs: 300,
         }
     }
 
@@ -158,6 +165,7 @@ impl ClusterConfig {
             max_fingerprints_per_peer: parse_usize("max_fingerprints_per_peer", 100_000),
             floating_bootstrap,
             bootstrap_retry_interval_secs,
+            scheduler_dedup_window_secs: parse_dur("scheduler_dedup_window", 300)?,
         })
     }
 
