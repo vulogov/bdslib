@@ -71,6 +71,17 @@ runtime into a single cohesive system backed by DuckDB.
 |---|---|
 | **Ollama chat (RAG)** | `v2/chat.ollama` — retrieval-augmented generation combining observability + document store context with a local Ollama model; stateful sessions |
 
+### Cluster mode
+
+| Capability | Description |
+|---|---|
+| **P2P membership** | HMAC-authenticated gossip (`v3/cluster.hello` / `ping` / `peers` / `status` / `sync`); Suspect/Dead eviction; recovery probe + auto re-bootstrap.  See [`Documentation/CLUSTER_DETAILS.md`](Documentation/CLUSTER_DETAILS.md). |
+| **Sharded write replication** | `v3/add` / `v3/add.batch` — local commit + `replication_factor − 1` random Alive peers, with hint-on-failure |
+| **Fully-replicated stores** | `v3/doc.add`, `v3/signal.emit`, `v3/script.add`, `v3/*.update`, `v3/*.delete` — every Alive peer + tombstones for converged deletes + 5-minute anti-entropy |
+| **Cluster-wide reads** | `v3/search`, `v3/aggregationsearch`, `v3/topics*`, `v3/rca*`, `v3/trends`, `v3/timeline`, `v3/count`, `v3/keys*`, `v3/primaries*`, `v3/fulltext*`, `v3/signals*`, `v3/tpl.*` — fan-out + per-method merge in `cluster::merge` |
+| **Cluster-aware Bund** | `vm::api::*` helpers + `cls.*` stdlib words — Bund scripts auto-replicate writes and fan-out reads transparently; `?cluster.meta` introspection |
+| **Cluster-aware Scheduler** | `cluster.scheduler_dedup_window` suppresses duplicate fires of the same stored script across nodes via `v2/scheduler.last_seen` fan-out |
+
 ---
 
 ## Components
@@ -274,9 +285,11 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | **Templates** | `v2/tpl.add` · `v2/tpl.get` · `v2/tpl.list` · `v2/tpl.search` · `v2/tpl.update` · `v2/tpl.delete` · `v2/tpl.reindex` · `v2/tpl.template_by_id` · `v2/tpl.templates_by_timestamp` · `v2/tpl.templates_recent` |
 | **Documents** | `v2/doc.add` · `v2/doc.add.file` · `v2/doc.get` · `v2/doc.get.metadata` · `v2/doc.get.content` · `v2/doc.update.metadata` · `v2/doc.update.content` · `v2/doc.delete` · `v2/doc.search` · `v2/doc.search.json` · `v2/doc.search.strings` · `v2/doc.reindex` |
 | **Signals** | `v2/signal.emit` · `v2/signal.update` · `v2/signals` · `v2/signals_query` |
-| **BUND VM** | `v2/eval` · `v2/eval.queued` |
+| **BUND VM** | `v2/eval` (response carries `cluster_meta` from any `cls.*` Bund word the script ran) · `v2/eval.queued` · `v2/scheduler.last_seen` |
 | **Result queues** | `v2/results.len` · `v2/results.push` · `v2/results.pull` · `v2/results.empty` |
 | **Chat** | `v2/chat.ollama` |
+| **Cluster (membership)** | `v3/cluster.hello` · `v3/cluster.peers` · `v3/cluster.ping` · `v3/cluster.status` · `v3/cluster.sync` · `v2/cluster.peers` (unauth mirror) |
+| **Cluster (data plane)** | `v3/add` · `v3/add.batch` · `v3/doc.*` · `v3/signal.*` · `v3/signals*` · `v3/script.*` · `v3/search*` · `v3/aggregationsearch` · `v3/fulltext*` · `v3/keys*` · `v3/primaries*` · `v3/topics*` · `v3/rca*` · `v3/trends` · `v3/timeline` · `v3/count` · `v3/tpl.*` |
 
 ---
 
@@ -288,7 +301,10 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | [Documentation/BDSCLI.md](Documentation/BDSCLI.md) | `bdscli` local CLI — all subcommands |
 | [Documentation/BDSCMD.md](Documentation/BDSCMD.md) | `bdscmd` RPC client — all subcommands and quick reference |
 | [Documentation/BDSWEB.md](Documentation/BDSWEB.md) | `bdsweb` web interface — all pages, startup flags |
+| [Documentation/CLUSTER.md](Documentation/CLUSTER.md) | Cluster mode — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases |
+| [Documentation/CLUSTER_DETAILS.md](Documentation/CLUSTER_DETAILS.md) | Cluster protocol-level reference — gossip, eviction, re-acceptance, schedule control, replication, fan-out reads — with JSON-RPC examples for every mechanism |
 | [Documentation/SCRIPTS.md](Documentation/SCRIPTS.md) | Operational shell scripts for ingest, load testing, and pipeline verification |
+| [examples/cluster/README.md](examples/cluster/README.md) | Eight runnable Bund scripts demonstrating the `cls.*` cluster-aware family + `?cluster.meta` |
 | [Documentation/jsonrpc_api/README.md](Documentation/jsonrpc_api/README.md) | All `v2/*` JSON-RPC methods with parameters, response shapes, and examples |
 | [Documentation/Bund/README.md](Documentation/Bund/README.md) | BUND VM overview, context lifecycle, integration guide |
 | [Documentation/Bund/SYNTAX_AND_VM.md](Documentation/Bund/SYNTAX_AND_VM.md) | BUND language syntax and stack execution model |

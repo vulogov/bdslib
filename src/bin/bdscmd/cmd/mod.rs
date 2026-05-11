@@ -48,6 +48,7 @@ pub mod signal_update;
 pub mod signals;
 pub mod signals_query;
 pub mod search_get;
+pub mod scheduler_last_seen;
 pub mod secondaries;
 pub mod secondary;
 pub mod shards;

@@ -189,6 +189,9 @@ cluster: {
   hint_max_age:              "24h"
   peer_rpc_timeout:          "2s"
   max_fingerprints_per_peer: 100000
+
+  // ── Phase 6: cluster-aware Scheduler dedup (see § 12) ──
+  scheduler_dedup_window:    "5min"
 }
 ```
 
@@ -207,6 +210,7 @@ cluster: {
 | `replication_factor` | `3` | (Phase 3) Target replica count for `v3/add`. |
 | `full_replication_stores` | `["docs","signals","scripts"]` | (Phase 4) Stores that replicate to **every** alive peer. |
 | `peer_rpc_timeout` | `"2s"` | Per-peer RPC deadline for gossip and (Phase 2) fan-out reads. |
+| `scheduler_dedup_window` | `"5min"` | (Phase 6) How recently a stored script must have fired anywhere in the cluster to suppress this node's fire. See § 12. |
 
 ## 6. On-disk layout
 
@@ -223,6 +227,7 @@ All cluster artefacts live under `<dbpath>/network/`:
     peers.json             # last-known peer table; atomic write via tmp+rename (Phase 1)
     hints.duckdb           # hinted-handoff queue used by v3 fan-out (Phase 3+4)
     tombstones.duckdb      # tombstone log for fully-replicated stores (Phase 4)
+    scheduler_log.duckdb   # cluster-aware Scheduler dedup log (Phase 6, see § 12)
 ```
 
 ### 6.1 bdsweb mode-aware routing
@@ -486,7 +491,126 @@ past `hint_max_age`) and heals partition divergences.
   hint replay; missing signals are non-critical (they're append-only
   events).
 
-## 12. What's not yet implemented
+## 12. Cluster-aware Scheduler
+
+By default the cron Scheduler (`bdslib::Scheduler`) runs on every node
+independently — a script with `* * * * *` would fire N times per minute
+on an N-node cluster.  This is correct for cron jobs that are
+intentionally per-node (local cleanups, instance metrics), but
+incorrect for cron jobs that should run **once across the cluster per
+window** (daily aggregations, alert digests, third-party API sync).
+
+When `cluster.enabled = true`, the Scheduler enters cluster-aware
+dedup mode.  Before firing each script tick it checks whether **any**
+node in the cluster has executed the same `script_id` within
+`cluster.scheduler_dedup_window` (default `"5min"`).  If so, this
+node skips the fire (logged at `debug` level).  If not, it records
+the execution locally and fires.
+
+### Configuration
+
+Add to the `cluster:` block of `bds.hjson`:
+
+```hjson
+cluster: {
+  enabled:                 true
+  shared_secret:           "..."
+  bind_url:                "http://10.0.0.1:9000"
+
+  // Skip a tick if any node fired the same script within this window.
+  // Default: "5min".  Standalone nodes ignore this knob.
+  scheduler_dedup_window:  "5min"
+
+  // ... other cluster config ...
+}
+```
+
+Set the window comfortably wider than your `scheduler_interval_secs`
+(default 60s) plus the worst-case clock skew you tolerate.  A 5-minute
+window is appropriate for hourly or daily cron schedules; reduce it
+for sub-hourly ones.
+
+### Per-tick flow
+
+Inside the cluster-aware Scheduler, each due script goes through:
+
+1. **Local check.** Read `cluster::scheduler_log.last_executed(id)`
+   — a cheap DuckDB lookup against
+   `<dbpath>/network/scheduler_log.duckdb`.
+2. **Short-circuit.** If the local log shows an execution within
+   `dedup_window`, skip immediately (no fan-out cost).
+3. **Fan-out.** Otherwise issue `v2/scheduler.last_seen` to every
+   Alive peer in parallel.  Take the **max** observed
+   `last_executed_at`.
+4. **Decide.** If max within window → debug-log + skip.  Otherwise
+   record locally (`scheduler_log.record(id, node_id, now)`) and
+   submit the script to the worker pool exactly as in standalone mode.
+
+The `v2/scheduler.last_seen` RPC is the introspection hook:
+
+```bash
+$ curl -s -X POST http://node1:9000 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"v2/scheduler.last_seen",
+         "params":{"script_id":"019e1559-72f2-7e41-9260-c39b43ea9168"}}'
+
+{"jsonrpc":"2.0","id":1,"result":{"last_executed_at":1778464673}}
+```
+
+`bdscmd scheduler-last-seen <id>` is the operator-facing wrapper.
+
+### Storage
+
+`<dbpath>/network/scheduler_log.duckdb` is a single-table store
+opened lazily by `Cluster::init`:
+
+```sql
+CREATE TABLE scheduler_log (
+    script_id    TEXT   NOT NULL,
+    executed_at  BIGINT NOT NULL,
+    node_id      TEXT   NOT NULL
+);
+CREATE INDEX scheduler_log_script_idx   ON scheduler_log(script_id);
+CREATE INDEX scheduler_log_executed_idx ON scheduler_log(executed_at);
+```
+
+Rows older than `2 × dedup_window` are pruned at the start of every
+tick so the file stays bounded.
+
+### Race window (documented limitation)
+
+There is a sub-second race when nodes tick in lockstep.  A 3-node
+verification (30 s tick interval, 2 min dedup window, `* * * * *`
+script) shows the exact behaviour:
+
+```
+04:44:33  n1/n2/n3 → submitted (cron tick at 22:44:00)
+04:45:03  n1/n2/n3 → skip ... already executed cluster-wide within 120s
+04:45:33  n1/n2/n3 → skip ... already executed cluster-wide within 120s
+```
+
+All three nodes' first tick raced before any record landed, so the
+script fired once **per node** at 04:44:33.  Every subsequent tick
+correctly saw the records (locally and via fan-out) and skipped.
+
+In practice this means: the dedup mechanism is **eventually-
+consistent** — fires once per dedup window cluster-wide, **plus** a
+brief burst at startup when nodes start in lockstep.  Removing the
+race would require a distributed lock; this is an explicit tradeoff
+for the simpler "query peers + record locally" design.  Mitigations:
+
+- Stagger node startup by a few seconds.
+- Pick a dedup window much larger than tick interval + clock skew.
+- For exact-once semantics, schedule on a single node (e.g., a
+  designated leader chosen out-of-band).
+
+### Standalone fallback
+
+When `cluster.enabled = false`, `Scheduler::new` is used as before
+and no scheduler_log is opened.  All historic per-node behaviour is
+preserved byte-for-byte.
+
+## 13. What's not yet implemented
 
 Phases 1–5 ship the full cluster surface — membership, distributed
 reads, replicated writes (sharded + fully-replicated), and operational
@@ -499,6 +623,7 @@ tooling. Status:
 | 3 — Sharded write replication (`v3/add` + hinted handoff) | ✅ shipped |
 | 4 — Fully replicated stores + anti-entropy + tombstones | ✅ shipped |
 | 5 — Operations: AE telemetry, `v3/cluster.sync`, distinct count, LWW updates, signal AE, dashboard polish | ✅ shipped |
+| 6 — Cluster-aware Scheduler dedup (this section) | ✅ shipped |
 
 **Resolved caveats** (called out by previous revisions of this doc, now
 addressed):

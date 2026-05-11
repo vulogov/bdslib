@@ -235,6 +235,12 @@ enum Commands {
 
     /// Semantic search over signals by plain-text query
     SignalsQuery(cmd::signals_query::Cmd),
+
+    /// Read the cluster-aware Scheduler's most recent local execution
+    /// timestamp for a stored script.  Cluster-mode introspection: the
+    /// dedup mechanism that suppresses duplicate fires across the
+    /// cluster reads exactly this value (locally + via fan-out).
+    SchedulerLastSeen(cmd::scheduler_last_seen::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -327,6 +333,7 @@ fn main() -> Result<()> {
         Commands::SignalUpdate(a)             => cmd::signal_update::run(&url, &session, a),
         Commands::Signals(a)                  => cmd::signals::run(&url, &session, a),
         Commands::SignalsQuery(a)             => cmd::signals_query::run(&url, &session, a),
+        Commands::SchedulerLastSeen(a)        => cmd::scheduler_last_seen::run(&url, &session, a),
     }?;
 
     if cli.raw {

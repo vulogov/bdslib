@@ -184,6 +184,8 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 | [SHARD.md](SHARD.md) | `Shard` — single time-partition: telemetry, FTS, vector |
 | [SHARDSCACHE.md](SHARDSCACHE.md) | `ShardsCache` — LRU open-shard pool |
 | [SHARDSMANAGER.md](SHARDSMANAGER.md) | `ShardsManager` — shard lifecycle, ingestion, cross-shard queries |
+| [CLUSTER.md](CLUSTER.md) | **Cluster mode** — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases |
+| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads — with JSON-RPC examples for every mechanism |
 | [EMBEDDINGENGINE.md](EMBEDDINGENGINE.md) | `EmbeddingEngine` — fastembed vector generation |
 | [FTSENGINE.md](FTSENGINE.md) | `FTSEngine` — Tantivy BM25 indexing |
 | [VECTORENGINE.md](VECTORENGINE.md) | `VectorEngine` — HNSW index via VecStore |
@@ -224,7 +226,22 @@ Full reference: [jsonrpc_api/README.md](jsonrpc_api/README.md)
 `v2/doc.delete` · `v2/doc.search` · `v2/doc.search.strings` · `v2/doc.search.json` ·
 `v2/doc.reindex`
 
-**BUND VM** — `v2/eval`
+**BUND VM** — `v2/eval` (response includes `cluster_meta` from any
+`cls.*` helpers the script ran) · `v2/eval.queued` ·
+`v2/scheduler.last_seen` (Scheduler dedup introspection)
+
+**Cluster (membership)** — `v3/cluster.hello` · `v3/cluster.peers` ·
+`v3/cluster.ping` · `v3/cluster.status` · `v3/cluster.sync` ·
+`v2/cluster.peers` (unauthenticated mirror)
+
+**Cluster (data plane v3)** — `v3/add` / `v3/add.batch` (sharded
+write replication) · `v3/doc.add` / `v3/signal.emit` /
+`v3/script.add` (fully-replicated writes) · `v3/search` /
+`v3/search.get` / `v3/aggregationsearch` / `v3/fulltext*` /
+`v3/keys*` / `v3/primaries*` / `v3/topics*` / `v3/rca*` /
+`v3/trends` / `v3/timeline` / `v3/count` / `v3/signals*` /
+`v3/tpl.*` (cluster-wide reads with per-method merge strategies in
+`cluster::merge`)
 
 ### BUND language
 

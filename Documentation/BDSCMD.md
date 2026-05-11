@@ -87,6 +87,7 @@ output suitable for piping into `jq`.
     - [cluster topics / topics-all](#cluster-topics--cluster-topics-all)
     - [cluster secondaries / secondary](#cluster-secondaries--cluster-secondary)
     - [cluster tpl-* read family](#cluster-tpl-list-cluster-tpl-search-cluster-tpl-get-cluster-tpl-template-by-id-cluster-tpl-templates-recent-cluster-tpl-templates-by-timestamp)
+14c. [scheduler-last-seen](#14c-scheduler-last-seen--cluster-scheduler-introspection)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -1963,7 +1964,10 @@ not distinguish between "never created" and "exists but drained". Use
 ### 14.1 `eval`
 
 Compile and evaluate a BUND stack-based script in a named VM context. The result
-is the workbench stack printed as a JSON array.
+is the workbench stack printed as a JSON array.  When the script calls any
+`cls.*` cluster-aware helper, the response also carries a `cluster_meta`
+field describing the most-recent fan-out (peers queried/answered/partial)
+or replication outcome (peers attempted/succeeded/hinted).
 
 ```
 bdscmd eval [OPTIONS] [SOURCE]
@@ -1973,6 +1977,7 @@ bdscmd eval [OPTIONS] [SOURCE]
 |---|---|---|
 | `SOURCE` | stdin | Path to a `.bund` file, `-` for stdin, or omit to read from stdin |
 | `-c, --context` | `default` | Name of the BUND VM context to use |
+| `-m, --cluster-meta` | off | Print a one-line digest of the script's `cluster_meta` to **stderr** after the result.  See "Cluster meta" below. |
 
 **Examples:**
 
@@ -1993,13 +1998,37 @@ bdscmd eval -c analytics my_analytics.bund
 bdscmd eval <<'BUND'
   "syslog" duration 1h topics
 BUND
+
+# cluster-meta digest on stderr; stdout still parses as JSON for jq
+bdscmd eval -m my_script.bund 2>cluster.log | jq .result
 ```
 
-**Output:**
+**Output (stdout):**
 
 ```json
-[42, "hello", [1, 2, 3]]
+{
+  "result":       [42, "hello", [1, 2, 3]],
+  "cluster_meta": null
+}
 ```
+
+`cluster_meta` is `null` when the script ran no `cls.*` helper, or when
+the most-recent helper was local-only (e.g. `cls.signal.get`,
+`cls.scripts.list`).
+
+**Cluster meta (`--cluster-meta` / `-m`)**
+
+When the flag is set and the response carries a non-null `cluster_meta`
+object, bdscmd prints one of:
+
+```
+cluster_meta: read fanned out to 2 peers, 2 answered
+cluster_meta: read fanned out to 3 peers, 2 answered (PARTIAL)
+cluster_meta: write replicated to 2/2 peers (0 hinted)
+cluster_meta: standalone (no cluster fan-out)
+```
+
+The flag never affects stdout — pipelines stay deterministic.
 
 ---
 
@@ -2567,6 +2596,57 @@ Architectural reference: [`Documentation/CLUSTER.md`](CLUSTER.md).
 
 ---
 
+## 14c. `scheduler-last-seen` — Cluster Scheduler Introspection
+
+The cluster-aware Scheduler skips firing a stored script when **any**
+node has run it within `cluster.scheduler_dedup_window` (see
+[`CLUSTER.md` § 12](CLUSTER.md)).  This subcommand reads the **target
+node's** local execution log directly — the same value the Scheduler
+queries via `v2/scheduler.last_seen` during its dedup check.
+
+```
+bdscmd scheduler-last-seen <SCRIPT_ID>
+```
+
+| Argument | Description |
+|---|---|
+| `SCRIPT_ID` | UUIDv7 of the stored script (returned by `script-add` / listed by `scripts`). |
+
+**Output:**
+
+```json
+{
+  "last_executed_at": 1778464673
+}
+```
+
+`last_executed_at` is the Unix-second timestamp of the most recent
+execution this node has recorded.  Returns `null` when:
+
+- this node has never run the script,
+- this node is in standalone mode (no scheduler log opened), or
+- the cluster-aware Scheduler hasn't fired the script yet.
+
+**Examples:**
+
+```bash
+# Verify a script's most-recent fire on each node of the cluster
+for port in 9711 9712 9713; do
+  printf 'node %d: ' "$port"
+  bdscmd -a "http://127.0.0.1:$port" scheduler-last-seen \
+    019e1559-72f2-7e41-9260-c39b43ea9168 \
+    | jq -r '.last_executed_at // "never"'
+done
+```
+
+If the dedup mechanism is healthy, every node in the cluster reports
+roughly the same `last_executed_at` (within the dedup window).  Wide
+spread means the dedup window is shorter than the actual fire cadence
+and scripts are duplicated; widen `scheduler_dedup_window` in
+`bds.hjson`.
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -2616,8 +2696,9 @@ Architectural reference: [`Documentation/CLUSTER.md`](CLUSTER.md).
 | `results-push` | `v2/results.push` | `-i`, `-v`/`-r` |
 | `results-pull` | `v2/results.pull` | `-i` |
 | `results-empty` | `v2/results.empty` | `-i` |
-| `eval` | `v2/eval` | `SOURCE`, `-c` |
+| `eval` | `v2/eval` | `SOURCE`, `-c`, `-m` |
 | `eval-queued` | `v2/eval.queued` | `SOURCE` |
+| `scheduler-last-seen` | `v2/scheduler.last_seen` | `SCRIPT_ID` |
 
 ---
 
