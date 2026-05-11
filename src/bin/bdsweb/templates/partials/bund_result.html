@@ -5,17 +5,33 @@
   </svg>
   <pre class="text-red-300 text-xs font-mono whitespace-pre-wrap break-all">{{ error_msg }}</pre>
 </div>
-{% else if results.is_empty() %}
-<div class="text-center py-8 text-slate-600 text-sm italic">
-  Script ran — workbench is empty.
-</div>
 {% else %}
-<div class="space-y-1">
-  {% for result in results %}
-  <div class="flex items-start gap-3 group">
-    <span class="text-slate-600 text-xs font-mono pt-0.5 select-none w-6 text-right shrink-0">{{ loop.index0 }}</span>
-    <pre class="flex-1 text-xs font-mono text-slate-200 bg-slate-900 border border-slate-800 rounded px-3 py-2 whitespace-pre-wrap break-all group-hover:border-slate-700 transition-colors">{{ result }}</pre>
+  {% if let Some(badge) = cluster_badge %}
+  <details class="mb-2">
+    <summary class="flex justify-end cursor-pointer select-none">
+      <span class="text-xs {{ badge.class }}" title="{{ badge.tooltip }}"
+            style="padding: 0.15rem 0.6rem; border-radius: 9999px;
+                   background: rgba(255,255,255,0.05);
+                   border: 1px solid rgba(255,255,255,0.08);">
+        via {{ badge.label }}{{ badge.extra }}
+      </span>
+    </summary>
+    <pre class="mt-2 text-[10px] font-mono text-slate-400 bg-slate-950 border border-slate-800 rounded px-3 py-2 whitespace-pre-wrap break-all">{{ cluster_meta_json }}</pre>
+  </details>
+  {% endif %}
+
+  {% if results.is_empty() %}
+  <div class="text-center py-8 text-slate-600 text-sm italic">
+    Script ran — workbench is empty.
   </div>
-  {% endfor %}
-</div>
+  {% else %}
+  <div class="space-y-1">
+    {% for result in results %}
+    <div class="flex items-start gap-3 group">
+      <span class="text-slate-600 text-xs font-mono pt-0.5 select-none w-6 text-right shrink-0">{{ loop.index0 }}</span>
+      <pre class="flex-1 text-xs font-mono text-slate-200 bg-slate-900 border border-slate-800 rounded px-3 py-2 whitespace-pre-wrap break-all group-hover:border-slate-700 transition-colors">{{ result }}</pre>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
 {% endif %}
