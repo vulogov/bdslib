@@ -156,18 +156,49 @@ async fn main() -> anyhow::Result<()> {
     // Phase 0 of v4/* LLM surface — register provider clients from the
     // `llm` block of bds.hjson.  Empty manager (no providers) is fine
     // and just means no v4/* RPC will resolve until config is added.
-    if let Some(path) = cli.config.as_deref() {
-        let mgr = bdslib::llm::ProviderManager::load_from_hjson(path);
+    let llm_cfg = match cli.config.as_deref() {
+        Some(path) => bdslib::llm::LlmConfig::load_from_hjson(path),
+        None       => bdslib::llm::LlmConfig::default(),
+    };
+    {
+        let mgr = bdslib::llm::ProviderManager::from_config(llm_cfg.clone());
         if mgr.is_empty() {
-            log::info!("[llm] no providers registered ({path}: missing `llm` block or all skipped)");
+            log::info!("[llm] no providers registered (missing `llm` block or all skipped)");
         } else {
             log::info!("[llm] {} provider(s) registered: {:?} (default={:?})",
                 mgr.len(), mgr.registered(), mgr.default_id());
         }
         bdslib::llm::manager::init(mgr);
-    } else {
-        log::info!("[llm] no --config supplied; provider manager left empty");
-        bdslib::llm::manager::init(bdslib::llm::ProviderManager::empty(None));
+    }
+
+    // Phase 3 — inference cache.  Opens <dbpath>/llm/cache.duckdb when
+    // llm.cache.enabled is true (default) and a config supplied a
+    // dbpath; standalone runs without config fall through to "cache
+    // disabled" and every helper call goes straight to the provider.
+    {
+        let cache_enabled = llm_cfg.cache.enabled;
+        let ttl_secs      = llm_cfg.cache.ttl_secs;
+        let dbpath = cli.config.as_deref().and_then(|p|
+            bdslib::dbpath_from_config(Some(p)).ok()
+        );
+        if !cache_enabled {
+            log::info!("[llm] cache disabled (llm.cache.enabled=false)");
+        } else if let Some(dbpath) = dbpath {
+            let cache_root = std::path::Path::new(&dbpath).join("llm");
+            match bdslib::llm::cache::InferenceCache::open(&cache_root) {
+                Ok(cache) => {
+                    let rows = cache.count().unwrap_or(0);
+                    log::info!("[llm] cache opened at {} (rows={rows}, ttl={ttl_secs}s)",
+                        cache_root.display());
+                    bdslib::llm::cache::init(
+                        bdslib::llm::cache::CacheManager::new(cache, true, ttl_secs),
+                    );
+                }
+                Err(e) => log::warn!("[llm] cache open failed at {}: {e}", cache_root.display()),
+            }
+        } else {
+            log::info!("[llm] cache requested but no dbpath available; cache will stay unset");
+        }
     }
 
     bdslib::init_adam()

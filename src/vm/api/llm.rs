@@ -16,6 +16,7 @@
 //! `analyze` waits for Phase 2 (context.rs).
 
 use crate::common::jsonfingerprint::json_fingerprint;
+use crate::llm::cache::{self as cache, CacheInsert, CacheManager, CachedEntry};
 use crate::llm::chat as llm_chat;
 use crate::llm::context::{self as llm_ctx, ContextSource, RagContext};
 use crate::llm::manager;
@@ -30,7 +31,7 @@ use easy_error::{bail, err_msg, Error};
 use rust_dynamic::value::Value;
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const DEFAULT_SYSTEM_PROMPT: &str =
@@ -112,6 +113,140 @@ fn short_kind(v: &JsonValue) -> &'static str {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Cache disposition
+// ─────────────────────────────────────────────────────────────────────
+
+/// Decision the cache layer made for one helper invocation.
+///
+/// `Enabled(mgr)` means we'll do a get-by-key + a put on miss.
+/// `Disabled(reason)` shapes the `cache` field in the response and llm
+/// meta so callers can see *why* the cache was bypassed.  Reasons:
+///   - `"disabled"`            → global config or no cache manager
+///   - `"disabled:opt-out"`    → per-call `cache: false`
+///   - `"disabled:temperature"`→ temperature > 0 (non-deterministic
+///     workflows shouldn't be cached — see Risk #2 in the proposal)
+enum CacheDisposition {
+    Enabled(&'static CacheManager),
+    Disabled(&'static str),
+}
+
+impl CacheDisposition {
+    fn miss_label(&self) -> &'static str {
+        match self {
+            Self::Enabled(_)     => "miss",
+            Self::Disabled(r)    => r,
+        }
+    }
+}
+
+fn cache_disposition(req: &JsonValue, opts: &CompletionOpts) -> CacheDisposition {
+    if req.get("cache").and_then(|v| v.as_bool()) == Some(false) {
+        return CacheDisposition::Disabled("disabled:opt-out");
+    }
+    let mgr = match cache::manager() {
+        Some(m) if m.enabled() => m,
+        _                      => return CacheDisposition::Disabled("disabled"),
+    };
+    // Don't cache non-deterministic completions.  `temperature == 0`
+    // and `unset` both count as deterministic (most providers default
+    // to a low value that still round-trips identically on rerun for
+    // a given seed; we conservatively cache only when the operator
+    // hasn't explicitly dialled in randomness).
+    if let Some(t) = opts.temperature {
+        if t > 0.0 {
+            return CacheDisposition::Disabled("disabled:temperature");
+        }
+    }
+    CacheDisposition::Enabled(mgr)
+}
+
+fn messages_to_canonical(msgs: &[Message]) -> JsonValue {
+    JsonValue::Array(msgs.iter()
+        .map(|m| json!({"role": m.role.as_str(), "content": m.content}))
+        .collect())
+}
+
+fn options_to_canonical(opts: &CompletionOpts) -> JsonValue {
+    let mut obj = serde_json::Map::new();
+    if let Some(t) = opts.temperature { obj.insert("temperature".into(), json!(t)); }
+    if let Some(m) = opts.max_tokens  { obj.insert("max_tokens".into(),  json!(m)); }
+    if let Some(p) = opts.top_p       { obj.insert("top_p".into(),       json!(p)); }
+    if let Some(s) = opts.seed        { obj.insert("seed".into(),        json!(s)); }
+    if !opts.stop.is_empty()          { obj.insert("stop".into(),        json!(opts.stop)); }
+    JsonValue::Object(obj)
+}
+
+fn response_to_cache(resp: &CompletionResponse) -> JsonValue {
+    json!({
+        "text":          resp.text,
+        "model":         resp.model,
+        "finish_reason": resp.finish_reason,
+        "tokens_in":     resp.tokens_in,
+        "tokens_out":    resp.tokens_out,
+    })
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Try a cache lookup for `key`.  Returns `Some((entry, age_ms))` on
+/// hit (and bumps the `hits` counter); `None` on miss / disabled /
+/// errors (errors are logged so a broken cache never blocks the user).
+fn cache_lookup(disposition: &CacheDisposition, key: &str) -> Option<CachedEntry> {
+    let mgr = match disposition {
+        CacheDisposition::Enabled(m) => *m,
+        CacheDisposition::Disabled(_) => return None,
+    };
+    match mgr.cache().get_by_key(key) {
+        Ok(Some(entry)) => {
+            if let Err(e) = mgr.cache().bump_hits(entry.id) {
+                log::debug!("vm::api::llm: bump_hits failed: {e}");
+            }
+            Some(entry)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            log::debug!("vm::api::llm: cache.get_by_key failed: {e}");
+            None
+        }
+    }
+}
+
+/// Best-effort cache write.  Failures are logged; the user already
+/// has their response.
+fn cache_store(
+    disposition: &CacheDisposition,
+    cache_key:   &str,
+    provider:    &str,
+    model:       &str,
+    kind:        &str,
+    canonical:   JsonValue,
+    response:    JsonValue,
+    source_meta: Option<JsonValue>,
+) {
+    let mgr = match disposition {
+        CacheDisposition::Enabled(m) => *m,
+        CacheDisposition::Disabled(_) => return,
+    };
+    let insert = CacheInsert {
+        id:            Uuid::now_v7(),
+        cache_key:     cache_key.to_owned(),
+        provider:      provider.to_owned(),
+        model:         model.to_owned(),
+        kind:          kind.to_owned(),
+        request_json:  canonical,
+        response_json: response,
+        source_meta,
+        created_at:    now_secs(),
+        expires_at:    mgr.expires_at_for_now(),
+    };
+    if let Err(e) = mgr.cache().put(insert) {
+        log::debug!("vm::api::llm: cache.put failed: {e}");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Public helpers
 // ─────────────────────────────────────────────────────────────────────
 
@@ -141,12 +276,53 @@ pub fn complete(req: Value) -> Result<Value, Error> {
     let messages = parse_messages(&req_json)?;
     let options  = parse_options(&req_json);
 
-    let rq = CompletionRequest { model: model.clone(), messages, options };
+    let disposition = cache_disposition(&req_json, &options);
+    let canonical = json!({
+        "kind":     "complete",
+        "provider": provider.id(),
+        "model":    model.clone(),
+        "messages": messages_to_canonical(&messages),
+        "options":  options_to_canonical(&options),
+    });
+    let key = cache::cache_key(&canonical);
 
+    // Cache hit short-circuit — no provider call.
+    if let Some(entry) = cache_lookup(&disposition, &key) {
+        let resp_text = entry.response_json.get("text").and_then(|v| v.as_str())
+            .unwrap_or("").to_owned();
+        let out = json!({
+            "response":      resp_text,
+            "provider":      entry.provider,
+            "model":         entry.model,
+            "finish_reason": entry.response_json.get("finish_reason").cloned()
+                                 .unwrap_or(JsonValue::Null),
+            "tokens_in":     entry.response_json.get("tokens_in").cloned()
+                                 .unwrap_or(JsonValue::Null),
+            "tokens_out":    entry.response_json.get("tokens_out").cloned()
+                                 .unwrap_or(JsonValue::Null),
+            "ms":            0,
+            "cache":         "hit",
+        });
+        meta::set_llm(json!({
+            "provider":  out["provider"].clone(),
+            "model":     out["model"].clone(),
+            "ms":        0,
+            "tokens_in": out["tokens_in"].clone(),
+            "tokens_out":out["tokens_out"].clone(),
+            "cache":     "hit",
+        }));
+        return Ok(json_to_dynamic(out));
+    }
+
+    let rq = CompletionRequest { model: model.clone(), messages, options };
     let started = Instant::now();
     let resp: CompletionResponse = runtime::block_on(provider.complete(rq))
         .map_err(|e| err_msg(format!("vm::api::llm::complete: provider {:?}: {e}", provider.id())))?;
     let ms = started.elapsed().as_millis() as u64;
+
+    let miss_label = disposition.miss_label();
+    cache_store(&disposition, &key, provider.id(), &resp.model, "complete",
+                canonical, response_to_cache(&resp), None);
 
     let out = json!({
         "response":      resp.text,
@@ -156,6 +332,7 @@ pub fn complete(req: Value) -> Result<Value, Error> {
         "tokens_in":     resp.tokens_in,
         "tokens_out":    resp.tokens_out,
         "ms":            ms,
+        "cache":         miss_label,
     });
     meta::set_llm(json!({
         "provider":   provider.id(),
@@ -163,7 +340,7 @@ pub fn complete(req: Value) -> Result<Value, Error> {
         "ms":         ms,
         "tokens_in":  out["tokens_in"].clone(),
         "tokens_out": out["tokens_out"].clone(),
-        "cache":      "disabled",   // phase 3 flips this to hit/miss
+        "cache":      miss_label,
     }));
     Ok(json_to_dynamic(out))
 }
@@ -296,6 +473,13 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         ).map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?,
     };
 
+    // Chat turns are NOT cached: every turn produces NEW history
+    // and the response depends on the running context.  A cache layer
+    // for chat would have to key on the full history snapshot, which
+    // never repeats — so we expose `cache: "disabled:chat"` to make
+    // the absence explicit.
+    let cache_label = "disabled:chat";
+
     let out = json!({
         "chat_id":         outcome.chat_id.to_string(),
         "response":        outcome.response,
@@ -308,6 +492,7 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         "tokens_in":       outcome.tokens_in,
         "tokens_out":      outcome.tokens_out,
         "ms":              outcome.ms,
+        "cache":           cache_label,
     });
     meta::set_llm(json!({
         "provider":   outcome.provider,
@@ -315,7 +500,7 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         "ms":         outcome.ms,
         "tokens_in":  outcome.tokens_in,
         "tokens_out": outcome.tokens_out,
-        "cache":      "disabled",
+        "cache":      cache_label,
     }));
     Ok(json_to_dynamic(out))
 }
@@ -413,17 +598,75 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
     let provider = resolve_provider(provider_name)?;
     let model = req_json.get("model").and_then(|v| v.as_str()).map(str::to_owned)
         .unwrap_or_else(|| provider.default_model().to_owned());
+    let options = parse_options(&req_json);
+
+    // Build canonical request before deciding cache disposition.  The
+    // fingerprints are sorted so two callers building the same context
+    // from different row orders hash to the same key.
+    let mut fps: Vec<String> = rag.rows.iter().map(|r| r.fingerprint.clone()).collect();
+    fps.sort();
+    let disposition = cache_disposition(&req_json, &options);
+    let canonical = json!({
+        "kind":               format!("analyze:{kind}"),
+        "provider":           provider.id(),
+        "model":              model.clone(),
+        "source":             rag.source_meta.clone(),
+        "fingerprints":       fps,
+        "query":              query.clone(),
+        "prompt_template":    prompt_template.clone(),
+        "system_prompt":      system_prompt.clone(),
+        "options":            options_to_canonical(&options),
+    });
+    let key = cache::cache_key(&canonical);
+
+    if let Some(entry) = cache_lookup(&disposition, &key) {
+        let resp_text = entry.response_json.get("text").and_then(|v| v.as_str())
+            .unwrap_or("").to_owned();
+        let out = json!({
+            "response":      resp_text,
+            "kind":          kind,
+            "source":        rag.source_meta,
+            "n_rows":        rag.n_rows,
+            "provider":      entry.provider,
+            "model":         entry.model,
+            "finish_reason": entry.response_json.get("finish_reason").cloned()
+                                 .unwrap_or(JsonValue::Null),
+            "tokens_in":     entry.response_json.get("tokens_in").cloned()
+                                 .unwrap_or(JsonValue::Null),
+            "tokens_out":    entry.response_json.get("tokens_out").cloned()
+                                 .unwrap_or(JsonValue::Null),
+            "ms":            0,
+            "cache":         "hit",
+        });
+        meta::set_llm(json!({
+            "provider":   out["provider"].clone(),
+            "model":      out["model"].clone(),
+            "ms":         0,
+            "tokens_in":  out["tokens_in"].clone(),
+            "tokens_out": out["tokens_out"].clone(),
+            "kind":       kind,
+            "n_rows":     rag.n_rows,
+            "cache":      "hit",
+        }));
+        return Ok(json_to_dynamic(out));
+    }
 
     let rq = CompletionRequest {
         model:    model.clone(),
         messages: vec![Message::system(&system_prompt), Message::user(&user_message)],
-        options:  parse_options(&req_json),
+        options,
     };
 
     let started = Instant::now();
     let resp: CompletionResponse = runtime::block_on(provider.complete(rq))
         .map_err(|e| err_msg(format!("vm::api::llm::analyze: provider {:?}: {e}", provider.id())))?;
     let ms = started.elapsed().as_millis() as u64;
+
+    let miss_label = disposition.miss_label();
+    cache_store(&disposition, &key, provider.id(), &resp.model,
+                &format!("analyze:{kind}"),
+                canonical, response_to_cache(&resp),
+                Some(rag.source_meta.clone()));
 
     let out = json!({
         "response":      resp.text,
@@ -436,6 +679,7 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
         "tokens_in":     resp.tokens_in,
         "tokens_out":    resp.tokens_out,
         "ms":            ms,
+        "cache":         miss_label,
     });
     meta::set_llm(json!({
         "provider":   provider.id(),
@@ -445,7 +689,7 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
         "tokens_out": out["tokens_out"].clone(),
         "kind":       kind,
         "n_rows":     rag.n_rows,
-        "cache":      "disabled",
+        "cache":      miss_label,
     }));
     Ok(json_to_dynamic(out))
 }

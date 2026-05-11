@@ -33,7 +33,7 @@ use crate::storageengine::StorageEngine;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -318,6 +318,48 @@ pub struct PurgeFilter {
     pub older_than_created: Option<u64>,  // unix seconds — rows strictly older
     pub provider:           Option<String>,
     pub kind:               Option<String>,
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Process-wide CacheManager
+// ─────────────────────────────────────────────────────────────────────
+
+/// Wraps an [`InferenceCache`] together with the runtime `enabled` /
+/// `ttl_secs` knobs from `bds.hjson`.  Stored process-wide via
+/// [`init`] and looked up by `vm::api::llm::*` helpers.
+pub struct CacheManager {
+    cache:    InferenceCache,
+    enabled:  bool,
+    ttl_secs: u64,
+}
+
+impl CacheManager {
+    pub fn new(cache: InferenceCache, enabled: bool, ttl_secs: u64) -> Self {
+        Self { cache, enabled, ttl_secs }
+    }
+
+    pub fn cache(&self)    -> &InferenceCache { &self.cache }
+    pub fn enabled(&self)  -> bool            { self.enabled }
+    pub fn ttl_secs(&self) -> u64             { self.ttl_secs }
+
+    /// Compute the absolute `expires_at` for an entry minted now.
+    /// `ttl_secs == 0` is "never expires" — returns 0.
+    pub fn expires_at_for_now(&self) -> u64 {
+        if self.ttl_secs == 0 { 0 } else { now_secs().saturating_add(self.ttl_secs) }
+    }
+}
+
+static GLOBAL: OnceLock<CacheManager> = OnceLock::new();
+
+/// First-write-wins initialisation, mirroring `manager::init` for
+/// providers.  Safe to call multiple times.
+pub fn init(manager: CacheManager) {
+    let _ = GLOBAL.set(manager);
+}
+
+/// Process-wide cache manager — `None` until [`init`] has been called.
+pub fn manager() -> Option<&'static CacheManager> {
+    GLOBAL.get()
 }
 
 // ─────────────────────────────────────────────────────────────────────

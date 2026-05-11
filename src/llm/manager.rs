@@ -38,12 +38,31 @@ pub struct AnthropicConfig { pub base_url: String, pub api_key_env: String, pub 
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig    { pub base_url: String, pub api_key_env: String, pub default_model: String }
 
+/// Cache sub-block (`llm.cache.*` in bds.hjson).
+///
+/// `enabled` defaults to `true`; `ttl_secs` defaults to 24 hours.  Both
+/// can be overridden per call: setting `cache: false` in the request
+/// bypasses the cache regardless of the global default (used for
+/// non-deterministic `temperature > 0` workflows).
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub enabled:  bool,
+    pub ttl_secs: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self { enabled: true, ttl_secs: 86_400 }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
     pub default:   Option<String>,
     pub ollama:    Option<OllamaConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub openai:    Option<OpenAIConfig>,
+    pub cache:     CacheConfig,
 }
 
 impl LlmConfig {
@@ -105,7 +124,17 @@ impl LlmConfig {
                                   .unwrap_or(DEFAULT_OPENAI_MODEL).to_owned(),
             });
 
-        Self { default, ollama, anthropic, openai }
+        let cache = llm.get("cache").and_then(|v| v.as_object())
+            .map(|c| CacheConfig {
+                enabled:  c.get("enabled").and_then(|v| v.as_bool())
+                            .unwrap_or(CacheConfig::default().enabled),
+                ttl_secs: c.get("ttl_secs").and_then(|v| v.as_f64())
+                            .map(|n| n as u64)
+                            .unwrap_or(CacheConfig::default().ttl_secs),
+            })
+            .unwrap_or_default();
+
+        Self { default, ollama, anthropic, openai, cache }
     }
 }
 

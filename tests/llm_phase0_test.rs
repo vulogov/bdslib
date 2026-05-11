@@ -409,6 +409,7 @@ fn manager_from_config_skips_api_key_providers_when_env_unset() {
             default_model: "claude".into(),
         }),
         openai: None,
+        cache: Default::default(),
     };
     let mgr = ProviderManager::from_config(cfg);
     let names = mgr.registered();
@@ -427,6 +428,7 @@ fn manager_from_config_falls_back_when_default_unregistered() {
         }),
         anthropic: None,
         openai: None,
+        cache: Default::default(),
     };
     let mgr = ProviderManager::from_config(cfg);
     // ollama is the only registered provider, so resolve(None) must
