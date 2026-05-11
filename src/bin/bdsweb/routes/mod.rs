@@ -23,3 +23,4 @@ pub mod templates;
 pub mod templates_summary;
 pub mod trends;
 pub mod version;
+pub mod whoami;

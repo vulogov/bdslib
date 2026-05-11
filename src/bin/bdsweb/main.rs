@@ -8,6 +8,9 @@ mod state;
 use axum::{middleware, routing::{delete, get, post}, Router};
 use clap::Parser;
 use state::AppState;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::compression::CompressionLayer;
 
 #[derive(Parser)]
@@ -43,6 +46,9 @@ struct WebConfig {
     /// all three cases bdsweb runs in open-access mode (no auth
     /// middleware, no login form).
     shared_secret:          String,
+    /// `cluster.auth_rate_limit_per_minute` — Phase 6 rate limit
+    /// applied per-IP to `POST /login`.  `0` disables the limit.
+    auth_rate_limit_per_minute: u32,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -50,6 +56,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         ollama_model: "llama3.2".to_owned(),
         dashboard_refresh_secs: 30,
         shared_secret: String::new(),
+        auth_rate_limit_per_minute: 10,
     };
     let path = match config_path {
         Some(p) => p,
@@ -69,14 +76,19 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     };
     // Cluster block is optional; its absence (or enabled=false)
     // leaves `shared_secret` empty → open-access mode.
-    let shared_secret = obj.get("cluster")
-        .and_then(|v| v.as_object())
-        .and_then(|c| {
-            let enabled = c.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-            if !enabled { return None; }
-            c.get("shared_secret").and_then(|v| v.as_str()).map(str::to_owned)
-        })
+    let cluster_block = obj.get("cluster").and_then(|v| v.as_object());
+    let cluster_enabled = cluster_block
+        .and_then(|c| c.get("enabled").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+    let shared_secret = cluster_block
+        .filter(|_| cluster_enabled)
+        .and_then(|c| c.get("shared_secret").and_then(|v| v.as_str()).map(str::to_owned))
         .unwrap_or_default();
+    let auth_rate_limit_per_minute = cluster_block
+        .filter(|_| cluster_enabled)
+        .and_then(|c| c.get("auth_rate_limit_per_minute").and_then(|v| v.as_f64()))
+        .map(|n| n as u32)
+        .unwrap_or(defaults.auth_rate_limit_per_minute);
     WebConfig {
         ollama_model: obj.get("ollama_model")
             .and_then(|v| v.as_str())
@@ -88,6 +100,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             .unwrap_or(defaults.dashboard_refresh_secs)
             .max(1),
         shared_secret,
+        auth_rate_limit_per_minute,
     }
 }
 
@@ -192,9 +205,12 @@ async fn main() {
         .route("/scripts/run",            post(routes::scripts::run))
         .route("/scripts/{id}",           delete(routes::scripts::delete))
         .route("/version",        get(routes::version::version))
+        .route("/whoami",         get(routes::whoami::whoami))
 
         // ── Authentication ──────────────────────────────────────────
-        .route("/login",  get(routes::login::page).post(routes::login::submit))
+        // GET stays here (unlimited); POST is split out onto a
+        // rate-limited sub-router below and merged in.
+        .route("/login",  get(routes::login::page))
         .route("/logout", post(routes::login::logout))
 
         // ── Administration → User management ─────────────────────────
@@ -209,8 +225,38 @@ async fn main() {
         // Open paths (/login, /logout, /version) are checked inside the
         // middleware so we don't have to remove their layers here.
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_session))
-        .layer(CompressionLayer::new())
-        .with_state(state);
+        .layer(CompressionLayer::new());
+
+    // POST /login lives on its own sub-router with a tower_governor
+    // rate-limit layer.  Configured per-IP via the cluster config's
+    // auth_rate_limit_per_minute knob; merged into the main app so
+    // the URL stays /login.  The per-username limiter in
+    // bdsnode/v3/user.authenticate runs on top of this — two
+    // independent defences against brute force.
+    let app = if cfg.auth_rate_limit_per_minute == 0 {
+        log::info!("bdsweb /login rate limiting disabled (auth_rate_limit_per_minute=0)");
+        app.route("/login", post(routes::login::submit))
+    } else {
+        let per_request_ms = (60_000_f64 / cfg.auth_rate_limit_per_minute as f64) as u64;
+        let governor_cfg = GovernorConfigBuilder::default()
+            .per_millisecond(per_request_ms.max(1))
+            .burst_size(cfg.auth_rate_limit_per_minute)
+            .finish()
+            .expect("governor config valid");
+        log::info!(
+            "bdsweb /login rate limit: {} requests/min/IP (burst={})",
+            cfg.auth_rate_limit_per_minute, cfg.auth_rate_limit_per_minute,
+        );
+        let limited = Router::<AppState>::new()
+            .route("/login", post(routes::login::submit))
+            .layer(GovernorLayer { config: Arc::new(governor_cfg) });
+        app.merge(limited)
+    };
+
+    // Bind state on the composed Router.  This converts
+    // `Router<AppState>` → `Router<()>` so axum::serve can use
+    // `into_make_service_with_connect_info`.
+    let app = app.with_state(state);
 
     let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -218,5 +264,10 @@ async fn main() {
         .unwrap_or_else(|e| panic!("cannot bind {addr}: {e}"));
 
     log::info!("bdsweb listening on http://{addr}  →  bdsnode at {}", args.node);
-    axum::serve(listener, app).await.expect("server error");
+    // ConnectInfo enables tower_governor's PeerIpKeyExtractor on the
+    // /login POST sub-router — without it the per-IP rate limiter
+    // has nothing to key on and rejects every request.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .expect("server error");
 }

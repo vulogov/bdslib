@@ -105,10 +105,12 @@ pub async fn require_session(
         return next.run(req).await;
     }
 
-    // Always-public paths.  Order matters: longer prefixes first so
-    // /logout doesn't accidentally match /lo.
+    // Always-public paths.  /whoami is included because base.html's
+    // JS hits it on every page load to decide whether to render the
+    // username + Sign out button; it must work BEFORE the visitor
+    // has a session cookie (returns `{authenticated: false}` then).
     let path = req.uri().path();
-    if matches!(path, "/login" | "/logout" | "/version") {
+    if matches!(path, "/login" | "/logout" | "/version" | "/whoami") {
         return next.run(req).await;
     }
 

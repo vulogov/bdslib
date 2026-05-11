@@ -23,6 +23,7 @@ pub mod hmac_auth;
 pub mod merge;
 pub mod peer_table;
 pub mod persistence;
+pub mod rate_limit;
 pub mod replication;
 pub mod rpc_client;
 pub mod scheduler_log;
@@ -100,6 +101,12 @@ pub struct Cluster {
     /// per-row `auth_method` to the right impl.  Default registry is
     /// password-only; OAuth/LDAP impls register at startup.
     pub verifiers: Arc<credential::VerifierRegistry>,
+    /// In-process rate limiter keyed by **username**, consulted by
+    /// `v3/user.authenticate` to slow down brute-force attempts.
+    /// Budget = `config.auth_rate_limit_per_minute` per trailing 60 s.
+    /// Cooperates with the per-IP tower_governor layer mounted in
+    /// bdsweb on `POST /login`.
+    pub auth_rate_limiter: Arc<rate_limit::RateLimiter>,
     /// Live counters surfaced through `v2/cluster.peers` and the bdsweb
     /// dashboard so operators can see when the background tasks last ran
     /// and how many entries they touched.
@@ -186,6 +193,7 @@ impl Cluster {
             scheduler_log,
             users,
             verifiers,
+            auth_rate_limiter: Arc::new(rate_limit::RateLimiter::new()),
             stats: RwLock::new(ClusterStats::default()),
         }))
     }

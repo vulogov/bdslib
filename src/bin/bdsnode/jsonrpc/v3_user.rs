@@ -282,6 +282,25 @@ fn register_authenticate(module: &mut RpcModule<()>) {
         let username = p.username.clone();
         let password = p.password.clone();
 
+        // 0. Rate-limit by username.  Brute-force attackers rotate
+        // IPs but stay focused on the same handful of accounts;
+        // throttling by username is the dual to the per-IP gate
+        // bdsweb mounts on POST /login.
+        // Returns the same generic "invalid credentials" so an
+        // attacker can't probe rate-limit state separately from
+        // credential state.
+        let cluster_for_limit = bdslib::get_db().ok().and_then(|d| d.cluster().cloned());
+        if let Some(c) = &cluster_for_limit {
+            let max     = c.config.auth_rate_limit_per_minute;
+            let window  = std::time::Duration::from_secs(60);
+            if !c.auth_rate_limiter.try_acquire(&username, max, window) {
+                log::info!("[v3/user.authenticate] rate-limited username={username:?}");
+                return Ok::<JsonValue, ErrorObject>(serde_json::json!({
+                    "ok": false, "error": "invalid credentials",
+                }));
+            }
+        }
+
         // 1. Try local verify.
         let local = tokio::task::spawn_blocking(move || -> Result<Option<String>, ErrorObject<'static>> {
             let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;

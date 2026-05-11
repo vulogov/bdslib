@@ -22,7 +22,7 @@ use axum_extra::extract::{cookie::{Cookie, SameSite}, CookieJar};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{auth::SESSION_COOKIE, client::rpc, error::AppError, state::AppState};
+use crate::{auth::SESSION_COOKIE, client::rpc, state::AppState};
 
 #[derive(Template)]
 #[template(path = "login.html")]
@@ -45,15 +45,32 @@ pub struct LoginQuery {
 }
 
 pub async fn page(
-    State(state): State<AppState>,
-    Query(q):    Query<LoginQuery>,
-) -> Result<Html<String>, AppError> {
-    Ok(Html(LoginPage {
+    State(state):  State<AppState>,
+    jar:           CookieJar,
+    Query(q):      Query<LoginQuery>,
+) -> Response {
+    // If the visitor already has a valid session, send them home
+    // immediately instead of re-rendering the form.  Avoids the
+    // awkward "I'm signed in but seeing a login page" state and
+    // makes /login → ?next= → / → /login round-trips impossible.
+    if !state.shared_secret.is_empty() {
+        if let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) {
+            if bdslib::cluster::session::verify_session_token(&token, &state.shared_secret).is_ok() {
+                let dest = if q.next.is_empty() || q.next == "/login" { "/".to_owned() } else { q.next };
+                return Redirect::to(&dest).into_response();
+            }
+        }
+    }
+    match (LoginPage {
         error_msg:   String::new(),
         has_error:   false,
         next:        q.next,
         open_access: state.shared_secret.is_empty(),
-    }.render()?))
+    }).render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e)   => (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                     format!("template error: {e}")).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

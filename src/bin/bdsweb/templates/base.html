@@ -238,8 +238,42 @@
           </a>
         </div>
       </div>
+
+      <!-- Current user + Sign out (populated client-side via /whoami) -->
+      <div id="auth-status" class="flex items-center gap-2" style="margin-left:0.5rem;">
+        <!-- Hidden until /whoami responds with authenticated=true. -->
+        <span id="auth-username" class="text-xs text-slate-400" style="display:none;"></span>
+        <form id="auth-signout" method="post" action="/logout" style="display:none;">
+          <button type="submit"
+                  class="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800"
+                  title="Sign out">Sign out</button>
+        </form>
+      </div>
     </div>
   </nav>
+
+  <script>
+    // Populate the username + Sign out button on every page that
+    // extends base.html.  /whoami is unauthenticated-safe — it
+    // returns {authenticated:false} for open-access mode and the
+    // bootstrap window so the nav stays clean.
+    (async () => {
+      try {
+        const r = await fetch('/whoami', { credentials: 'same-origin' });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!data.authenticated) return;
+        const label = data.display_name || data.username || '—';
+        const span  = document.getElementById('auth-username');
+        const form  = document.getElementById('auth-signout');
+        if (span && label) {
+          span.textContent = '👤 ' + label;
+          span.style.display = '';
+        }
+        if (form) form.style.display = '';
+      } catch (e) { /* ignore — silently degrade */ }
+    })();
+  </script>
 
   <!-- ── Page content ──────────────────────────────────────────────────────── -->
   <main class="max-w-screen-xl mx-auto px-6 py-8">
