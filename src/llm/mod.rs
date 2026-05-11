@@ -10,6 +10,7 @@
 pub mod cache;
 pub mod chat;
 pub mod context;
+pub mod dedup;
 pub mod manager;
 pub mod providers;
 pub mod types;
