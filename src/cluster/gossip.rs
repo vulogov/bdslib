@@ -61,45 +61,12 @@ pub async fn tick(
     tick_no: u64,
 ) -> GossipTickResult {
     let cfg = &cluster.config;
-    let alive: Vec<Peer> = cluster.peers.read().alive();
-    if alive.is_empty() {
-        return GossipTickResult::NoAlivePeer;
-    }
-
     let timeout = Duration::from_secs(cfg.peer_rpc_timeout_secs);
 
-    // Parallel ping across every Alive peer.  Each result carries the
-    // peer's node_id so we can update bookkeeping without a second
-    // table read.
-    let mut joins = Vec::with_capacity(alive.len());
-    for peer in alive.iter().cloned() {
-        let http_c    = http.clone();
-        let secret    = cfg.shared_secret.clone();
-        let url       = peer.url.clone();
-        let node_id   = peer.node_id;
-        joins.push(tokio::spawn(async move {
-            let outcome = rpc_client::cluster_ping(&http_c, &url, &secret, timeout).await;
-            (node_id, url, outcome)
-        }));
-    }
-    let mut succeeded = 0usize;
-    let mut last_ok_url: Option<String> = None;
-    for j in joins {
-        let (node_id, url, outcome) = match j.await {
-            Ok(t)  => t,
-            Err(e) => { log::warn!("[cluster] ping task panicked: {e}"); continue; }
-        };
-        match outcome {
-            Ok(_resp) => {
-                cluster.peers.write().record_alive(node_id);
-                succeeded += 1;
-                last_ok_url = Some(url);
-            }
-            Err(e) => {
-                cluster.peers.write().record_miss(node_id);
-                log::debug!("[cluster] ping {url} failed: {e}");
-            }
-        }
+    let PingFanOutResult { succeeded: _, last_ok_url } =
+        ping_all_alive(&cluster.peers, http, &cfg.shared_secret, timeout).await;
+    if last_ok_url.is_none() && cluster.peers.read().alive_count() == 0 {
+        return GossipTickResult::NoAlivePeer;
     }
 
     // Every Nth tick, exchange peer views with ONE successful peer so
@@ -126,7 +93,6 @@ pub async fn tick(
                 }
             }
             cluster.persist_peers_best_effort();
-            let _ = succeeded;  // accounted for via record_alive already
             GossipTickResult::Merged { peer: pull_target, new_peers: new_count }
         }
         Err(e) => {
@@ -134,6 +100,71 @@ pub async fn tick(
             GossipTickResult::PeersFailed { peer: pull_target, reason: e.to_string() }
         }
     }
+}
+
+/// Summary of one [`ping_all_alive`] invocation.  Exposed to the unit
+/// test that exercises the fan-out against mock peers.
+#[derive(Debug, Default)]
+pub struct PingFanOutResult {
+    /// How many of the Alive peers answered successfully.
+    pub succeeded:   usize,
+    /// URL of the last peer that answered (or `None` when every peer
+    /// failed).  Used by `tick` to pick the pull-target on
+    /// peer-exchange ticks.
+    pub last_ok_url: Option<String>,
+}
+
+/// Fan out `v3/cluster.ping` to every Alive peer in `table` in
+/// parallel.  Updates `last_seen` for each peer that answered and
+/// bumps `miss_count` on every peer that failed.  Tick wall-clock
+/// cost is bounded by `timeout` regardless of the peer count because
+/// pings run concurrently.
+///
+/// Returns counts the caller can act on (e.g. to pick a pull-target
+/// or to log "no Alive peers" when the table is empty).
+pub async fn ping_all_alive(
+    table:   &SharedPeerTable,
+    http:    &reqwest::Client,
+    secret:  &str,
+    timeout: Duration,
+) -> PingFanOutResult {
+    let alive: Vec<Peer> = table.read().alive();
+    if alive.is_empty() {
+        return PingFanOutResult::default();
+    }
+
+    let mut joins = Vec::with_capacity(alive.len());
+    for peer in alive.iter().cloned() {
+        let http_c  = http.clone();
+        let secret  = secret.to_owned();
+        let url     = peer.url.clone();
+        let node_id = peer.node_id;
+        joins.push(tokio::spawn(async move {
+            let outcome = rpc_client::cluster_ping(&http_c, &url, &secret, timeout).await;
+            (node_id, url, outcome)
+        }));
+    }
+
+    let mut succeeded = 0usize;
+    let mut last_ok_url: Option<String> = None;
+    for j in joins {
+        let (node_id, url, outcome) = match j.await {
+            Ok(t)  => t,
+            Err(e) => { log::warn!("[cluster] ping task panicked: {e}"); continue; }
+        };
+        match outcome {
+            Ok(_resp) => {
+                table.write().record_alive(node_id);
+                succeeded += 1;
+                last_ok_url = Some(url);
+            }
+            Err(e) => {
+                table.write().record_miss(node_id);
+                log::debug!("[cluster] ping {url} failed: {e}");
+            }
+        }
+    }
+    PingFanOutResult { succeeded, last_ok_url }
 }
 
 /// Outcome of one bootstrap pass.  Returned so the caller can update
