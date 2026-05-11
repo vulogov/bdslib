@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 #[derive(Deserialize, Default)]
 pub struct Params {
@@ -64,10 +64,14 @@ fn truncate(s: &str, n: usize) -> String {
 
 #[derive(Template)]
 #[template(path = "logs.html")]
-struct LogsPage { duration: String, q: String }
+struct LogsPage { duration: String, q: String, mode_badge: ModeBadge }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
-    Ok(Html(LogsPage { duration: p.duration, q: p.q }.render()?))
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
+    Ok(Html(LogsPage { duration: p.duration, q: p.q, mode_badge }.render()?))
 }
 
 // ── HTMX: key cloud ──────────────────────────────────────────────────────────
@@ -147,14 +151,21 @@ pub async fn topics(
 
 #[derive(Template)]
 #[template(path = "partials/log_rows.html")]
-struct LogRows { rows: Vec<LogRow>, duration: String, q: String }
+struct LogRows {
+    rows:       Vec<LogRow>,
+    duration:   String,
+    q:          String,
+    mode_badge: Option<ModeBadge>,
+}
 
 pub async fn results(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
     if p.q.is_empty() {
-        return Ok(Html(LogRows { rows: vec![], duration: p.duration, q: p.q }.render()?));
+        return Ok(Html(LogRows {
+            rows: vec![], duration: p.duration, q: p.q, mode_badge: None,
+        }.render()?));
     }
 
     let resp = rpc_versioned(&state, "v2/search.get", "v3/search.get", json!({
@@ -164,9 +175,12 @@ pub async fn results(
         "limit":    50,
     })).await?;
 
+    let mode_badge = Some(ModeBadge::from_response(&resp));
+
     Ok(Html(LogRows {
         rows:     to_rows(&resp["results"]),
         duration: p.duration,
         q:        p.q,
+        mode_badge,
     }.render()?))
 }

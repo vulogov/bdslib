@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::{client::{rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -40,9 +40,14 @@ struct DenoisePage {
     noise_threshold: f32,
     max_kept:        usize,
     max_removed:     usize,
+    mode_badge:      ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(DenoisePage {
         duration:        p.duration,
         n:               p.n,
@@ -50,6 +55,7 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
         noise_threshold: p.noise_threshold,
         max_kept:        p.max_kept,
         max_removed:     p.max_removed,
+        mode_badge,
     }.render()?))
 }
 
@@ -76,6 +82,7 @@ struct DenoiseResult {
     has_removed:     bool,
     kept:            Vec<DenoiseRow>,
     removed:         Vec<DenoiseRow>,
+    mode_badge:      ModeBadge,
 }
 
 fn rows(arr: Option<&Vec<JsonValue>>) -> Vec<DenoiseRow> {
@@ -113,6 +120,7 @@ pub async fn results(
 
     let has_kept    = !kept.is_empty();
     let has_removed = !removed.is_empty();
+    let mode_badge  = ModeBadge::from_response(&resp);
 
     Ok(Html(DenoiseResult {
         duration:        p.duration,
@@ -126,5 +134,6 @@ pub async fn results(
         has_removed,
         kept,
         removed,
+        mode_badge,
     }.render()?))
 }

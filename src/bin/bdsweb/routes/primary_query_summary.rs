@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -26,13 +26,19 @@ struct PrimaryQuerySummaryPage {
     q:             String,
     max_sentences: usize,
     min_word_len:  usize,
+    mode_badge:    ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(PrimaryQuerySummaryPage {
         q:             p.q,
         max_sentences: p.max_sentences,
         min_word_len:  p.min_word_len,
+        mode_badge,
     }.render()?))
 }
 
@@ -59,7 +65,7 @@ pub async fn results(
         }.render()?));
     }
 
-    let resp = rpc(&state, "v2/summary_for_query", json!({
+    let resp = rpc_versioned(&state, "v2/summary_for_query", "v3/summary_for_query", json!({
         "session":       SESSION,
         "query":         p.q,
         "max_sentences": p.max_sentences,

@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::{client::{rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -36,15 +36,21 @@ struct AnomalyPage {
     min_word_len:      usize,
     anomaly_threshold: f32,
     max_anomalies:     usize,
+    mode_badge:        ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(AnomalyPage {
         duration:          p.duration,
         n:                 p.n,
         min_word_len:      p.min_word_len,
         anomaly_threshold: p.anomaly_threshold,
         max_anomalies:     p.max_anomalies,
+        mode_badge,
     }.render()?))
 }
 
@@ -70,6 +76,7 @@ struct AnomalyResult {
     mean_rarity:     f64,
     has_anomalies:   bool,
     anomalies:       Vec<AnomalyRow>,
+    mode_badge:      ModeBadge,
 }
 
 pub async fn results(
@@ -112,6 +119,7 @@ pub async fn results(
         .unwrap_or_default();
 
     let has_anomalies = !anomalies.is_empty();
+    let mode_badge = ModeBadge::from_response(&resp);
 
     Ok(Html(AnomalyResult {
         duration:          p.duration,
@@ -123,5 +131,6 @@ pub async fn results(
         mean_rarity,
         has_anomalies,
         anomalies,
+        mode_badge,
     }.render()?))
 }

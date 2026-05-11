@@ -84,6 +84,7 @@ mod timeline;
 mod v3_add;
 mod v3_add_batch;
 mod v3_add_file;
+mod v3_aggregationsearch;
 mod v3_anomaly_recent;
 mod v3_count;
 mod v3_denoise_recent;
@@ -107,9 +108,11 @@ mod v3_search_get;
 mod v3_secondaries;
 mod v3_signal_emit;
 mod v3_signals;
+mod v3_summaries;
 mod v3_timeline;
 mod v3_topics;
 mod v3_tpl;
+mod v3_trends;
 
 use jsonrpsee::RpcModule;
 
@@ -219,6 +222,9 @@ pub fn build_module() -> RpcModule<()> {
     v3_search_get::register(&mut module);
     v3_secondaries::register(&mut module);
     v3_tpl::register(&mut module);
+    v3_aggregationsearch::register(&mut module);
+    v3_trends::register(&mut module);
+    v3_summaries::register(&mut module);
     status::register(&mut module);
     topics::register(&mut module);
     topics_all::register(&mut module);

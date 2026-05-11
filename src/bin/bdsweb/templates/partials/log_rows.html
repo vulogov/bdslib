@@ -1,3 +1,12 @@
+{% if let Some(badge) = mode_badge %}
+<div class="flex justify-end mb-2">
+  <span class="text-xs {{ badge.class }}" title="{{ badge.tooltip }}"
+        style="padding: 0.15rem 0.6rem; border-radius: 9999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);">
+    via {{ badge.label }}{{ badge.extra }}
+  </span>
+</div>
+{% endif %}
+
 {% if rows.is_empty() %}
 <div class="text-center py-12 text-slate-500 text-sm">
   No log entries matching <span class="text-slate-300">"{{ q }}"</span> in the last <strong>{{ duration }}</strong>.

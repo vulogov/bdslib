@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -177,15 +177,21 @@ struct RcaPage {
     bucket_secs:       u64,
     min_support:       usize,
     jaccard_threshold: f64,
+    mode_badge:        ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(RcaPage {
         duration:          p.duration,
         failure_key:       p.failure_key,
         bucket_secs:       p.bucket_secs,
         min_support:       p.min_support,
         jaccard_threshold: p.jaccard_threshold,
+        mode_badge,
     }.render()?))
 }
 
@@ -194,10 +200,11 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
 #[derive(Template)]
 #[template(path = "partials/rca_results.html")]
 struct RcaResults {
-    duration: String,
-    summary:  RcaSummary,
-    causes:   Vec<CausalRow>,
-    clusters: Vec<ClusterCard>,
+    duration:   String,
+    summary:    RcaSummary,
+    causes:     Vec<CausalRow>,
+    clusters:   Vec<ClusterCard>,
+    mode_badge: ModeBadge,
 }
 
 pub async fn results(
@@ -216,6 +223,7 @@ pub async fn results(
     })).await?;
 
     let (summary, causes, clusters) = extract_rca(&resp);
+    let mode_badge = ModeBadge::from_response(&resp);
 
-    Ok(Html(RcaResults { duration: p.duration, summary, causes, clusters }.render()?))
+    Ok(Html(RcaResults { duration: p.duration, summary, causes, clusters, mode_badge }.render()?))
 }

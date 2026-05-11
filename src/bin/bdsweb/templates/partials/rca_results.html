@@ -3,6 +3,14 @@
              bg-green-900 text-green-300 bg-blue-900 text-blue-300
              text-green-400 text-amber-400"></span>
 
+<!-- Mode badge -->
+<div class="flex justify-end mb-2">
+  <span class="text-xs {{ mode_badge.class }}" title="{{ mode_badge.tooltip }}"
+        style="padding: 0.15rem 0.6rem; border-radius: 9999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);">
+    via {{ mode_badge.label }}{{ mode_badge.extra }}
+  </span>
+</div>
+
 {% if summary.n_events == 0 %}
 <div class="text-center py-16 text-slate-500 text-sm">
   No events found in the last <span class="text-slate-300 font-medium">{{ duration }}</span>.

@@ -51,6 +51,103 @@ pub async fn rpc_versioned(
     rpc(state, method, params).await
 }
 
+/// Visual badge shown on Telemetry / Analysis / RCA result pages telling
+/// the operator whether the request went through the cluster (v3/*) or
+/// the local node only (v2/*).  Each affected route builds this from
+/// the v3 response's `cluster_meta` block, or from the cached
+/// `cluster_enabled` flag when the response didn't carry one.
+#[derive(Debug, Clone)]
+pub struct ModeBadge {
+    /// Display text: `"Cluster"` or `"Standalone"`.
+    pub label:   String,
+    /// Tailwind colour class for the badge text.
+    pub class:   String,
+    /// Suffix like ` · 2/2 peers` (empty when not in cluster mode).
+    pub extra:   String,
+    /// `title=` tooltip with a one-line explanation.
+    pub tooltip: String,
+}
+
+impl ModeBadge {
+    /// Build from a v3 response containing a `cluster_meta` object.
+    /// Falls back to `from_enabled(false)` when the response has no
+    /// cluster_meta (i.e. we called v2/* — standalone mode).
+    pub fn from_response(resp: &Value) -> Self {
+        let meta = match resp.get("cluster_meta") {
+            Some(m) if m.is_object() => m,
+            _ => return Self::from_enabled(false),
+        };
+        let enabled = meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !enabled {
+            return Self::from_enabled(false);
+        }
+        let queried  = meta.get("peers_queried").and_then(|v| v.as_u64()).unwrap_or(0);
+        let answered = meta.get("peers_answered").and_then(|v| v.as_u64()).unwrap_or(0);
+        let partial  = meta.get("partial").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let class = if partial { "text-yellow-400" } else { "text-emerald-400" };
+        let extra = format!(" · {answered}/{queried} peer{}", if queried == 1 { "" } else { "s" });
+        let tooltip = format!(
+            "Cluster mode — {answered}/{queried} peer{} answered.{}",
+            if queried == 1 { "" } else { "s" },
+            if partial { "  Partial response: some peers did not reply within the timeout." } else { "" },
+        );
+        Self { label: "Cluster".to_owned(), class: class.to_owned(), extra, tooltip }
+    }
+
+    /// Build a badge for cases where the response carries no
+    /// cluster_meta (RPC failed, or v2/* was called without going
+    /// through `rpc_versioned`).  Uses just the on/off flag.
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self {
+                label:   "Cluster".to_owned(),
+                class:   "text-emerald-400".to_owned(),
+                extra:   String::new(),
+                tooltip: "Cluster mode (no per-call peer info available).".to_owned(),
+            }
+        } else {
+            Self {
+                label:   "Standalone".to_owned(),
+                class:   "text-slate-400".to_owned(),
+                extra:   String::new(),
+                tooltip: "Standalone mode — query ran against this node only.".to_owned(),
+            }
+        }
+    }
+
+    /// Badge for v2-only methods running on a clustered bdsnode.  The
+    /// node IS in cluster mode but the operation itself has no v3
+    /// counterpart, so it only sees this node's local data — operators
+    /// should know they're looking at a partial view of the cluster.
+    pub fn local_only_in_cluster() -> Self {
+        Self {
+            label:   "Local node".to_owned(),
+            class:   "text-yellow-400".to_owned(),
+            extra:   " (no cluster variant)".to_owned(),
+            tooltip: "Cluster mode is enabled on this node, but this operation has no cluster-aware \
+                      v3/* counterpart — the result reflects only this node's local data.".to_owned(),
+        }
+    }
+}
+
+/// Pick the right badge to render on a **page header** given whether the
+/// underlying RPC has a v3/* variant.  Reads the cached cluster_enabled
+/// flag so each page load doesn't pay an extra round-trip.
+///
+/// - `has_v3 == true,  cluster on`  → "via Cluster"      (emerald)
+/// - `has_v3 == true,  cluster off` → "via Standalone"   (slate)
+/// - `has_v3 == false, cluster on`  → "via Local node"   (yellow)
+/// - `has_v3 == false, cluster off` → "via Standalone"   (slate)
+pub async fn mode_badge_for_page(state: &AppState, has_v3: bool) -> ModeBadge {
+    let enabled = cluster_enabled(state).await;
+    if enabled && !has_v3 {
+        ModeBadge::local_only_in_cluster()
+    } else {
+        ModeBadge::from_enabled(enabled)
+    }
+}
+
 pub async fn rpc(state: &AppState, method: &str, params: Value) -> Result<Value, AppError> {
     let payload = json!({
         "jsonrpc": "2.0",

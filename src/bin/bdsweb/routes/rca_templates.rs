@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 use super::rca::{extract_rca, CausalRow, ClusterCard, RcaSummary};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
@@ -40,9 +40,14 @@ struct RcaTemplatesPage {
     min_support:       usize,
     jaccard_threshold: f64,
     max_keys:          usize,
+    mode_badge:        ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(RcaTemplatesPage {
         duration:          p.duration,
         failure_body:      p.failure_body,
@@ -50,6 +55,7 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
         min_support:       p.min_support,
         jaccard_threshold: p.jaccard_threshold,
         max_keys:          p.max_keys,
+        mode_badge,
     }.render()?))
 }
 
@@ -58,10 +64,11 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
 #[derive(Template)]
 #[template(path = "partials/rca_templates_results.html")]
 struct RcaTemplatesResults {
-    duration: String,
-    summary:  RcaSummary,
-    causes:   Vec<CausalRow>,
-    clusters: Vec<ClusterCard>,
+    duration:   String,
+    summary:    RcaSummary,
+    causes:     Vec<CausalRow>,
+    clusters:   Vec<ClusterCard>,
+    mode_badge: ModeBadge,
 }
 
 /// Rename the few field names that differ between v2/rca and v2/rca.templates
@@ -102,7 +109,8 @@ pub async fn results(
         "max_keys":          p.max_keys,
     })).await?;
 
+    let mode_badge = ModeBadge::from_response(&resp);
     let (summary, causes, clusters) = extract_rca(&normalize_to_rca_shape(resp));
 
-    Ok(Html(RcaTemplatesResults { duration: p.duration, summary, causes, clusters }.render()?))
+    Ok(Html(RcaTemplatesResults { duration: p.duration, summary, causes, clusters, mode_badge }.render()?))
 }

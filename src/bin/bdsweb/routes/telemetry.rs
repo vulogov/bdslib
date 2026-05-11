@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 #[derive(Deserialize, Default)]
 pub struct Params {
@@ -55,13 +55,23 @@ fn hit_to_row(v: &serde_json::Value) -> HitRow {
 
 #[derive(Template)]
 #[template(path = "telemetry.html")]
-struct TelemetryPage { duration: String, q: String, limit: usize }
+struct TelemetryPage {
+    duration:   String,
+    q:          String,
+    limit:      usize,
+    mode_badge: ModeBadge,
+}
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(TelemetryPage {
         duration: p.duration,
         q:        p.q,
         limit:    clamp_limit(p.limit),
+        mode_badge,
     }.render()?))
 }
 
@@ -101,7 +111,12 @@ pub async fn keys(
 
 #[derive(Template)]
 #[template(path = "partials/telemetry_rows.html")]
-struct TelemetryRows { rows: Vec<HitRow>, duration: String, q: String }
+struct TelemetryRows {
+    rows:     Vec<HitRow>,
+    duration: String,
+    q:        String,
+    mode_badge: Option<ModeBadge>,
+}
 
 pub async fn results(
     State(state): State<AppState>,
@@ -110,7 +125,9 @@ pub async fn results(
     let limit = clamp_limit(p.limit);
 
     if p.q.is_empty() {
-        return Ok(Html(TelemetryRows { rows: vec![], duration: p.duration, q: p.q }.render()?));
+        return Ok(Html(TelemetryRows {
+            rows: vec![], duration: p.duration, q: p.q, mode_badge: None,
+        }.render()?));
     }
 
     let resp = rpc_versioned(&state, "v2/search.get", "v3/search.get", json!({
@@ -120,9 +137,12 @@ pub async fn results(
         "limit":    limit,
     })).await?;
 
+    let mode_badge = Some(ModeBadge::from_response(&resp));
+
     Ok(Html(TelemetryRows {
         rows:     to_rows(&resp["results"]),
         duration: p.duration,
         q:        p.q,
+        mode_badge,
     }.render()?))
 }

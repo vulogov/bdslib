@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 #[derive(Deserialize, Default)]
 pub struct Params {
@@ -220,10 +220,14 @@ fn extract_stats(v: &serde_json::Value, unit: Unit) -> TrendStats {
 
 #[derive(Template)]
 #[template(path = "trends.html")]
-struct TrendsPage { key: String, duration: String }
+struct TrendsPage { key: String, duration: String, mode_badge: ModeBadge }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
-    Ok(Html(TrendsPage { key: p.key, duration: p.duration }.render()?))
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
+    Ok(Html(TrendsPage { key: p.key, duration: p.duration, mode_badge }.render()?))
 }
 
 // ── HTMX results fragment ─────────────────────────────────────────────────────
@@ -264,12 +268,12 @@ pub async fn results(
     let unit = guess_unit(&p.key);
 
     let (trend_v, telemetry_v) = tokio::try_join!(
-        rpc(&state, "v2/trends", json!({
+        rpc_versioned(&state, "v2/trends", "v3/trends", json!({
             "session":  SESSION,
             "key":      p.key,
             "duration": p.duration,
         })),
-        rpc(&state, "v2/primaries.get.telemetry", json!({
+        rpc_versioned(&state, "v2/primaries.get.telemetry", "v3/primaries.get.telemetry", json!({
             "session":  SESSION,
             "key":      p.key,
             "duration": p.duration,

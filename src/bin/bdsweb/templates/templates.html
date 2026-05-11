@@ -17,8 +17,14 @@
 
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-  <h1 class="text-xl font-semibold text-slate-200">Templates</h1>
-  <span class="text-xs text-slate-500">drain3 log-template store · recent or semantic search</span>
+  <div>
+    <h1 class="text-xl font-semibold text-slate-200">Templates</h1>
+    <p class="text-xs text-slate-500 mt-0.5">drain3 log-template store · recent or semantic search</p>
+  </div>
+  <span class="text-xs {{ mode_badge.class }}" title="{{ mode_badge.tooltip }}"
+        style="padding: 0.15rem 0.6rem; border-radius: 9999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);">
+    via {{ mode_badge.label }}{{ mode_badge.extra }}
+  </span>
 </div>
 
 <!-- Search / filter form -->

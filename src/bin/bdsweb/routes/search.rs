@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 #[derive(Deserialize, Default)]
 pub struct Params {
@@ -68,10 +68,14 @@ fn truncate(s: &str, n: usize) -> String {
 
 #[derive(Template)]
 #[template(path = "search.html")]
-struct SearchPage { duration: String, q: String }
+struct SearchPage { duration: String, q: String, mode_badge: ModeBadge }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
-    Ok(Html(SearchPage { duration: p.duration, q: p.q }.render()?))
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
+    Ok(Html(SearchPage { duration: p.duration, q: p.q, mode_badge }.render()?))
 }
 
 // ── HTMX results fragment ─────────────────────────────────────────────────────
@@ -93,7 +97,7 @@ pub async fn results(
         return Ok(Html(SearchPanels { obs: vec![], docs: vec![], q: p.q, duration: p.duration }.render()?));
     }
 
-    let resp = rpc(&state, "v2/aggregationsearch", json!({
+    let resp = rpc_versioned(&state, "v2/aggregationsearch", "v3/aggregationsearch", json!({
         "session":  SESSION,
         "query":    p.q,
         "duration": p.duration,

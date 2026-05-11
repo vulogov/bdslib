@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -53,12 +53,17 @@ fn row_from_search(v: &serde_json::Value) -> TplRow {
 #[derive(Template)]
 #[template(path = "templates.html")]
 struct TemplatesPage {
-    duration: String,
-    q:        String,
+    duration:   String,
+    q:          String,
+    mode_badge: ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
-    Ok(Html(TemplatesPage { duration: p.duration, q: p.q }.render()?))
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
+    Ok(Html(TemplatesPage { duration: p.duration, q: p.q, mode_badge }.render()?))
 }
 
 // ── HTMX results fragment ─────────────────────────────────────────────────────
@@ -66,10 +71,11 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
 #[derive(Template)]
 #[template(path = "partials/template_rows.html")]
 struct TemplateRows {
-    rows:      Vec<TplRow>,
-    duration:  String,
-    q:         String,
-    searching: bool,
+    rows:       Vec<TplRow>,
+    duration:   String,
+    q:          String,
+    searching:  bool,
+    mode_badge: ModeBadge,
 }
 
 pub async fn results(
@@ -85,13 +91,14 @@ pub async fn results(
         .await
         .unwrap_or_default();
 
+        let mode_badge = ModeBadge::from_response(&resp);
         let rows = resp
             .get("templates")
             .and_then(|x| x.as_array())
             .map(|a| a.iter().map(row_from_recent).collect())
             .unwrap_or_default();
 
-        Ok(Html(TemplateRows { rows, duration: p.duration, q: p.q, searching: false }.render()?))
+        Ok(Html(TemplateRows { rows, duration: p.duration, q: p.q, searching: false, mode_badge }.render()?))
     } else {
         // Search mode: semantic vector search across tpl store
         let resp = rpc_versioned(&state, "v2/tpl.search", "v3/tpl.search", json!({
@@ -103,12 +110,13 @@ pub async fn results(
         .await
         .unwrap_or_default();
 
+        let mode_badge = ModeBadge::from_response(&resp);
         let rows = resp
             .get("results")
             .and_then(|x| x.as_array())
             .map(|a| a.iter().map(row_from_search).collect())
             .unwrap_or_default();
 
-        Ok(Html(TemplateRows { rows, duration: p.duration, q: p.q, searching: true }.render()?))
+        Ok(Html(TemplateRows { rows, duration: p.duration, q: p.q, searching: true, mode_badge }.render()?))
     }
 }

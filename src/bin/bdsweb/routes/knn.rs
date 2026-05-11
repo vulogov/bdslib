@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::{client::{rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -40,9 +40,14 @@ struct KnnPage {
     anomaly_threshold:   f32,
     max_cluster_members: usize,
     max_anomalies:       usize,
+    mode_badge:          ModeBadge,
 }
 
-pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
+pub async fn page(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let mode_badge = mode_badge_for_page(&state, true).await;
     Ok(Html(KnnPage {
         duration:            p.duration,
         k:                   p.k,
@@ -50,6 +55,7 @@ pub async fn page(Query(p): Query<Params>) -> Result<Html<String>, AppError> {
         anomaly_threshold:   p.anomaly_threshold,
         max_cluster_members: p.max_cluster_members,
         max_anomalies:       p.max_anomalies,
+        mode_badge,
     }.render()?))
 }
 
@@ -94,6 +100,7 @@ struct KnnResult {
     has_anomalies:       bool,
     clusters:            Vec<ClusterRow>,
     anomalies:           Vec<AnomalyRow>,
+    mode_badge:          ModeBadge,
 }
 
 /// First 80 characters of `s` with an ellipsis appended when truncated —
@@ -168,6 +175,7 @@ pub async fn results(
 
     let has_clusters  = !clusters.is_empty();
     let has_anomalies = !anomalies.is_empty();
+    let mode_badge    = ModeBadge::from_response(&resp);
 
     Ok(Html(KnnResult {
         duration:          p.duration,
@@ -180,5 +188,6 @@ pub async fn results(
         has_anomalies,
         clusters,
         anomalies,
+        mode_badge,
     }.render()?))
 }
