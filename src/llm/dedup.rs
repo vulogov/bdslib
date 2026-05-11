@@ -22,7 +22,7 @@
 use crate::common::error::{err_msg, Result};
 use crate::storageengine::StorageEngine;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -242,8 +242,83 @@ fn row_to_inference_row(row: Vec<rust_dynamic::value::Value>) -> Result<Inferenc
 
 fn sql_escape(s: &str) -> String { s.replace('\'', "''") }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Process-wide dedup settings
+// ─────────────────────────────────────────────────────────────────────
+
+/// Runtime knobs for the dedup layer.  Populated from the `llm.dedup`
+/// block of `bds.hjson` at bdsnode startup.  Independent from the
+/// per-node [`InferenceLog`] (which lives on `Cluster`) so a binary
+/// without cluster mode (bdscmd) can still consult the toggles.
+#[derive(Debug, Clone)]
+pub struct DedupSettings {
+    pub enabled:       bool,
+    pub window_secs:   u64,
+    pub wait_max_secs: u64,
+}
+
+impl Default for DedupSettings {
+    fn default() -> Self {
+        Self { enabled: true, window_secs: 300, wait_max_secs: 30 }
+    }
+}
+
+static SETTINGS: OnceLock<DedupSettings> = OnceLock::new();
+
+pub fn init_settings(s: DedupSettings) { let _ = SETTINGS.set(s); }
+pub fn settings() -> &'static DedupSettings {
+    SETTINGS.get_or_init(DedupSettings::default)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Lease guard
+// ─────────────────────────────────────────────────────────────────────
+
+/// Owned by the caller while an inference is in-flight.  Mark the
+/// outcome explicitly with [`release_done`] or [`release_failed`] —
+/// dropping the lease without releasing logs a warning and records
+/// `failed` (so a `running` row never gets stranded).
+pub struct InferenceLease {
+    log:       InferenceLog,
+    cache_key: String,
+    node_id:   Uuid,
+    released:  bool,
+}
+
+impl InferenceLease {
+    pub fn new(log: InferenceLog, cache_key: String, node_id: Uuid) -> Self {
+        Self { log, cache_key, node_id, released: false }
+    }
+
+    pub fn cache_key(&self) -> &str { &self.cache_key }
+
+    pub fn release_done(mut self) {
+        if let Err(e) = self.log.record_finished(&self.cache_key, self.node_id, now_secs()) {
+            log::warn!("[llm::dedup] release_done({:?}): {e}", self.cache_key);
+        }
+        self.released = true;
+    }
+
+    pub fn release_failed(mut self) {
+        if let Err(e) = self.log.record_failed(&self.cache_key, self.node_id, now_secs()) {
+            log::warn!("[llm::dedup] release_failed({:?}): {e}", self.cache_key);
+        }
+        self.released = true;
+    }
+}
+
+impl Drop for InferenceLease {
+    fn drop(&mut self) {
+        if !self.released {
+            log::warn!("[llm::dedup] lease for {:?} dropped without release; \
+                        recording as failed", self.cache_key);
+            let _ = self.log.record_failed(&self.cache_key, self.node_id, now_secs());
+        }
+    }
 }
 
 #[cfg(test)]

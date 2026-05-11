@@ -56,6 +56,31 @@ impl Default for CacheConfig {
     }
 }
 
+/// Dedup sub-block (`llm.dedup.*` in bds.hjson).  Controls the
+/// cluster-wide single-execution behaviour driven by `InferenceLog`.
+///
+/// `window_secs` — how long a recent `done` / `failed` row keeps
+/// short-circuiting fresh requests; matches Risk #2-style semantics
+/// (within this window, the inference cache should already have the
+/// answer, so a repeat request grabs that instead of re-running).
+///
+/// `wait_max_secs` — how long a sync caller polls the inference cache
+/// for a peer's in-progress result before falling through and running
+/// the inference itself.  Set to 0 to "fail fast" (return immediately
+/// instead of waiting).
+#[derive(Debug, Clone)]
+pub struct DedupConfig {
+    pub enabled:       bool,
+    pub window_secs:   u64,
+    pub wait_max_secs: u64,
+}
+
+impl Default for DedupConfig {
+    fn default() -> Self {
+        Self { enabled: true, window_secs: 300, wait_max_secs: 30 }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
     pub default:   Option<String>,
@@ -63,6 +88,7 @@ pub struct LlmConfig {
     pub anthropic: Option<AnthropicConfig>,
     pub openai:    Option<OpenAIConfig>,
     pub cache:     CacheConfig,
+    pub dedup:     DedupConfig,
 }
 
 impl LlmConfig {
@@ -134,7 +160,20 @@ impl LlmConfig {
             })
             .unwrap_or_default();
 
-        Self { default, ollama, anthropic, openai, cache }
+        let dedup = llm.get("dedup").and_then(|v| v.as_object())
+            .map(|d| DedupConfig {
+                enabled:       d.get("enabled").and_then(|v| v.as_bool())
+                                 .unwrap_or(DedupConfig::default().enabled),
+                window_secs:   d.get("window_secs").and_then(|v| v.as_f64())
+                                 .map(|n| n as u64)
+                                 .unwrap_or(DedupConfig::default().window_secs),
+                wait_max_secs: d.get("wait_max_secs").and_then(|v| v.as_f64())
+                                 .map(|n| n as u64)
+                                 .unwrap_or(DedupConfig::default().wait_max_secs),
+            })
+            .unwrap_or_default();
+
+        Self { default, ollama, anthropic, openai, cache, dedup }
     }
 }
 

@@ -201,6 +201,19 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Phase 4 — cluster-wide inference dedup runtime settings.  The
+    // per-node InferenceLog lives on Cluster (init_db opens it inside
+    // Cluster::init when cluster mode is on); these are the runtime
+    // toggles the helpers consult to decide whether to apply dedup
+    // and how long to wait for a peer's running inference.
+    bdslib::llm::dedup::init_settings(bdslib::llm::dedup::DedupSettings {
+        enabled:       llm_cfg.dedup.enabled,
+        window_secs:   llm_cfg.dedup.window_secs,
+        wait_max_secs: llm_cfg.dedup.wait_max_secs,
+    });
+    log::info!("[llm] dedup: enabled={} window={}s wait_max={}s",
+        llm_cfg.dedup.enabled, llm_cfg.dedup.window_secs, llm_cfg.dedup.wait_max_secs);
+
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;

@@ -91,6 +91,11 @@ pub struct Cluster {
     /// `v2/scheduler.last_seen` fan-out) to skip ticks that another
     /// node already serviced within `scheduler_dedup_window`.
     pub scheduler_log: scheduler_log::SchedulerLog,
+    /// Per-node log of in-flight + recent LLM inferences.  Read by the
+    /// cluster-aware LLM helpers before invoking a provider — fanning
+    /// `v2/llm.last_executed` to every Alive peer plus the local log
+    /// to detect the same `cache_key` already running elsewhere.
+    pub inference_log: crate::llm::dedup::InferenceLog,
     /// Cluster-replicated user store.  Backs the bdsweb login flow,
     /// the `v3/user.*` admin RPCs, and `v3/user.authenticate`.
     /// Replicated like docs/signals/scripts via Phase 7.2's
@@ -153,6 +158,7 @@ impl Cluster {
         let hints       = hints::HintStorage::open(&network_dir)?;
         let tombstones  = tombstones::TombstoneStorage::open(&network_dir)?;
         let scheduler_log = scheduler_log::SchedulerLog::open(&network_dir)?;
+        let inference_log = crate::llm::dedup::InferenceLog::open(&network_dir)?;
 
         // The user store sits OUTSIDE the network/ dir — it's a
         // user-facing store like docs/signals/scripts, replicated by
@@ -191,6 +197,7 @@ impl Cluster {
             hints,
             tombstones,
             scheduler_log,
+            inference_log,
             users,
             verifiers,
             auth_rate_limiter: Arc::new(rate_limit::RateLimiter::new()),

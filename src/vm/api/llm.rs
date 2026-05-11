@@ -19,6 +19,7 @@ use crate::common::jsonfingerprint::json_fingerprint;
 use crate::llm::cache::{self as cache, CacheInsert, CacheManager, CachedEntry};
 use crate::llm::chat as llm_chat;
 use crate::llm::context::{self as llm_ctx, ContextSource, RagContext};
+use crate::llm::dedup::{self, InferenceLease, InferenceState};
 use crate::llm::manager;
 use crate::llm::providers::Provider;
 use crate::llm::types::{
@@ -31,7 +32,8 @@ use easy_error::{bail, err_msg, Error};
 use rust_dynamic::value::Value;
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::thread;
 use uuid::Uuid;
 
 const DEFAULT_SYSTEM_PROMPT: &str =
@@ -276,6 +278,133 @@ fn cache_store(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Dedup — cluster-wide single-execution lease
+// ─────────────────────────────────────────────────────────────────────
+
+/// Decision the dedup layer made for one helper invocation.
+enum LeaseOutcome {
+    /// We're going to run the inference; the lease must be released.
+    Acquired(InferenceLease),
+    /// Another node is currently running the same `cache_key` (or we
+    /// are, on a different thread).  Caller polls the cache for
+    /// `wait_max_secs` before falling through to run anyway.
+    SkipRunning,
+    /// A peer finished recently — the cache should already have it.
+    /// Caller does a cache re-lookup; on miss, falls through.
+    SkipDone,
+    /// Dedup is disabled, no cluster, or no DB — run unconditionally
+    /// without a lease.
+    Disabled,
+}
+
+impl LeaseOutcome {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Acquired(_)  => "ran",
+            Self::SkipRunning  => "waited",
+            Self::SkipDone     => "skipped:done",
+            Self::Disabled     => "disabled",
+        }
+    }
+}
+
+/// Look up local + peer inference logs and either mint a `running` row
+/// or report what's already in-flight / recently done.
+fn try_acquire_lease(cache_key: &str) -> LeaseOutcome {
+    let settings = dedup::settings();
+    if !settings.enabled {
+        return LeaseOutcome::Disabled;
+    }
+    let db = match crate::globals::get_db() {
+        Ok(d)  => d,
+        Err(_) => return LeaseOutcome::Disabled,
+    };
+    let cluster = match db.cluster() {
+        Some(c) => c.clone(),
+        None    => return LeaseOutcome::Disabled,  // standalone — nothing to dedup against
+    };
+    let log = cluster.inference_log.clone();
+
+    // 1. Local check first — avoids a cluster round-trip when this
+    //    same node is already running the work.
+    if let Ok(Some(row)) = log.recent_within(cache_key, settings.window_secs) {
+        match row.state {
+            InferenceState::Running => return LeaseOutcome::SkipRunning,
+            InferenceState::Done    => return LeaseOutcome::SkipDone,
+            InferenceState::Failed  => { /* retry */ }
+        }
+    }
+
+    // 2. Cluster check — fan v2/llm.last_executed out to every Alive peer.
+    let fan = runtime::block_on(crate::cluster::fanout::fan_out_v2(
+        &cluster, "v2/llm.last_executed",
+        json!({ "cache_key": cache_key, "window_secs": settings.window_secs }),
+    ));
+    let now = dedup::now_secs();
+    for body in fan.ok_results() {
+        if body.get("found").and_then(|v| v.as_bool()) != Some(true) { continue; }
+        let started_at = body.get("started_at").and_then(|v| v.as_u64()).unwrap_or(0);
+        // Apply the local window in case the peer didn't.
+        if settings.window_secs > 0
+            && now.saturating_sub(started_at) > settings.window_secs {
+            continue;
+        }
+        match body.get("state").and_then(|v| v.as_str()) {
+            Some("running") => return LeaseOutcome::SkipRunning,
+            Some("done")    => return LeaseOutcome::SkipDone,
+            _               => {}
+        }
+    }
+
+    // 3. Acquire — record a fresh `running` row locally.  See the
+    //    scheduler_log race-window note: two nodes can pass step 2
+    //    in the same sub-second window and both record a running
+    //    row; the cache prevents the second one from doing real work.
+    if let Err(e) = log.record_start(cache_key, cluster.node_id, dedup::now_secs()) {
+        log::warn!("[llm::dedup] record_start failed: {e}");
+        return LeaseOutcome::Disabled;
+    }
+    LeaseOutcome::Acquired(InferenceLease::new(
+        log, cache_key.to_owned(), cluster.node_id,
+    ))
+}
+
+/// Poll the inference cache for up to `wait_max_secs`, looking for the
+/// entry that a peer is presumably about to write.  Returns `Some` on
+/// arrival, `None` after the deadline expires.
+fn wait_for_cache_entry(
+    disposition: &CacheDisposition,
+    cache_key:   &str,
+) -> Option<CachedEntry> {
+    let settings = dedup::settings();
+    if settings.wait_max_secs == 0 {
+        return None;  // "fail fast" mode
+    }
+    let mgr = match disposition {
+        CacheDisposition::Enabled(m)  => *m,
+        CacheDisposition::Disabled(_) => return None,
+    };
+    let deadline = Instant::now() + Duration::from_secs(settings.wait_max_secs);
+    while Instant::now() < deadline {
+        match mgr.cache().get_by_key(cache_key) {
+            Ok(Some(entry)) => {
+                if let Err(e) = mgr.cache().bump_hits(entry.id) {
+                    log::debug!("vm::api::llm: bump_hits after wait failed: {e}");
+                }
+                return Some(entry);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::debug!("vm::api::llm: wait_for_cache_entry cache.get failed: {e}");
+                return None;
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    None
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Public helpers
 // ─────────────────────────────────────────────────────────────────────
 
@@ -317,37 +446,40 @@ pub fn complete(req: Value) -> Result<Value, Error> {
 
     // Cache hit short-circuit — no provider call.
     if let Some(entry) = cache_lookup(&disposition, &key) {
-        let resp_text = entry.response_json.get("text").and_then(|v| v.as_str())
-            .unwrap_or("").to_owned();
-        let out = json!({
-            "response":      resp_text,
-            "provider":      entry.provider,
-            "model":         entry.model,
-            "finish_reason": entry.response_json.get("finish_reason").cloned()
-                                 .unwrap_or(JsonValue::Null),
-            "tokens_in":     entry.response_json.get("tokens_in").cloned()
-                                 .unwrap_or(JsonValue::Null),
-            "tokens_out":    entry.response_json.get("tokens_out").cloned()
-                                 .unwrap_or(JsonValue::Null),
-            "ms":            0,
-            "cache":         "hit",
-        });
-        meta::set_llm(json!({
-            "provider":  out["provider"].clone(),
-            "model":     out["model"].clone(),
-            "ms":        0,
-            "tokens_in": out["tokens_in"].clone(),
-            "tokens_out":out["tokens_out"].clone(),
-            "cache":     "hit",
-        }));
-        return Ok(json_to_dynamic(out));
+        return Ok(json_to_dynamic(cache_hit_response(&entry, "complete", None, None)));
     }
+
+    // Phase 4 — dedup gate.  On SkipRunning / SkipDone we poll the
+    // cache briefly hoping the peer's replicated result arrives, then
+    // fall through and run the inference unconditionally (sync caller
+    // doesn't want to wait forever).
+    let lease_outcome = try_acquire_lease(&key);
+    if matches!(lease_outcome, LeaseOutcome::SkipRunning | LeaseOutcome::SkipDone) {
+        if let Some(entry) = wait_for_cache_entry(&disposition, &key) {
+            return Ok(json_to_dynamic(cache_hit_response(
+                &entry, "complete", Some(lease_outcome.label()), None,
+            )));
+        }
+    }
+    let dedup_label = lease_outcome.label();
 
     let rq = CompletionRequest { model: model.clone(), messages, options };
     let started = Instant::now();
-    let resp: CompletionResponse = runtime::block_on(provider.complete(rq))
-        .map_err(|e| err_msg(format!("vm::api::llm::complete: provider {:?}: {e}", provider.id())))?;
+    let resp_result = runtime::block_on(provider.complete(rq));
     let ms = started.elapsed().as_millis() as u64;
+
+    // Release the lease (if we hold one) before returning.  Drop'd
+    // leases mark `failed` automatically, but explicit release sets
+    // the right state on both paths.
+    let resp: CompletionResponse = match (resp_result, lease_outcome) {
+        (Ok(r), LeaseOutcome::Acquired(lease)) => { lease.release_done();   r }
+        (Err(e), LeaseOutcome::Acquired(lease)) => { lease.release_failed();
+            return Err(err_msg(format!("vm::api::llm::complete: provider {:?}: {e}",
+                provider.id()))); }
+        (Ok(r),  _) => r,
+        (Err(e), _) => return Err(err_msg(format!(
+            "vm::api::llm::complete: provider {:?}: {e}", provider.id()))),
+    };
 
     let miss_label = disposition.miss_label();
     cache_store(&disposition, &key, provider.id(), &resp.model, "complete",
@@ -362,6 +494,7 @@ pub fn complete(req: Value) -> Result<Value, Error> {
         "tokens_out":    resp.tokens_out,
         "ms":            ms,
         "cache":         miss_label,
+        "dedup":         dedup_label,
     });
     meta::set_llm(json!({
         "provider":   provider.id(),
@@ -370,8 +503,52 @@ pub fn complete(req: Value) -> Result<Value, Error> {
         "tokens_in":  out["tokens_in"].clone(),
         "tokens_out": out["tokens_out"].clone(),
         "cache":      miss_label,
+        "dedup":      dedup_label,
     }));
     Ok(json_to_dynamic(out))
+}
+
+/// Build the response Map for a cache hit.  Centralised so `complete`
+/// and `analyze` produce the same shape on hit + on dedup-wait-success.
+/// `dedup` is the LeaseOutcome label when this hit was the result of
+/// waiting on a peer; `None` for ordinary cache hits.
+fn cache_hit_response(
+    entry:        &CachedEntry,
+    kind_label:   &str,
+    dedup_label:  Option<&'static str>,
+    extra_source: Option<JsonValue>,
+) -> JsonValue {
+    let mut out = json!({
+        "response":      entry.response_json.get("text").and_then(|v| v.as_str())
+                              .unwrap_or("").to_owned(),
+        "provider":      entry.provider,
+        "model":         entry.model,
+        "finish_reason": entry.response_json.get("finish_reason").cloned()
+                              .unwrap_or(JsonValue::Null),
+        "tokens_in":     entry.response_json.get("tokens_in").cloned()
+                              .unwrap_or(JsonValue::Null),
+        "tokens_out":    entry.response_json.get("tokens_out").cloned()
+                              .unwrap_or(JsonValue::Null),
+        "ms":            0,
+        "cache":         "hit",
+    });
+    if let Some(d) = dedup_label {
+        out["dedup"] = json!(d);
+    }
+    if let Some(src) = extra_source {
+        out["source"] = src;
+    }
+    meta::set_llm(json!({
+        "provider":   out["provider"].clone(),
+        "model":      out["model"].clone(),
+        "ms":         0,
+        "tokens_in":  out["tokens_in"].clone(),
+        "tokens_out": out["tokens_out"].clone(),
+        "cache":      "hit",
+        "dedup":      dedup_label.unwrap_or("disabled"),
+    }));
+    let _ = kind_label;  // reserved for future use (per-kind hit telemetry)
+    out
 }
 
 /// `embed` — produce vector embeddings for a list of texts.
@@ -649,36 +826,26 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
     let key = cache::cache_key(&canonical);
 
     if let Some(entry) = cache_lookup(&disposition, &key) {
-        let resp_text = entry.response_json.get("text").and_then(|v| v.as_str())
-            .unwrap_or("").to_owned();
-        let out = json!({
-            "response":      resp_text,
-            "kind":          kind,
-            "source":        rag.source_meta,
-            "n_rows":        rag.n_rows,
-            "provider":      entry.provider,
-            "model":         entry.model,
-            "finish_reason": entry.response_json.get("finish_reason").cloned()
-                                 .unwrap_or(JsonValue::Null),
-            "tokens_in":     entry.response_json.get("tokens_in").cloned()
-                                 .unwrap_or(JsonValue::Null),
-            "tokens_out":    entry.response_json.get("tokens_out").cloned()
-                                 .unwrap_or(JsonValue::Null),
-            "ms":            0,
-            "cache":         "hit",
-        });
-        meta::set_llm(json!({
-            "provider":   out["provider"].clone(),
-            "model":      out["model"].clone(),
-            "ms":         0,
-            "tokens_in":  out["tokens_in"].clone(),
-            "tokens_out": out["tokens_out"].clone(),
-            "kind":       kind,
-            "n_rows":     rag.n_rows,
-            "cache":      "hit",
-        }));
+        let mut out = cache_hit_response(&entry, "analyze", None,
+                                         Some(rag.source_meta.clone()));
+        out["kind"]   = json!(kind);
+        out["n_rows"] = json!(rag.n_rows);
         return Ok(json_to_dynamic(out));
     }
+
+    // Phase 4 dedup gate (same shape as `complete`).
+    let lease_outcome = try_acquire_lease(&key);
+    if matches!(lease_outcome, LeaseOutcome::SkipRunning | LeaseOutcome::SkipDone) {
+        if let Some(entry) = wait_for_cache_entry(&disposition, &key) {
+            let mut out = cache_hit_response(&entry, "analyze",
+                                             Some(lease_outcome.label()),
+                                             Some(rag.source_meta.clone()));
+            out["kind"]   = json!(kind);
+            out["n_rows"] = json!(rag.n_rows);
+            return Ok(json_to_dynamic(out));
+        }
+    }
+    let dedup_label = lease_outcome.label();
 
     let rq = CompletionRequest {
         model:    model.clone(),
@@ -687,9 +854,18 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
     };
 
     let started = Instant::now();
-    let resp: CompletionResponse = runtime::block_on(provider.complete(rq))
-        .map_err(|e| err_msg(format!("vm::api::llm::analyze: provider {:?}: {e}", provider.id())))?;
+    let resp_result = runtime::block_on(provider.complete(rq));
     let ms = started.elapsed().as_millis() as u64;
+
+    let resp: CompletionResponse = match (resp_result, lease_outcome) {
+        (Ok(r), LeaseOutcome::Acquired(lease))  => { lease.release_done();   r }
+        (Err(e), LeaseOutcome::Acquired(lease)) => { lease.release_failed();
+            return Err(err_msg(format!("vm::api::llm::analyze: provider {:?}: {e}",
+                provider.id()))); }
+        (Ok(r),  _) => r,
+        (Err(e), _) => return Err(err_msg(format!(
+            "vm::api::llm::analyze: provider {:?}: {e}", provider.id()))),
+    };
 
     let miss_label = disposition.miss_label();
     cache_store(&disposition, &key, provider.id(), &resp.model,
@@ -709,6 +885,7 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
         "tokens_out":    resp.tokens_out,
         "ms":            ms,
         "cache":         miss_label,
+        "dedup":         dedup_label,
     });
     meta::set_llm(json!({
         "provider":   provider.id(),
@@ -719,6 +896,7 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
         "kind":       kind,
         "n_rows":     rag.n_rows,
         "cache":      miss_label,
+        "dedup":      dedup_label,
     }));
     Ok(json_to_dynamic(out))
 }
