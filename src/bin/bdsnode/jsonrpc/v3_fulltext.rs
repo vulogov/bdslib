@@ -6,8 +6,7 @@
 //! truncates to `limit`.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -82,15 +81,11 @@ fn register_one(module: &mut RpcModule<()>, method: &'static str, mode: FtMode) 
         let local = local_res
             .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??;
 
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan {
-            bodies.extend(f.ok_results());
-        }
-
+        let bodies = merge::bodies_from(&local, fan.as_ref());
         let mut merged: Vec<JsonValue> = match mode {
-            FtMode::Score  => v3_merge::dedup_avg_score(bodies, "results"),
-            FtMode::Docs   => v3_merge::dedup_by_id(bodies, "results"),
-            FtMode::Recent => v3_merge::dedup_by_id_newest_first(bodies, "results"),
+            FtMode::Score  => merge::dedup_avg_score(bodies, "results"),
+            FtMode::Docs   => merge::dedup_by_id(bodies, "results"),
+            FtMode::Recent => merge::dedup_by_id_newest_first(bodies, "results"),
         };
         merged.truncate(p.limit);
 

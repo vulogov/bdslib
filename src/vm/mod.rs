@@ -16,6 +16,7 @@ pub fn results() -> result_queue::ResultQueue {
     RESULTS.get_or_init(result_queue::ResultQueue::new).clone()
 }
 
+pub mod api;
 pub mod context;
 pub mod ephemeral;
 pub mod eval;

@@ -19,6 +19,7 @@ pub mod fanout;
 pub mod gossip;
 pub mod hints;
 pub mod hmac_auth;
+pub mod merge;
 pub mod peer_table;
 pub mod persistence;
 pub mod replication;

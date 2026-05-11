@@ -20,7 +20,7 @@
 //! plus method-specific knobs).
 
 use super::params::{rpc_err, v3_cluster_meta};
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -28,26 +28,14 @@ use uuid::Uuid;
 
 // ── Common merge helper ──────────────────────────────────────────────────────
 
-/// Among `local` and any successful peer responses, pick the one whose
-/// `summary` field (a string) is longest.  Returns the chosen body with
-/// `cluster_meta` injected.  When fan-out wasn't run (standalone), the
-/// local body is returned as-is with an `enabled=false` cluster_meta.
+/// Pick the longest `summary` across local + peers, then attach
+/// `cluster_meta`.  Thin wrapper around `merge::pick_longest_string` that
+/// also takes ownership of `fan` so it can be passed to `v3_cluster_meta`.
 fn pick_longest_summary(
     local: JsonValue,
     fan:   Option<fanout::FanOutResults>,
 ) -> JsonValue {
-    let local_len = local.get("summary").and_then(|v| v.as_str()).map(str::len).unwrap_or(0);
-    let mut best       = local;
-    let mut best_len   = local_len;
-    if let Some(f) = &fan {
-        for r in f.ok_results() {
-            let len = r.get("summary").and_then(|v| v.as_str()).map(str::len).unwrap_or(0);
-            if len > best_len {
-                best     = r.clone();
-                best_len = len;
-            }
-        }
-    }
+    let mut best = merge::pick_longest_string(&local, fan.as_ref(), "summary");
     if let Some(obj) = best.as_object_mut() {
         obj.insert("cluster_meta".into(), v3_cluster_meta(fan));
     }

@@ -14,11 +14,10 @@
 //! `v2/count` and forwards them verbatim to peers.
 
 use super::params::{rpc_err, v3_cluster_meta, TimeWindow, TimeWindowParams};
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
-use std::collections::HashSet;
 
 pub fn register(module: &mut RpcModule<()>) {
     module
@@ -54,12 +53,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??
                 .get("count").and_then(|v| v.as_u64()).unwrap_or(0);
 
-            let mut total = local_count_n;
-            if let Some(f) = &fan {
-                for r in f.ok_results() {
-                    total += r.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                }
-            }
+            let total = merge::sum_field(local_count_n, fan.as_ref(), "count");
 
             log::debug!("v3/count: done (sum total={total})");
             Ok::<JsonValue, ErrorObject>(serde_json::json!({
@@ -90,18 +84,10 @@ async fn distinct_count(raw: JsonValue, window: TimeWindow) -> Result<JsonValue,
         .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??;
 
     let local_count = local_ids.len() as u64;
-    let mut union: HashSet<String> = local_ids.into_iter().collect();
-    if let Some(f) = &fan {
-        for r in f.ok_results() {
-            if let Some(arr) = r.get("ids").and_then(|v| v.as_array()) {
-                for x in arr {
-                    if let Some(s) = x.as_str() { union.insert(s.to_owned()); }
-                }
-            }
-        }
-    }
-
-    let total = union.len() as u64;
+    // Build a synthetic local "body" so union_string_ids can union it
+    // alongside the per-peer responses uniformly.
+    let local_body = serde_json::json!({ "ids": local_ids });
+    let total = merge::union_string_ids(&local_body, fan.as_ref(), "ids").len() as u64;
     log::debug!("v3/count: done (distinct total={total} local={local_count})");
     Ok(serde_json::json!({
         "count":        total,

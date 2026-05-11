@@ -9,7 +9,7 @@
 //! returning a result derived from a stale subset.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -74,16 +74,7 @@ fn register_one(module: &mut RpcModule<()>, v3_method: &'static str, v2_method: 
             None    => None,
         };
 
-        // Pick by largest n_events.
-        let mut best: &JsonValue = &local;
-        let mut best_n = local.get("n_events").and_then(|v| v.as_u64()).unwrap_or(0);
-        if let Some(f) = &fan {
-            for r in f.ok_results() {
-                let n = r.get("n_events").and_then(|v| v.as_u64()).unwrap_or(0);
-                if n > best_n { best = r; best_n = n; }
-            }
-        }
-        let mut out = best.clone();
+        let (mut out, best_n) = merge::pick_largest_by_field(&local, fan.as_ref(), "n_events");
         if let Some(obj) = out.as_object_mut() {
             obj.insert("cluster_meta".into(), v3_cluster_meta(fan));
             obj.insert("corpus_size".into(),  JsonValue::from(best_n));

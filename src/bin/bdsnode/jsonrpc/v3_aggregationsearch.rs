@@ -6,8 +6,7 @@
 //! score average (same shape used by v3/search.get).
 
 use super::params::{rpc_err, v3_cluster_meta};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -39,10 +38,9 @@ pub fn register(module: &mut RpcModule<()>) {
             None    => None,
         };
 
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let observability = v3_merge::dedup_avg_score(bodies.clone(), "observability");
-        let documents     = v3_merge::dedup_avg_score(bodies,         "documents");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let observability = merge::dedup_avg_score(bodies.clone(), "observability");
+        let documents     = merge::dedup_avg_score(bodies,         "documents");
 
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "observability": observability,

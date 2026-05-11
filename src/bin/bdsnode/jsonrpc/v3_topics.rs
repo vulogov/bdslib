@@ -12,23 +12,14 @@
 //!   from whichever peer reported the largest corpus.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
 
 pub fn register(module: &mut RpcModule<()>) {
     register_topics(module);
     register_topics_all(module);
-}
-
-fn lda_corpus_size(v: &JsonValue) -> u64 {
-    // Look for the obvious size fields; fall back to 0.
-    v.get("n_records").and_then(|x| x.as_u64())
-        .or_else(|| v.get("count").and_then(|x| x.as_u64()))
-        .or_else(|| v.get("total_records").and_then(|x| x.as_u64()))
-        .unwrap_or(0)
 }
 
 fn register_topics(module: &mut RpcModule<()>) {
@@ -63,12 +54,13 @@ fn register_topics(module: &mut RpcModule<()>) {
             None    => None,
         };
 
-        // Pick the response with the largest corpus.
+        // Pick the response with the largest corpus.  lda_corpus_size
+        // checks several common size fields (n_records, count, …).
         let mut best: &JsonValue = &local;
-        let mut best_n = lda_corpus_size(&local);
+        let mut best_n = merge::lda_corpus_size(&local);
         if let Some(f) = &fan {
             for r in f.ok_results() {
-                let n = lda_corpus_size(r);
+                let n = merge::lda_corpus_size(r);
                 if n > best_n { best = r; best_n = n; }
             }
         }
@@ -114,31 +106,9 @@ fn register_topics_all(module: &mut RpcModule<()>) {
         };
 
         // Per-key, pick the entry with the largest corpus across local+peers.
-        let mut best_per_key: HashMap<String, (u64, JsonValue)> = HashMap::new();
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        for body in &bodies {
-            if let Some(arr) = body.get("topics").and_then(|v| v.as_array()) {
-                for item in arr {
-                    let key = match item.get("key").and_then(|v| v.as_str()) {
-                        Some(s) => s.to_owned(),
-                        None    => continue,
-                    };
-                    let n = lda_corpus_size(item);
-                    match best_per_key.get(&key) {
-                        Some((cur_n, _)) if n <= *cur_n => {}
-                        _ => { best_per_key.insert(key, (n, item.clone())); }
-                    }
-                }
-            }
-        }
-        let mut topics: Vec<JsonValue> = best_per_key.into_values().map(|(_, v)| v).collect();
-        topics.sort_by(|a, b| {
-            let ka = a.get("key").and_then(|v| v.as_str()).unwrap_or("");
-            let kb = b.get("key").and_then(|v| v.as_str()).unwrap_or("");
-            ka.cmp(kb)
-        });
-
+        let topics = merge::pick_largest_per_key(
+            &local, fan.as_ref(), "topics", "key", merge::lda_corpus_size,
+        );
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "topics":       topics,
             "cluster_meta": v3_cluster_meta(fan),

@@ -96,7 +96,6 @@ mod v3_fulltext;
 mod v3_helpers;
 mod v3_keys;
 mod v3_knn;
-mod v3_merge;
 mod v3_primaries;
 mod v3_rca;
 mod v3_replicated;

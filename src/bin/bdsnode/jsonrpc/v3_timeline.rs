@@ -6,7 +6,7 @@
 //! or the cluster has no Alive peers.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -32,26 +32,7 @@ pub fn register(module: &mut RpcModule<()>) {
             let local = local_res
                 .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))??;
 
-            // Merge: min over all min_ts, max over all max_ts.
-            let mut acc_min: Option<i64> = local.get("min_ts").and_then(|v| v.as_i64());
-            let mut acc_max: Option<i64> = local.get("max_ts").and_then(|v| v.as_i64());
-
-            if let Some(f) = &fan {
-                for r in f.ok_results() {
-                    let m = r.get("min_ts").and_then(|v| v.as_i64());
-                    let x = r.get("max_ts").and_then(|v| v.as_i64());
-                    acc_min = match (acc_min, m) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (None,    b)       => b,
-                        (a,       None)    => a,
-                    };
-                    acc_max = match (acc_max, x) {
-                        (Some(a), Some(b)) => Some(a.max(b)),
-                        (None,    b)       => b,
-                        (a,       None)    => a,
-                    };
-                }
-            }
+            let (acc_min, acc_max) = merge::min_max_fields(&local, fan.as_ref(), "min_ts", "max_ts");
 
             log::debug!("v3/timeline: done");
             Ok::<JsonValue, ErrorObject>(serde_json::json!({

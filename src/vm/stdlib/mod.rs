@@ -4,6 +4,7 @@ use bundcore::bundcore::Bund;
 use easy_error::Error;
 
 pub mod bund;
+pub mod cluster;
 pub mod conditional;
 pub mod console;
 pub mod db;
@@ -24,6 +25,7 @@ pub fn init_bund_stdlib(vm: &mut Bund) -> Result<(), Error> {
     system::init_stdlib(vm)?;
     global_db::init_stdlib(vm)?;
     db::init_stdlib(vm)?;
+    cluster::init_stdlib(vm)?;
     string::init_stdlib(vm)?;
     statistics::init_stdlib(vm)?;
     math::init_stdlib(vm)?;

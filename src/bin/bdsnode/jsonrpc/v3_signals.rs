@@ -8,8 +8,7 @@
 //! - `v3/signals_query`: UUID dedup + score average (like v3/search).
 
 use super::params::{rpc_err, v3_cluster_meta};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -46,9 +45,8 @@ fn register_signals(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/signals", raw).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let signals = v3_merge::dedup_by_id(bodies, "signals");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let signals = merge::dedup_by_id(bodies, "signals");
 
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "duration":     dur,
@@ -78,9 +76,8 @@ fn register_signals_query(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/signals_query", raw).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let mut results = v3_merge::dedup_avg_score(bodies, "results");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let mut results = merge::dedup_avg_score(bodies, "results");
         results.truncate(limit);
 
         Ok::<JsonValue, ErrorObject>(serde_json::json!({

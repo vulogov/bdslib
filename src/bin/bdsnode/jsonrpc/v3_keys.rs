@@ -7,13 +7,11 @@
 //!   primary_id.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeSet;
-use std::collections::HashMap;
 
 pub fn register(module: &mut RpcModule<()>) {
     register_keys(module);
@@ -38,9 +36,8 @@ fn register_keys(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/keys", v2_params).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let keys = v3_merge::union_strings(bodies, "keys");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let keys = merge::union_strings(bodies, "keys");
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "keys": keys, "cluster_meta": v3_cluster_meta(fan),
         }))
@@ -73,9 +70,8 @@ fn register_keys_all(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/keys.all", v2_params).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let keys = v3_merge::union_strings(bodies, "keys");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let keys = merge::union_strings(bodies, "keys");
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "keys": keys, "cluster_meta": v3_cluster_meta(fan),
         }))
@@ -114,34 +110,8 @@ fn register_keys_get(module: &mut RpcModule<()>) {
             None    => None,
         };
 
-        // Merge: per primary_id, union secondary_ids; first-seen wins for ts.
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let mut by_primary: HashMap<String, (i64, BTreeSet<String>)> = HashMap::new();
-        for item in v3_merge::extract_arrays(bodies, "results") {
-            let pid = match item.get("primary_id").and_then(|v| v.as_str()) {
-                Some(s) => s.to_owned(), None => continue,
-            };
-            let ts  = item.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-            let entry = by_primary.entry(pid).or_insert_with(|| (ts, BTreeSet::new()));
-            for s in item.get("secondary_ids").and_then(|v| v.as_array()).into_iter().flatten() {
-                if let Some(s) = s.as_str() { entry.1.insert(s.to_owned()); }
-            }
-        }
-        let mut results: Vec<JsonValue> = by_primary.into_iter().map(|(pid, (ts, sids))| {
-            serde_json::json!({
-                "primary_id":    pid,
-                "timestamp":     ts,
-                "secondary_ids": sids.into_iter().collect::<Vec<_>>(),
-            })
-        }).collect();
-        // Sort by timestamp descending for stable output.
-        results.sort_by(|a, b| {
-            let ta = a.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-            let tb = b.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-            tb.cmp(&ta)
-        });
-
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let results = merge::merge_keys_get_rows(bodies);
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "results": results, "cluster_meta": v3_cluster_meta(fan),
         }))

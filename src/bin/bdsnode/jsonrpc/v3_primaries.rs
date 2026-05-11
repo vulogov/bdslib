@@ -7,12 +7,10 @@
 //!   `(id, timestamp, data|value)` rows; first-seen wins.
 
 use super::params::{rpc_err, v3_cluster_meta, TimeWindow, TimeWindowParams};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
-use std::collections::{BTreeMap, BTreeSet};
 
 pub fn register(module: &mut RpcModule<()>) {
     register_primaries(module);
@@ -57,18 +55,7 @@ fn register_primaries(module: &mut RpcModule<()>) {
             None    => None,
         };
 
-        // Sorted union of UUID strings.
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        for body in &bodies {
-            if let Some(arr) = body.get("ids").and_then(|v| v.as_array()) {
-                for v in arr {
-                    if let Some(s) = v.as_str() { set.insert(s.to_owned()); }
-                }
-            }
-        }
-        let ids: Vec<String> = set.into_iter().collect();
+        let ids = merge::union_string_ids(&local, fan.as_ref(), "ids");
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "ids": ids, "cluster_meta": v3_cluster_meta(fan),
         }))
@@ -115,40 +102,8 @@ fn register_explore(module: &mut RpcModule<()>, v3_method: &'static str, v2_meth
             None    => None,
         };
 
-        // Merge per-key: sum counts, union primary_id sets.
-        struct Acc { count: u64, ids: BTreeSet<String> }
-        let mut by_key: BTreeMap<String, Acc> = BTreeMap::new();
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        for item in v3_merge::extract_arrays(bodies, "results") {
-            let key = match item.get("key").and_then(|v| v.as_str()) {
-                Some(s) => s.to_owned(), None => continue,
-            };
-            let entry = by_key.entry(key).or_insert_with(|| Acc { count: 0, ids: BTreeSet::new() });
-            // Some peers may report different counts because secondaries
-            // (post-dedup) can land on different sides of replication;
-            // we sum them.  The UUID set tightens this on read.
-            entry.count = entry.count.saturating_add(
-                item.get("count").and_then(|v| v.as_u64()).unwrap_or(0));
-            for u in item.get("primary_id").and_then(|v| v.as_array()).into_iter().flatten() {
-                if let Some(s) = u.as_str() { entry.ids.insert(s.to_owned()); }
-            }
-        }
-
-        let mut items: Vec<JsonValue> = by_key.into_iter().map(|(key, a)| {
-            serde_json::json!({
-                "key":        key,
-                "count":      a.ids.len() as u64,  // dedup'd count via UUID set
-                "raw_count":  a.count,             // sum of per-peer counts (replicated)
-                "primary_id": a.ids.into_iter().collect::<Vec<_>>(),
-            })
-        }).collect();
-        items.sort_by(|a, b| {
-            let ca = a.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-            let cb = b.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-            cb.cmp(&ca)
-        });
-
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let items = merge::merge_explore_rows(bodies);
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "results":      items,
             "cluster_meta": v3_cluster_meta(fan),
@@ -195,9 +150,8 @@ fn register_get(module: &mut RpcModule<()>, v3_method: &'static str, v2_method: 
             Some(c) => Some(fanout::fan_out_v2(c, v2_method, v2_params).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let mut merged = v3_merge::dedup_by_id(bodies, "results");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let mut merged = merge::dedup_by_id(bodies, "results");
         // Sort by timestamp descending for stable output.
         merged.sort_by(|a, b| {
             let ta = a.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);

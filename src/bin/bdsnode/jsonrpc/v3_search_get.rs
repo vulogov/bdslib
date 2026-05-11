@@ -6,8 +6,7 @@
 //! peer's full document is kept and the score is averaged.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -45,11 +44,9 @@ pub fn register(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/search.get", v2_params).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-
         // Use score-aware dedup so duplicate replicas don't outrank singletons.
-        let mut merged = v3_merge::dedup_avg_score(bodies, "results");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let mut merged = merge::dedup_avg_score(bodies, "results");
         merged.truncate(p.limit);
 
         Ok::<JsonValue, ErrorObject>(serde_json::json!({

@@ -13,8 +13,7 @@
 //! - `v3/tpl.templates_by_timestamp` — same.
 
 use super::params::{rpc_err, v3_cluster_meta};
-use super::v3_merge;
-use bdslib::cluster::fanout;
+use bdslib::cluster::{fanout, merge};
 use jsonrpsee::types::ErrorObject;
 use jsonrpsee::RpcModule;
 use serde_json::Value as JsonValue;
@@ -48,9 +47,8 @@ fn register_list(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/tpl.list", raw).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let templates = v3_merge::dedup_by_id(bodies, "templates");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let templates = merge::dedup_by_id(bodies, "templates");
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "templates": templates, "cluster_meta": v3_cluster_meta(fan),
         }))
@@ -79,9 +77,8 @@ fn register_search(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/tpl.search", raw).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let mut results = v3_merge::dedup_avg_score(bodies, "results");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let mut results = merge::dedup_avg_score(bodies, "results");
         results.truncate(limit);
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "results": results, "cluster_meta": v3_cluster_meta(fan),
@@ -191,9 +188,8 @@ fn register_templates_recent(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/tpl.templates_recent", raw).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let templates = v3_merge::dedup_by_id(bodies, "templates");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let templates = merge::dedup_by_id(bodies, "templates");
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "templates": templates, "cluster_meta": v3_cluster_meta(fan),
         }))
@@ -220,9 +216,8 @@ fn register_templates_by_timestamp(module: &mut RpcModule<()>) {
             Some(c) => Some(fanout::fan_out_v2(c, "v2/tpl.templates_by_timestamp", raw).await),
             None    => None,
         };
-        let mut bodies: Vec<&JsonValue> = vec![&local];
-        if let Some(f) = &fan { bodies.extend(f.ok_results()); }
-        let templates = v3_merge::dedup_by_id(bodies, "templates");
+        let bodies = merge::bodies_from(&local, fan.as_ref());
+        let templates = merge::dedup_by_id(bodies, "templates");
         Ok::<JsonValue, ErrorObject>(serde_json::json!({
             "templates": templates, "cluster_meta": v3_cluster_meta(fan),
         }))
