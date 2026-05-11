@@ -315,14 +315,20 @@ async fn sync_store(
 ) -> Result<(u64, u64), String> {
     use bdslib::cluster::replication;
 
-    let list_method = format!("v2/{}.list_ids",
-        match store {
-            "scripts" => "script",
-            "signals" => "signal",
-            "users"   => "user",
-            _         => "doc",
-        }
-    );
+    // Two naming conventions co-exist:
+    //   docs/signals/scripts/users → "v2/<singular>.list_ids"
+    //   llm_cache                  → "v2/llm.cache.list_ids" (dotted family)
+    let list_method = match store {
+        "llm_cache" => "v2/llm.cache.list_ids".to_owned(),
+        _ => format!("v2/{}.list_ids",
+            match store {
+                "scripts" => "script",
+                "signals" => "signal",
+                "users"   => "user",
+                _         => "doc",
+            }
+        ),
+    };
 
     // 1. Pull peer's view.
     let remote = replication::call_peer_v2(cluster, &peer.url, &list_method, &serde_json::json!({}))
@@ -363,6 +369,20 @@ async fn sync_store(
                     .into_iter()
                     .map(|s| (s.id, serde_json::json!({"updated_at": s.updated_at})))
                     .collect()
+            }
+            "llm_cache" => {
+                // Inference cache has updated_at as a column too; the
+                // global CacheManager is the source of truth.  Skip
+                // entirely on nodes where the cache wasn't initialised
+                // (returns an empty live set rather than erroring out).
+                match bdslib::llm::cache::manager() {
+                    Some(mgr) => mgr.cache().list_ids()
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .map(|(id, ts)| (id, serde_json::json!({"updated_at": ts})))
+                        .collect(),
+                    None => Vec::new(),
+                }
             }
             _ => return Err(format!("unknown store {store_owned:?}")),
         };
@@ -417,6 +437,11 @@ async fn sync_store(
                         // missed the original delete catches up.
                         if let Some(c) = db.cluster() {
                             let _ = c.users.delete(id_t);
+                        }
+                    }
+                    "llm_cache" => {
+                        if let Some(mgr) = bdslib::llm::cache::manager() {
+                            let _ = mgr.cache().delete(id_t);
                         }
                     }
                     _         => {}  // signals don't get deleted in Phase 4
@@ -563,6 +588,37 @@ async fn pull_one(
                     AuthMethod::from_wire(&method_s),
                     metadata, created_at, updated_at, disabled,
                 ).map_err(|e| e.to_string())
+            }).await.map_err(|e| e.to_string())?
+        }
+        "llm_cache" => {
+            // Phase 3.c: pull a single inference-cache row by id from `peer`
+            // and apply it locally.  Each row is independent — no metadata
+            // / content split like docs.
+            let resp = replication::call_peer_v2(cluster, &peer.url, "v2/llm.cache.get.by_id",
+                &serde_json::json!({ "id": id.to_string() })).await
+                .map_err(|e| e.to_string())?;
+            if !resp.get("found").and_then(|v| v.as_bool()).unwrap_or(false) {
+                return Ok(());  // race: peer no longer has it
+            }
+            let cache_key     = resp.get("cache_key").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let provider      = resp.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let model         = resp.get("model").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let kind          = resp.get("kind").and_then(|v| v.as_str()).unwrap_or("complete").to_owned();
+            let request_json  = resp.get("request_json").cloned().unwrap_or(serde_json::Value::Null);
+            let response_json = resp.get("response_json").cloned().unwrap_or(serde_json::Value::Null);
+            let source_meta   = resp.get("source_meta").cloned().filter(|v| !v.is_null());
+            let created_at    = resp.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let expires_at    = resp.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let mgr = bdslib::llm::cache::manager()
+                    .ok_or_else(|| "llm cache not initialised on this node".to_owned())?;
+                let insert = bdslib::llm::cache::CacheInsert {
+                    id, cache_key, provider, model, kind,
+                    request_json, response_json, source_meta,
+                    created_at, expires_at,
+                };
+                mgr.cache().put(insert).map_err(|e| e.to_string())
             }).await.map_err(|e| e.to_string())?
         }
         _ => Ok(())

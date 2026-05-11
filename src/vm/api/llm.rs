@@ -214,7 +214,9 @@ fn cache_lookup(disposition: &CacheDisposition, key: &str) -> Option<CachedEntry
 }
 
 /// Best-effort cache write.  Failures are logged; the user already
-/// has their response.
+/// has their response.  In cluster mode the same row is fan-out
+/// replicated to every Alive peer via `v2/llm.cache.put` so peer
+/// caches converge without waiting on anti-entropy.
 fn cache_store(
     disposition: &CacheDisposition,
     cache_key:   &str,
@@ -235,14 +237,41 @@ fn cache_store(
         provider:      provider.to_owned(),
         model:         model.to_owned(),
         kind:          kind.to_owned(),
-        request_json:  canonical,
-        response_json: response,
-        source_meta,
+        request_json:  canonical.clone(),
+        response_json: response.clone(),
+        source_meta:   source_meta.clone(),
         created_at:    now_secs(),
         expires_at:    mgr.expires_at_for_now(),
     };
+    let id = insert.id;
+    let created_at = insert.created_at;
+    let expires_at = insert.expires_at;
     if let Err(e) = mgr.cache().put(insert) {
         log::debug!("vm::api::llm: cache.put failed: {e}");
+        return;
+    }
+    // Cluster replication: best-effort fan-out to every Alive peer.
+    // We don't fail the user's request when replication fails — the
+    // entry already exists locally and anti-entropy will catch up.
+    if let Ok(db) = crate::globals::get_db() {
+        if let Some(cluster) = db.cluster() {
+            let cluster = cluster.clone();
+            let params = json!({
+                "id":            id.to_string(),
+                "cache_key":     cache_key,
+                "provider":      provider,
+                "model":         model,
+                "kind":          kind,
+                "request_json":  canonical,
+                "response_json": response,
+                "source_meta":   source_meta,
+                "created_at":    created_at,
+                "expires_at":    expires_at,
+            });
+            let _ = runtime::block_on(
+                crate::cluster::replication::replicate_to_all(cluster, "v2/llm.cache.put", params),
+            );
+        }
     }
 }
 
