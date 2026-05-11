@@ -38,39 +38,82 @@ pub fn sweep(table: &SharedPeerTable, suspect_after: Duration, dead_after: Durat
     table.write().sweep(suspect_after, dead_after)
 }
 
-/// One gossip tick: pick a random Alive peer, ping it, and (every 3rd tick)
-/// pull its peer view to converge the membership table.  Tick number is
-/// passed in by the caller so this function stays stateless.
+/// One gossip tick: ping **every** Alive peer in parallel and (every
+/// 3rd tick) pull one peer's view to converge the membership table.
+///
+/// The previous implementation pinged exactly one *random* Alive peer
+/// per tick.  With N alive peers this gave each peer roughly 1/N
+/// pings per tick — and an unlucky run where the same peer was picked
+/// repeatedly would let the others age past `suspect_timeout` and
+/// flap between Alive and Suspect (via the recovery probe).  By
+/// fanning out to all Alive peers each tick we guarantee every peer's
+/// `last_seen` gets refreshed at least once per `gossip_interval`,
+/// which keeps every peer comfortably inside the Suspect window in
+/// steady state.
+///
+/// Tick cost is bounded by `peer_rpc_timeout` (default 2 s), not by
+/// the peer count, because pings run concurrently.  Failures
+/// increment `miss_count` per-peer; the liveness sweep handles
+/// Suspect/Dead transitions for peers that miss N ticks in a row.
 pub async fn tick(
     cluster: &Arc<Cluster>,
     http:    &reqwest::Client,
     tick_no: u64,
 ) -> GossipTickResult {
     let cfg = &cluster.config;
-    let target = cluster.peers.read().pick_random_alive();
-    let target = match target {
-        Some(p) => p,
-        None    => return GossipTickResult::NoAlivePeer,
-    };
+    let alive: Vec<Peer> = cluster.peers.read().alive();
+    if alive.is_empty() {
+        return GossipTickResult::NoAlivePeer;
+    }
 
     let timeout = Duration::from_secs(cfg.peer_rpc_timeout_secs);
 
-    let ping_outcome = rpc_client::cluster_ping(http, &target.url, &cfg.shared_secret, timeout).await;
-    if let Err(e) = ping_outcome {
-        cluster.peers.write().record_miss(target.node_id);
-        log::debug!("[cluster] ping {} failed: {e}", target.url);
-        return GossipTickResult::PingFailed { peer: target.url, reason: e.to_string() };
+    // Parallel ping across every Alive peer.  Each result carries the
+    // peer's node_id so we can update bookkeeping without a second
+    // table read.
+    let mut joins = Vec::with_capacity(alive.len());
+    for peer in alive.iter().cloned() {
+        let http_c    = http.clone();
+        let secret    = cfg.shared_secret.clone();
+        let url       = peer.url.clone();
+        let node_id   = peer.node_id;
+        joins.push(tokio::spawn(async move {
+            let outcome = rpc_client::cluster_ping(&http_c, &url, &secret, timeout).await;
+            (node_id, url, outcome)
+        }));
     }
-    cluster.peers.write().record_alive(target.node_id);
+    let mut succeeded = 0usize;
+    let mut last_ok_url: Option<String> = None;
+    for j in joins {
+        let (node_id, url, outcome) = match j.await {
+            Ok(t)  => t,
+            Err(e) => { log::warn!("[cluster] ping task panicked: {e}"); continue; }
+        };
+        match outcome {
+            Ok(_resp) => {
+                cluster.peers.write().record_alive(node_id);
+                succeeded += 1;
+                last_ok_url = Some(url);
+            }
+            Err(e) => {
+                cluster.peers.write().record_miss(node_id);
+                log::debug!("[cluster] ping {url} failed: {e}");
+            }
+        }
+    }
 
-    // Every Nth tick, also exchange peer views so the table converges
-    // even when no nodes are joining/leaving.
+    // Every Nth tick, exchange peer views with ONE successful peer so
+    // the membership table converges even when no nodes are
+    // joining/leaving.  Picking just one peer avoids quadratic
+    // chatter (N peers × N pulls per tick).
     let do_pull = tick_no % 3 == 0;
-    if !do_pull {
-        return GossipTickResult::Pinged { peer: target.url };
+    if !do_pull || last_ok_url.is_none() {
+        let url_for_log = last_ok_url.unwrap_or_else(|| "(none)".to_owned());
+        return GossipTickResult::Pinged { peer: url_for_log };
     }
+    let pull_target = last_ok_url.unwrap();
 
-    match rpc_client::cluster_peers(http, &target.url, &cfg.shared_secret, timeout).await {
+    match rpc_client::cluster_peers(http, &pull_target, &cfg.shared_secret, timeout).await {
         Ok(remote) => {
             let mut new_count = 0;
             {
@@ -83,11 +126,12 @@ pub async fn tick(
                 }
             }
             cluster.persist_peers_best_effort();
-            GossipTickResult::Merged { peer: target.url, new_peers: new_count }
+            let _ = succeeded;  // accounted for via record_alive already
+            GossipTickResult::Merged { peer: pull_target, new_peers: new_count }
         }
         Err(e) => {
-            log::debug!("[cluster] peers from {} failed: {e}", target.url);
-            GossipTickResult::PeersFailed { peer: target.url, reason: e.to_string() }
+            log::debug!("[cluster] peers from {} failed: {e}", pull_target);
+            GossipTickResult::PeersFailed { peer: pull_target, reason: e.to_string() }
         }
     }
 }
