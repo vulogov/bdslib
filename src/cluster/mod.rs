@@ -15,6 +15,7 @@
 //! [`ShardsManager`]: crate::ShardsManager
 
 pub mod config;
+pub mod credential;
 pub mod fanout;
 pub mod gossip;
 pub mod hints;
@@ -25,7 +26,9 @@ pub mod persistence;
 pub mod replication;
 pub mod rpc_client;
 pub mod scheduler_log;
+pub mod session;
 pub mod tombstones;
+pub mod user_store;
 
 pub use config::ClusterConfig;
 pub use peer_table::{Peer, PeerState, PeerTable, SharedPeerTable};
@@ -87,6 +90,16 @@ pub struct Cluster {
     /// `v2/scheduler.last_seen` fan-out) to skip ticks that another
     /// node already serviced within `scheduler_dedup_window`.
     pub scheduler_log: scheduler_log::SchedulerLog,
+    /// Cluster-replicated user store.  Backs the bdsweb login flow,
+    /// the `v3/user.*` admin RPCs, and `v3/user.authenticate`.
+    /// Replicated like docs/signals/scripts via Phase 7.2's
+    /// coordinator handlers.
+    pub users: user_store::UserStorage,
+    /// Process-wide credential verifier registry — consulted by
+    /// `users.add` / `users.modify` / `users.verify` to dispatch
+    /// per-row `auth_method` to the right impl.  Default registry is
+    /// password-only; OAuth/LDAP impls register at startup.
+    pub verifiers: Arc<credential::VerifierRegistry>,
     /// Live counters surfaced through `v2/cluster.peers` and the bdsweb
     /// dashboard so operators can see when the background tasks last ran
     /// and how many entries they touched.
@@ -134,6 +147,15 @@ impl Cluster {
         let tombstones  = tombstones::TombstoneStorage::open(&network_dir)?;
         let scheduler_log = scheduler_log::SchedulerLog::open(&network_dir)?;
 
+        // The user store sits OUTSIDE the network/ dir — it's a
+        // user-facing store like docs/signals/scripts, replicated by
+        // anti-entropy.  The verifier registry is per-node (no
+        // network state) and currently password-only; OAuth/LDAP
+        // verifiers register here when implementations land.
+        let verifiers = Arc::new(credential::VerifierRegistry::default());
+        let users_root = std::path::PathBuf::from(dbpath).join("users");
+        let users = user_store::UserStorage::open(&users_root, verifiers.clone())?;
+
         // Per-Client connection pool.  The default timeout is generous
         // (peer_rpc_timeout + 2s grace); individual calls override with
         // the precise deadline they want.
@@ -143,10 +165,12 @@ impl Cluster {
             .map_err(|e| crate::common::error::err_msg(format!("reqwest client build: {e}")))?;
 
         log::info!(
-            "[cluster] initialised node_id={node_id} bind_url={} bootstrap={:?} (table={} peers, hints={}, tombstones={})",
+            "[cluster] initialised node_id={node_id} bind_url={} bootstrap={:?} \
+             (table={} peers, hints={}, tombstones={}, users={})",
             config.bind_url, config.bootstrap, peers.read().len(),
             hints.len().unwrap_or(0),
             tombstones.len().unwrap_or(0),
+            users.count().unwrap_or(0),
         );
 
         Ok(Arc::new(Self {
@@ -160,6 +184,8 @@ impl Cluster {
             hints,
             tombstones,
             scheduler_log,
+            users,
+            verifiers,
             stats: RwLock::new(ClusterStats::default()),
         }))
     }

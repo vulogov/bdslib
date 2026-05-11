@@ -42,6 +42,16 @@ pub struct ClusterConfig {
     /// Default: 5 minutes.  Set generously: it should comfortably
     /// exceed the largest plausible inter-node clock skew + tick jitter.
     pub scheduler_dedup_window_secs: u64,
+    /// TTL of the session cookie issued by `v3/user.authenticate` and
+    /// the bdsweb /login form.  Default: 8h.  Tokens are stateless
+    /// HMAC-signed (`cluster::session`) so no per-node state grows
+    /// with the TTL.
+    pub session_ttl_secs:        u64,
+    /// Per-IP rate limit for the login path
+    /// (`POST /login` + `v3/user.authenticate`).  Default: 10/minute,
+    /// burst 3.  Set to 0 to disable rate limiting entirely
+    /// (NOT recommended on internet-facing deployments).
+    pub auth_rate_limit_per_minute: u32,
 }
 
 impl ClusterConfig {
@@ -58,7 +68,7 @@ impl ClusterConfig {
             dead_timeout_secs:        120,
             full_mode_threshold:      3,
             replication_factor:       3,
-            full_replication_stores:  vec!["docs".into(), "signals".into(), "scripts".into()],
+            full_replication_stores:  vec!["docs".into(), "signals".into(), "scripts".into(), "users".into()],
             antientropy_interval_secs: 300,
             hint_replay_interval_secs: 10,
             hint_max_age_secs:        86_400,
@@ -67,6 +77,8 @@ impl ClusterConfig {
             floating_bootstrap:       true,
             bootstrap_retry_interval_secs: 60,
             scheduler_dedup_window_secs: 300,
+            session_ttl_secs:           8 * 3600,
+            auth_rate_limit_per_minute: 10,
         }
     }
 
@@ -130,7 +142,7 @@ impl ClusterConfig {
                     .filter_map(|x| x.as_str().map(str::to_owned))
                     .collect()
             })
-            .unwrap_or_else(|| vec!["docs".into(), "signals".into(), "scripts".into()]);
+            .unwrap_or_else(|| vec!["docs".into(), "signals".into(), "scripts".into(), "users".into()]);
 
         let floating_bootstrap = block.get("floating_bootstrap")
             .and_then(|v| v.as_bool())
@@ -166,6 +178,11 @@ impl ClusterConfig {
             floating_bootstrap,
             bootstrap_retry_interval_secs,
             scheduler_dedup_window_secs: parse_dur("scheduler_dedup_window", 300)?,
+            session_ttl_secs:           parse_dur("session_ttl", 8 * 3600)?,
+            auth_rate_limit_per_minute: block.get("auth_rate_limit_per_minute")
+                .and_then(|v| v.as_f64())
+                .map(|n| n as u32)
+                .unwrap_or(10),
         })
     }
 
