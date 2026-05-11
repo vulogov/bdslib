@@ -10,6 +10,7 @@ pub mod embedding;
 pub mod frequencytrackingstorage;
 pub mod fts;
 pub mod globals;
+pub mod llm;
 pub mod observability;
 pub mod scheduler;
 pub mod shard;

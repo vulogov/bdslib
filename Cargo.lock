@@ -874,6 +874,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "askama",
+ "async-trait",
  "augurs",
  "axum",
  "axum-extra",

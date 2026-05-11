@@ -153,6 +153,23 @@ async fn main() -> anyhow::Result<()> {
     jsonrpc::chat_ollama::init(cli.config.as_deref())
         .context("failed to initialise Ollama config")?;
 
+    // Phase 0 of v4/* LLM surface — register provider clients from the
+    // `llm` block of bds.hjson.  Empty manager (no providers) is fine
+    // and just means no v4/* RPC will resolve until config is added.
+    if let Some(path) = cli.config.as_deref() {
+        let mgr = bdslib::llm::ProviderManager::load_from_hjson(path);
+        if mgr.is_empty() {
+            log::info!("[llm] no providers registered ({path}: missing `llm` block or all skipped)");
+        } else {
+            log::info!("[llm] {} provider(s) registered: {:?} (default={:?})",
+                mgr.len(), mgr.registered(), mgr.default_id());
+        }
+        bdslib::llm::manager::init(mgr);
+    } else {
+        log::info!("[llm] no --config supplied; provider manager left empty");
+        bdslib::llm::manager::init(bdslib::llm::ProviderManager::empty(None));
+    }
+
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;

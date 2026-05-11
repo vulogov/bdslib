@@ -113,6 +113,8 @@ axum-extra = { version = "0.10", features = ["cookie"] }
 tower_governor = "0.7"
 urlencoding = "2"
 time = "0.3"
+# Phase 0 — LLM provider layer (v4/* foundation)
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3.8"
