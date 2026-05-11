@@ -45,6 +45,7 @@ pub mod add;
 pub mod analysis;
 pub mod documents;
 pub mod keys;
+pub mod llm;
 pub mod primaries;
 pub mod scripts;
 pub mod search;

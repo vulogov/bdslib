@@ -26,6 +26,11 @@ thread_local! {
     /// `{enabled: bool, peers_queried: u64, peers_answered: u64,
     ///   partial: bool, failed: [{node_id, url, error}, …]}`.
     static LAST_META: RefCell<Option<JsonValue>> = const { RefCell::new(None) };
+    /// Most-recent LLM helper's introspection block (provider, model,
+    /// tokens, ms, cache hit/miss).  Exposed via `?llm.meta`.  Kept
+    /// separate from `LAST_META` so a Bund script can read both without
+    /// the two clobbering each other.
+    static LAST_LLM_META: RefCell<Option<JsonValue>> = const { RefCell::new(None) };
 }
 
 /// Replace the per-thread cluster_meta cache.  Helpers call this with
@@ -48,6 +53,20 @@ pub fn clear() {
 /// most-recent helper took the standalone path.
 pub fn get() -> Option<JsonValue> {
     LAST_META.with(|cell| cell.borrow().clone())
+}
+
+/// Replace the per-thread LLM meta cache.  See [`set`] for the cluster
+/// twin; this slot is independent.
+pub fn set_llm(meta: JsonValue) {
+    LAST_LLM_META.with(|cell| *cell.borrow_mut() = Some(meta));
+}
+
+pub fn clear_llm() {
+    LAST_LLM_META.with(|cell| *cell.borrow_mut() = None);
+}
+
+pub fn get_llm() -> Option<JsonValue> {
+    LAST_LLM_META.with(|cell| cell.borrow().clone())
 }
 
 #[cfg(test)]

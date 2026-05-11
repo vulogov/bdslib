@@ -27,6 +27,7 @@ pub mod analysis;
 pub mod docs;
 pub mod helpers;
 pub mod keys;
+pub mod llm;
 pub mod meta;
 pub mod primaries;
 pub mod scripts;
@@ -45,5 +46,6 @@ pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
     docs::init_stdlib(vm)?;
     templates::init_stdlib(vm)?;
     scripts::init_stdlib(vm)?;
+    llm::init_stdlib(vm)?;
     Ok(())
 }
