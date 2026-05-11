@@ -241,6 +241,14 @@ enum Commands {
     /// dedup mechanism that suppresses duplicate fires across the
     /// cluster reads exactly this value (locally + via fan-out).
     SchedulerLastSeen(cmd::scheduler_last_seen::Cmd),
+
+    /// Manage cluster-replicated users: add / modify / delete / list,
+    /// the public `authenticate` login path, and offline `whoami`
+    /// session-token verification.  Admin subcommands require
+    /// `--secret` matching `cluster.shared_secret` from `bds.hjson`;
+    /// `authenticate` is unauthenticated; `whoami` uses the secret
+    /// to verify the token's HMAC offline.
+    User(cmd::user::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -334,6 +342,7 @@ fn main() -> Result<()> {
         Commands::Signals(a)                  => cmd::signals::run(&url, &session, a),
         Commands::SignalsQuery(a)             => cmd::signals_query::run(&url, &session, a),
         Commands::SchedulerLastSeen(a)        => cmd::scheduler_last_seen::run(&url, &session, a),
+        Commands::User(a)                     => cmd::user::run(&url, &session, a),
     }?;
 
     if cli.raw {
