@@ -1,0 +1,18 @@
+// 07_keys_primaries.bund — Telemetry-key + primary-record enumeration.
+//
+// `cls.keys` returns the cluster-wide sorted union of telemetry
+// keys observed in the trailing duration window.  `cls.primaries`
+// returns the cluster-wide sorted union of primary record UUIDs
+// across the (optional) time window — pass `dict` (empty Map) for
+// "every shard ever".
+
+// ── distinct primary keys observed in the last hour ───────────────
+"1h" cls.keys
+
+// ── distinct primary UUIDs across every shard ─────────────────────
+dict cls.primaries
+
+// ── per-key UUID rollup with sample counts ────────────────────────
+"1h" cls.primaries.explore
+
+?cluster.meta.

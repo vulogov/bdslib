@@ -1,0 +1,23 @@
+// 06_documents.bund — Fully-replicated document store.
+//
+// `cls.doc.add` puts metadata + content; replicates to every Alive
+// peer under the same UUID.  Reads (`cls.doc.get.metadata`,
+// `cls.doc.search`, …) are local-only — anti-entropy keeps every
+// node's docstore aligned.
+
+// ── add a document ────────────────────────────────────────────────
+dict
+"name"     "demo.txt"        set
+"category" "smoke"           set
+"hello from cls.doc.add"    // content (STR is auto-converted to bytes)
+cls.doc.add
+// → pushes the document UUID as a string
+
+// ── read its metadata back ────────────────────────────────────────
+// (Use `dup` if you want to keep the id around — here we just consume it.)
+cls.doc.get.metadata
+
+// ── echo the meta of the most-recent cluster call ─────────────────
+// `cls.doc.get.metadata` is local-only, so meta will be nodata.
+// To see write-side meta, re-run cls.doc.add and then ?cluster.meta.
+?cluster.meta.

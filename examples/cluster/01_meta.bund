@@ -1,0 +1,15 @@
+// 01_meta.bund — Inspecting cluster mode from a Bund script.
+//
+// The `?cluster.meta` word reads the most-recent cluster-aware
+// helper's per-thread cache.  When standalone, or when no `cls.*`
+// word has run on the current thread, it returns nodata.  When a
+// cluster read just ran, it returns:
+//   { enabled, peers_queried, peers_answered, partial, failed[] }
+// When a cluster write just ran, it returns:
+//   { enabled, replication: { peers_attempted, peers_succeeded, hints_queued } }
+//
+// `cls.timeline` is a no-input read that returns {min_ts, max_ts}
+// across the cluster, so it's the cheapest way to populate the meta.
+
+cls.timeline             // pushes {min_ts, max_ts} on the stack
+?cluster.meta.           // pushes meta to the workbench (eval returns workbench top)

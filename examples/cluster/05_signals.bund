@@ -1,0 +1,22 @@
+// 05_signals.bund — Fully-replicated signals store.
+//
+// `cls.signal.emit` writes locally and replicates to every Alive
+// peer under the same UUID.  Failed peers enqueue hints in the
+// shared hint storage; the cluster background task replays them
+// when peers transition Alive again.
+
+// ── emit a signal ─────────────────────────────────────────────────
+// Args (deepest first): name, severity, timestamp, extra(MAP)
+"smoke.signal"     // name
+"info"             // severity
+1700000000         // timestamp (Unix seconds)
+dict               // extra metadata Map (empty)
+"source" "demo"    set
+cls.signal.emit
+// → pushes the signal UUID as a string
+
+// ── list signals seen in the last hour, cluster-wide ──────────────
+"1h" cls.signals.recent
+
+// ── echo the meta of the most-recent cluster call ─────────────────
+?cluster.meta.

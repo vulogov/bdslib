@@ -1,0 +1,20 @@
+// 04_analysis.bund — Analytics over the cluster's union corpus.
+//
+// `cls.timeline`, `cls.knn`, and `cls.trends` each fan out across
+// peers.  For analytics that operate on a corpus (knn, anomaly,
+// denoise), the union of every peer's fingerprints is computed
+// first; the analysis then runs once on the coordinator over the
+// dedup'd set.  For corpus-relative outputs that aren't mergeable
+// (rca, topics, trends), the helper picks the response with the
+// largest sample / event / corpus count.
+
+// ── earliest and latest timestamps across the cluster ─────────────
+cls.timeline
+?cluster.meta.       // → {enabled, peers_queried, peers_answered, …}
+
+// ── per-key statistical trends over the last hour ─────────────────
+"cpu.user" "1h" cls.trends
+
+// ── k-NN over the recent fingerprint union ────────────────────────
+// Empty opts Map → uses the default knobs (k=5, min_word_len=2, …).
+"1h" dict cls.knn

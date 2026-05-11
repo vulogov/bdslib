@@ -1,0 +1,28 @@
+// 08_introspection.bund — Walk through the ?cluster.meta states.
+//
+// The per-thread meta cell is set / cleared by every `cls.*` helper.
+// Reads (cls.timeline, cls.search, …) populate it with the cluster
+// fan-out's peers_queried / peers_answered.  Writes (cls.add,
+// cls.signal.emit, cls.doc.add, …) populate it with the
+// peers_attempted / peers_succeeded / hints_queued breakdown of the
+// replication outcome.  Local-only helpers (cls.signal.get,
+// cls.doc.get.metadata, cls.scripts.list, …) clear it back to nodata.
+
+// ── 1. before any cls.* call: ?cluster.meta is nodata ────────────
+?cluster.meta              // nodata
+
+// ── 2. after a cluster READ ──────────────────────────────────────
+cls.timeline               // pushes {min_ts, max_ts}
+?cluster.meta              // {enabled:true, peers_queried:N, peers_answered:N, …}
+
+// ── 3. after a cluster WRITE ─────────────────────────────────────
+dict
+"key"       "introspection.demo" set
+"timestamp" 1700000000           set
+"data"      "ping"               set
+cls.add                    // pushes the new id
+?cluster.meta              // {enabled:true, replication: {peers_attempted, peers_succeeded, …}}
+
+// ── 4. after a LOCAL-ONLY helper: meta is cleared ───────────────
+cls.scripts.list           // local-only docstore enumeration
+?cluster.meta.             // nodata pushed to workbench (eval result)

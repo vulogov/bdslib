@@ -92,12 +92,47 @@ Key methods: `parse(line)` → `ParseResult<'_>`, `parse_json(doc)` → `ParseJs
 
 `ShardsManager::drain_parse_json(parser, doc)` and `ShardsManager::drain_load(duration)` are the instance-scoped equivalents.
 
+### Cluster-aware Bund VM API (`src/vm/api`, `src/vm/stdlib/cluster`)
+
+Bund scripts get a transparent cluster-aware API that uses `rust_dynamic::value::Value` everywhere and detects standalone vs cluster mode at the call site.
+
+**Helpers** — `src/vm/api/` — one fn per logical operation (`add`, `search_vector`, `anomaly_recent`, `signal_emit`, `doc_add`, …) under area modules (`add`, `search`, `analysis`, `signals`, `documents`, `templates`, `scripts`, `keys`, `primaries`).  Every helper:
+1. Looks up the global DB via `bdslib::get_db()`.
+2. Converts Value inputs to JSON via `vm::helpers::eval::dynamic_to_json`.
+3. Routes through `vm::api::dispatch::{read, write_replicated, write_sharded, write_local}`:
+   - Standalone → local DB call only.
+   - Cluster reads → local call + `cluster::fanout::fan_out_v2` to every Alive peer, merged via `cluster::merge` (the same module bdsnode's `v3_*.rs` handlers use).
+   - Cluster writes → local commit + replication via `cluster::replication::{replicate_to_all, pick_random_alive}` with hint-on-failure.
+4. Stashes the per-call `cluster_meta` on a per-thread cell (`vm::api::meta::set`) so Bund scripts can introspect via `?cluster.meta`.
+5. Returns the result as a `rust_dynamic::value::Value`.
+
+Async-from-sync bridge: `vm::api::runtime::block_on` uses `tokio::task::block_in_place` + `Handle::current().block_on` when an ambient tokio runtime exists (bdsnode/bdsweb), and falls back to a `OnceLock<Runtime>` for bdscmd.
+
+**Bund words** — `src/vm/stdlib/cluster/` — ~70 helpers wired as `cls.*` words, each with stack and workbench variants:
+
+| Family            | Words (selection)                                                     |
+|-------------------|-----------------------------------------------------------------------|
+| `cls.add`         | `cls.add`, `cls.add.batch`, `cls.update`, `cls.delete`, `cls.count`, `cls.duplicates`, `cls.fingerprints.recent` |
+| `cls.search`      | `cls.search`, `cls.search.get`, `cls.search.fts`, `cls.aggregation`, `cls.fulltext`, `cls.fulltext.recent`, `cls.fulltext.get` |
+| `cls.analysis`    | `cls.anomaly.recent`, `cls.denoise.recent`, `cls.knn`, `cls.rca`, `cls.rca.templates`, `cls.topics`, `cls.topics.all`, `cls.trends`, `cls.summary.{recent,query,lsa.recent,lsa.query}`, `cls.textrank.templates`, `cls.timeline` |
+| `cls.signal`      | `cls.signal.{emit,update,get}`, `cls.signals.{recent,query}`          |
+| `cls.doc`         | `cls.doc.{add,add.file,update.metadata,update.content,delete,get.metadata,get.content,search,search.strings,search.json,search.json.strings,reindex,sync}` |
+| `cls.tpl`         | `cls.tpl.{add,update.metadata,update.body,delete,reindex,get,list,search,template.by.id,templates.recent,templates.by.timestamp}` |
+| `cls.script`      | `cls.script.{add,update,delete,get}`, `cls.scripts.list`              |
+| `cls.keys`        | `cls.keys`, `cls.keys.all`, `cls.keys.get`                            |
+| `cls.primaries`   | `cls.primaries`, `cls.primaries.{explore,explore.telemetry,get,get.telemetry}`, `cls.secondaries`, `cls.primary`, `cls.secondary` |
+| meta              | `?cluster.meta` (stack) and `?cluster.meta.` (workbench)              |
+
+The existing `db.*` / `doc.*` words are untouched — scripts opt into cluster awareness by using `cls.*` instead.  See `examples/cluster/` for a tour.
+
 ## Integration Tests
 
 Tests live in `tests/storageengine_test.rs`. Each test creates its own DuckDB instance (`:memory:` or `tempfile`):
 - `test_storage_engine_full_lifecycle` — basic CRUD
 - `test_concurrent_access` — 100-thread Rayon parallel stress test
 - `test_type_conversions` — BLOB/binary handling
+
+Cluster-aware standalone smoke at `tests/vm_api_smoke.rs` exercises `vm::api::*` end-to-end against a freshly initialised global DB.
 
 ## Key Dependencies
 

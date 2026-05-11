@@ -1,0 +1,28 @@
+// 02_add_count.bund — Cluster-aware insert + count.
+//
+// Builds an observability record as a Map and inserts it via cls.add.
+// In cluster mode, the record lands locally and is replicated to
+// `replication_factor - 1` random Alive peers (with hint-on-failure).
+// Then `cls.count` returns the cluster-wide row count.
+//
+// Map construction in Bund: push the empty map, then alternating
+// (key_string, value) pairs, calling `set` after each pair.  `set`
+// pulls (top→bottom) the value, the key, the map; pushes the updated
+// map back.
+
+// ── build the doc Map ───────────────────────────────────────────────
+dict
+"key"       "cpu.user"            set
+"timestamp" 1700000000            set
+"data"      "from cluster demo"   set
+
+// ── insert it (returns the new UUID as a string on the stack) ──────
+cls.add
+
+// ── count rows across the cluster ──────────────────────────────────
+// Empty Map → "every shard ever".  cls.count merges by summing
+// per-peer `count` fields (overcounts replicated rows by ~RF).
+dict cls.count
+
+// ── echo the meta of the most-recent cluster call to the workbench ─
+?cluster.meta.

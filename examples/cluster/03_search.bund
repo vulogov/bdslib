@@ -1,0 +1,20 @@
+// 03_search.bund — Cluster-wide search variants.
+//
+// Each `cls.search*` helper fans out the matching v2/* method to
+// every Alive peer and merges by UUID dedup + score average (or the
+// per-method strategy described in src/cluster/merge.rs).
+//
+// All three of these accept a string query and a duration window.
+
+// ── BM25 full-text returning ranked (id, score) hits ──────────────
+"error"  "1h" 10  cls.fulltext
+
+// ── vector search returning matched documents ─────────────────────
+"login failures"  "1h"  cls.search
+
+// ── combined observability + document semantic search ─────────────
+// Returns {observability: [...], documents: [...]} in one pass.
+"network outage"  "1h"  cls.aggregation
+
+// ── echo the meta of the LAST cluster call (cls.aggregation) ──────
+?cluster.meta.
