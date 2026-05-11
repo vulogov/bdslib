@@ -46,21 +46,41 @@ pub struct AppState {
     /// Cluster-mode flag (cached).  When true, the per-route handlers
     /// route their RPCs through v3/* (cluster-aware) instead of v2/*.
     pub cluster_mode: Arc<RwLock<ClusterModeCache>>,
+    /// Cluster shared secret — same value as `cluster.shared_secret`
+    /// in `bds.hjson`.  Used by the auth middleware to verify
+    /// `bds_session` cookies and by `/admin/users` to HMAC-sign
+    /// `v3/user.*` admin calls.  Empty string when bdsweb was started
+    /// without `--config` or when `cluster.enabled = false` on the
+    /// target node — both cases disable authentication entirely
+    /// (open-access mode).
+    pub shared_secret: Arc<String>,
+    /// 30-second cache of "is the user store empty cluster-wide?".
+    /// While true, the auth middleware grants free access so an
+    /// operator can hit `/admin/users` to create the first user.
+    /// The cache is refreshed on every miss past its TTL.
+    pub bootstrap_cache: Arc<RwLock<crate::auth::BootstrapCache>>,
 }
 
 impl AppState {
-    pub fn new(node_url: String, ollama_model: String, dashboard_refresh_secs: u64) -> Self {
+    pub fn new(
+        node_url: String,
+        ollama_model: String,
+        dashboard_refresh_secs: u64,
+        shared_secret: String,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("failed to build HTTP client");
         Self {
-            node_url:     Arc::new(node_url),
+            node_url:      Arc::new(node_url),
             http,
-            ollama_model: Arc::new(ollama_model),
+            ollama_model:  Arc::new(ollama_model),
             dashboard_refresh_secs,
             dashboard_cache: Arc::new(RwLock::new(None)),
-            cluster_mode:   Arc::new(RwLock::new(ClusterModeCache::default())),
+            cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
+            shared_secret:   Arc::new(shared_secret),
+            bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),
         }
     }
 }

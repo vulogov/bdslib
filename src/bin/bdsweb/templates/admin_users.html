@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block nav_admin_users %}active{% endblock %}
+{% block content %}
+
+<header class="mb-6 flex items-baseline justify-between">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">User management</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Cluster-replicated users.  Every change here fans out via
+      <code class="text-slate-300">v3/user.*</code> with HMAC-signed admin
+      authentication and lands on every Alive peer.
+    </p>
+  </div>
+</header>
+
+{% if has_error %}
+<div class="mb-4 rounded border border-red-800 bg-red-950 px-3 py-2 text-xs text-red-300">
+  {{ error_msg }}
+</div>
+{% endif %}
+
+{% if has_notice %}
+<div class="mb-4 rounded border border-emerald-800 bg-emerald-950 px-3 py-2 text-xs text-emerald-300">
+  {{ notice }}
+</div>
+{% endif %}
+
+<!-- Add-user form ─────────────────────────────────────────────────────── -->
+<section class="card rounded-lg p-4 mb-6" style="border:1px solid #1e2535; background:#0e1520;">
+  <h2 class="text-sm font-semibold text-slate-200 mb-3">Add user</h2>
+  <form method="post" action="/admin/users/add" class="flex flex-wrap items-end gap-3">
+    <div class="flex-1 min-w-[8rem]">
+      <label class="block text-xs text-slate-400 mb-1">Username</label>
+      <input type="text" name="username" required
+             class="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-sm text-slate-200" />
+    </div>
+    <div class="flex-1 min-w-[8rem]">
+      <label class="block text-xs text-slate-400 mb-1">Password</label>
+      <input type="password" name="password" required
+             class="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-sm text-slate-200" />
+    </div>
+    <div class="flex-1 min-w-[8rem]">
+      <label class="block text-xs text-slate-400 mb-1">Display name (optional)</label>
+      <input type="text" name="display_name"
+             class="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-sm text-slate-200" />
+    </div>
+    <button type="submit"
+            class="bg-blue-600 hover:bg-blue-500 text-white text-sm rounded px-3 py-1.5 font-medium">
+      Add user
+    </button>
+  </form>
+</section>
+
+<!-- User table ────────────────────────────────────────────────────────── -->
+<section class="card rounded-lg overflow-hidden" style="border:1px solid #1e2535;">
+  <div class="px-4 py-2.5" style="border-bottom:1px solid #1e2535; background:#0e1520;">
+    <span class="text-xs text-slate-400">
+      {% if users.is_empty() %}
+        No users yet &mdash; create the first one above.
+      {% else %}
+        <span class="text-white font-semibold">{{ users.len() }}</span> user{% if users.len() != 1 %}s{% endif %}
+      {% endif %}
+    </span>
+  </div>
+
+  {% if !users.is_empty() %}
+  <table style="width:100%">
+    <thead>
+      <tr>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Username</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Display name</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Auth method</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Created</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Updated</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Status</th>
+        <th class="text-right text-xs text-slate-400 px-3 py-2">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for u in users %}
+      <tr style="border-top:1px solid #1e2535;">
+        <td class="px-3 py-2 text-sm text-white font-medium">{{ u.username }}</td>
+        <td class="px-3 py-2 text-sm text-slate-300">{{ u.display_name }}</td>
+        <td class="px-3 py-2 text-xs font-mono text-slate-400">{{ u.auth_method }}</td>
+        <td class="px-3 py-2 text-xs text-slate-400">{{ u.created_at }}</td>
+        <td class="px-3 py-2 text-xs text-slate-400">{{ u.updated_at }}</td>
+        <td class="px-3 py-2 text-xs">
+          {% if u.disabled %}
+            <span class="text-red-400">disabled</span>
+          {% else %}
+            <span class="text-emerald-400">active</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-right">
+          <details class="inline-block relative">
+            <summary class="cursor-pointer text-xs text-slate-300 hover:text-white">⋯</summary>
+            <div class="absolute right-0 mt-1 z-10 min-w-[16rem] rounded border border-slate-800 bg-slate-950 p-3 space-y-3">
+              <form method="post" action="/admin/users/reset_password/{{ u.id }}" class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-slate-500">Reset password</label>
+                <input type="password" name="password" required placeholder="new password"
+                       class="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200" />
+                <button class="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs rounded px-2 py-1">
+                  Reset
+                </button>
+              </form>
+              {% if u.disabled %}
+              <form method="post" action="/admin/users/enable/{{ u.id }}">
+                <button class="w-full bg-emerald-700 hover:bg-emerald-600 text-white text-xs rounded px-2 py-1">
+                  Re-enable
+                </button>
+              </form>
+              {% else %}
+              <form method="post" action="/admin/users/disable/{{ u.id }}">
+                <button class="w-full bg-yellow-700 hover:bg-yellow-600 text-white text-xs rounded px-2 py-1">
+                  Disable
+                </button>
+              </form>
+              {% endif %}
+              <form method="post" action="/admin/users/delete/{{ u.id }}"
+                    onsubmit="return confirm('Delete user {{ u.username }}? This is replicated immediately to every peer.')">
+                <button class="w-full bg-red-700 hover:bg-red-600 text-white text-xs rounded px-2 py-1">
+                  Delete
+                </button>
+              </form>
+            </div>
+          </details>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+{% endblock %}

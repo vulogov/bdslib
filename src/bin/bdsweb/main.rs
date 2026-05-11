@@ -1,9 +1,11 @@
+mod admin;
+mod auth;
 mod client;
 mod error;
 mod routes;
 mod state;
 
-use axum::{routing::{delete, get, post}, Router};
+use axum::{middleware, routing::{delete, get, post}, Router};
 use clap::Parser;
 use state::AppState;
 use tower_http::compression::CompressionLayer;
@@ -35,10 +37,20 @@ struct Args {
 struct WebConfig {
     ollama_model:           String,
     dashboard_refresh_secs: u64,
+    /// Cluster shared secret read from `cluster.shared_secret` in
+    /// `bds.hjson`.  Empty when the config file is missing, the
+    /// cluster block is absent, or `cluster.enabled = false` — in
+    /// all three cases bdsweb runs in open-access mode (no auth
+    /// middleware, no login form).
+    shared_secret:          String,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
-    let defaults = WebConfig { ollama_model: "llama3.2".to_owned(), dashboard_refresh_secs: 30 };
+    let defaults = WebConfig {
+        ollama_model: "llama3.2".to_owned(),
+        dashboard_refresh_secs: 30,
+        shared_secret: String::new(),
+    };
     let path = match config_path {
         Some(p) => p,
         None => return defaults,
@@ -55,6 +67,16 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         Some(o) => o,
         None => return defaults,
     };
+    // Cluster block is optional; its absence (or enabled=false)
+    // leaves `shared_secret` empty → open-access mode.
+    let shared_secret = obj.get("cluster")
+        .and_then(|v| v.as_object())
+        .and_then(|c| {
+            let enabled = c.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !enabled { return None; }
+            c.get("shared_secret").and_then(|v| v.as_str()).map(str::to_owned)
+        })
+        .unwrap_or_default();
     WebConfig {
         ollama_model: obj.get("ollama_model")
             .and_then(|v| v.as_str())
@@ -65,6 +87,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             .map(|n| n as u64)
             .unwrap_or(defaults.dashboard_refresh_secs)
             .max(1),
+        shared_secret,
     }
 }
 
@@ -80,7 +103,14 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
 
     let cfg = load_config(args.config.as_deref());
-    let state = AppState::new(args.node.clone(), cfg.ollama_model, cfg.dashboard_refresh_secs);
+    if cfg.shared_secret.is_empty() {
+        log::warn!("bdsweb starting in OPEN-ACCESS mode — no cluster.shared_secret found in config; \
+                    session auth is disabled");
+    } else {
+        log::info!("bdsweb auth enabled — shared_secret loaded ({} bytes)", cfg.shared_secret.len());
+    }
+    let state = AppState::new(args.node.clone(), cfg.ollama_model, cfg.dashboard_refresh_secs,
+                              cfg.shared_secret);
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
     {
@@ -162,6 +192,23 @@ async fn main() {
         .route("/scripts/run",            post(routes::scripts::run))
         .route("/scripts/{id}",           delete(routes::scripts::delete))
         .route("/version",        get(routes::version::version))
+
+        // ── Authentication ──────────────────────────────────────────
+        .route("/login",  get(routes::login::page).post(routes::login::submit))
+        .route("/logout", post(routes::login::logout))
+
+        // ── Administration → User management ─────────────────────────
+        .route("/admin/users",                       get(routes::admin_users::page_with_banners))
+        .route("/admin/users/add",                   post(routes::admin_users::add))
+        .route("/admin/users/delete/{id}",           post(routes::admin_users::delete))
+        .route("/admin/users/reset_password/{id}",   post(routes::admin_users::reset_password))
+        .route("/admin/users/disable/{id}", post(routes::admin_users::disable))
+        .route("/admin/users/enable/{id}",  post(routes::admin_users::enable))
+
+        // Gate every other route behind the session-cookie middleware.
+        // Open paths (/login, /logout, /version) are checked inside the
+        // middleware so we don't have to remove their layers here.
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_session))
         .layer(CompressionLayer::new())
         .with_state(state);
 
