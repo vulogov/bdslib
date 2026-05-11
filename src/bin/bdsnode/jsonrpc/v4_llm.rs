@@ -27,6 +27,7 @@ use serde_json::Value as JsonValue;
 pub fn register(module: &mut RpcModule<()>) {
     register_complete(module);
     register_chat(module);
+    register_analyze(module);
     register_embed(module);
     register_providers_list(module);
 }
@@ -93,6 +94,20 @@ fn register_chat(module: &mut RpcModule<()>) {
             let verified = authenticate(params).await?;
             let resp = run_helper(verified, api::chat).await?;
             log::debug!("v4/llm.chat: done");
+            Ok::<JsonValue, ErrorObject>(resp)
+        })
+        .unwrap();
+}
+
+// ── v4/llm.analyze ───────────────────────────────────────────────────
+
+fn register_analyze(module: &mut RpcModule<()>) {
+    module
+        .register_async_method("v4/llm.analyze", |params, _ctx, _| async move {
+            log::debug!("v4/llm.analyze: start");
+            let verified = authenticate(params).await?;
+            let resp = run_helper(verified, api::analyze).await?;
+            log::debug!("v4/llm.analyze: done");
             Ok::<JsonValue, ErrorObject>(resp)
         })
         .unwrap();

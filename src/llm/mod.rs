@@ -8,6 +8,7 @@
 //! phases — see the proposal in conversation history.
 
 pub mod chat;
+pub mod context;
 pub mod manager;
 pub mod providers;
 pub mod types;

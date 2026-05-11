@@ -17,6 +17,7 @@
 
 use crate::common::jsonfingerprint::json_fingerprint;
 use crate::llm::chat as llm_chat;
+use crate::llm::context::{self as llm_ctx, ContextSource, RagContext};
 use crate::llm::manager;
 use crate::llm::providers::Provider;
 use crate::llm::types::{
@@ -356,6 +357,194 @@ fn build_rag_context(req: &JsonValue) -> Result<(String, usize, usize), Error> {
         if !fp.is_empty() { parts.push(format!("[document {}] {}", i + 1, fp)); }
     }
     Ok((parts.join("\n"), n_tel, n_doc))
+}
+
+/// `analyze` — build a RAG context from bdslib data and run a single
+/// completion over it.
+///
+/// Request keys (rust_dynamic Map):
+/// - `kind`            (required string)  — one of: aggregation, knn,
+///   rca, anomaly, templates, telemetry, documents, supplied
+/// - `duration`        (most kinds)       — humantime window
+/// - `query`           (most kinds)       — the question / search text
+/// - `prompt_template` (optional string)  — overrides the default per-kind preamble
+/// - `provider`        (optional string)
+/// - `model`           (optional string)
+/// - `options`         (optional map)     — temperature / max_tokens / …
+/// - `system_prompt`   (optional string)
+///
+/// Kind-specific extras:
+/// - knn:        `k`
+/// - rca:        `failure_key`, `bucket_secs`, `min_support`, `jaccard_threshold`, `max_keys`
+/// - anomaly:    `limit`
+/// - templates:  `top_n`
+/// - telemetry:  `limit`
+/// - documents:  `ids` (list of UUID strings)
+/// - supplied:   `rows` (list of arbitrary JSON values)
+///
+/// Returns `{response, kind, source, provider, model, ms, finish_reason?,
+/// tokens_in?, tokens_out?, n_rows}` where `source` is the underlying
+/// `RagContext.source_meta` block.
+pub fn analyze(req: Value) -> Result<Value, Error> {
+    meta::clear_llm();
+    let req_json = req_as_object(req, "vm::api::llm::analyze")?;
+
+    let kind = req_json.get("kind").and_then(|v| v.as_str())
+        .ok_or_else(|| err_msg("vm::api::llm::analyze: `kind` (string) is required"))?
+        .to_owned();
+
+    let source = build_context_source(&kind, &req_json)?;
+    let rag: RagContext = llm_ctx::build(source)
+        .map_err(|e| err_msg(format!("vm::api::llm::analyze: context: {e}")))?;
+
+    let query = req_json.get("query").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let prompt_template = req_json.get("prompt_template").and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_prompt_for_kind(&kind).to_owned());
+    let system_prompt = req_json.get("system_prompt").and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_owned());
+
+    let user_message = compose_user_message(&kind, &rag, &prompt_template, &query);
+
+    // Build a completion request and route through the same provider
+    // resolution + meta-stashing as `complete`.
+    let provider_name = req_json.get("provider").and_then(|v| v.as_str());
+    let provider = resolve_provider(provider_name)?;
+    let model = req_json.get("model").and_then(|v| v.as_str()).map(str::to_owned)
+        .unwrap_or_else(|| provider.default_model().to_owned());
+
+    let rq = CompletionRequest {
+        model:    model.clone(),
+        messages: vec![Message::system(&system_prompt), Message::user(&user_message)],
+        options:  parse_options(&req_json),
+    };
+
+    let started = Instant::now();
+    let resp: CompletionResponse = runtime::block_on(provider.complete(rq))
+        .map_err(|e| err_msg(format!("vm::api::llm::analyze: provider {:?}: {e}", provider.id())))?;
+    let ms = started.elapsed().as_millis() as u64;
+
+    let out = json!({
+        "response":      resp.text,
+        "kind":          kind,
+        "source":        rag.source_meta,
+        "n_rows":        rag.n_rows,
+        "provider":      provider.id(),
+        "model":         resp.model,
+        "finish_reason": resp.finish_reason,
+        "tokens_in":     resp.tokens_in,
+        "tokens_out":    resp.tokens_out,
+        "ms":            ms,
+    });
+    meta::set_llm(json!({
+        "provider":   provider.id(),
+        "model":      model,
+        "ms":         ms,
+        "tokens_in":  out["tokens_in"].clone(),
+        "tokens_out": out["tokens_out"].clone(),
+        "kind":       kind,
+        "n_rows":     rag.n_rows,
+        "cache":      "disabled",
+    }));
+    Ok(json_to_dynamic(out))
+}
+
+fn build_context_source(kind: &str, req: &JsonValue) -> Result<ContextSource, Error> {
+    let dur = |field: &str| req.get(field).and_then(|v| v.as_str()).map(str::to_owned);
+    let query_field = || req.get("query").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let limit_field = || req.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let require_duration = || dur("duration").ok_or_else(||
+        err_msg(format!("vm::api::llm::analyze: kind={kind:?} requires `duration`")));
+
+    match kind {
+        "aggregation" => Ok(ContextSource::Aggregation {
+            duration: require_duration()?,
+            query:    query_field(),
+            limit:    limit_field(),
+        }),
+        "knn" => Ok(ContextSource::Knn {
+            duration: require_duration()?,
+            query:    query_field(),
+            k:        req.get("k").and_then(|v| v.as_u64()).map(|n| n as usize),
+        }),
+        "rca" => Ok(ContextSource::Rca {
+            duration:          require_duration()?,
+            failure_key:       req.get("failure_key").and_then(|v| v.as_str()).map(str::to_owned),
+            bucket_secs:       req.get("bucket_secs").and_then(|v| v.as_u64()),
+            min_support:       req.get("min_support").and_then(|v| v.as_u64()),
+            jaccard_threshold: req.get("jaccard_threshold").and_then(|v| v.as_f64()).map(|f| f as f32),
+            max_keys:          req.get("max_keys").and_then(|v| v.as_u64()).map(|n| n as usize),
+        }),
+        "anomaly" => Ok(ContextSource::Anomaly {
+            duration: require_duration()?,
+            limit:    limit_field(),
+        }),
+        "templates" => Ok(ContextSource::Templates {
+            duration: require_duration()?,
+            top_n:    req.get("top_n").and_then(|v| v.as_u64()).map(|n| n as usize),
+        }),
+        "telemetry" => Ok(ContextSource::Telemetry {
+            duration: require_duration()?,
+            query:    req.get("query").and_then(|v| v.as_str()).map(str::to_owned),
+            limit:    limit_field(),
+        }),
+        "documents" => {
+            let arr = req.get("ids").and_then(|v| v.as_array())
+                .ok_or_else(|| err_msg("vm::api::llm::analyze: kind=documents requires `ids` array"))?;
+            let mut ids = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                let s = v.as_str().ok_or_else(||
+                    err_msg(format!("vm::api::llm::analyze: ids[{i}] not a string")))?;
+                let u = Uuid::parse_str(s).map_err(|e|
+                    err_msg(format!("vm::api::llm::analyze: ids[{i}]={s:?}: {e}")))?;
+                ids.push(u);
+            }
+            Ok(ContextSource::Documents { ids })
+        }
+        "supplied" => {
+            let arr = req.get("rows").and_then(|v| v.as_array())
+                .ok_or_else(|| err_msg("vm::api::llm::analyze: kind=supplied requires `rows` array"))?
+                .clone();
+            Ok(ContextSource::Supplied { rows: arr })
+        }
+        other => bail!("vm::api::llm::analyze: unknown kind {other:?} (expected one of: \
+            aggregation, knn, rca, anomaly, templates, telemetry, documents, supplied)"),
+    }
+}
+
+fn default_prompt_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "aggregation" => "Summarize the key findings in the following observability data.",
+        "knn"         => "Identify recurring patterns and outliers in these k-nearest neighbours.",
+        "rca"         => "Explain the most likely root cause indicated by these candidate clusters.",
+        "anomaly"     => "Identify and explain the anomalies represented by these candidates.",
+        "templates"   => "Summarize the dominant log templates and what they suggest about system behaviour.",
+        "telemetry"   => "Summarize the recent telemetry and call out anything noteworthy.",
+        "documents"   => "Summarize the key information across these documents.",
+        "supplied"    => "Analyze the following supplied rows.",
+        _             => "Analyze the following data.",
+    }
+}
+
+/// Compose the user-message turn that gets handed to the provider.
+/// Empty context (e.g. supplied with no rows) still goes through —
+/// the model just gets the question without a preamble.
+fn compose_user_message(kind: &str, rag: &RagContext, prompt_template: &str, query: &str) -> String {
+    let mut buf = String::new();
+    buf.push_str(prompt_template);
+    if !rag.summary.is_empty() {
+        if !buf.is_empty() { buf.push_str("\n\n"); }
+        buf.push_str(&format!("Relevant {kind} context ({n} row(s)):\n",
+            n = rag.n_rows));
+        buf.push_str(&rag.summary);
+    }
+    if !query.is_empty() {
+        if !buf.is_empty() { buf.push_str("\n\n---\n\n"); }
+        buf.push_str("Question: ");
+        buf.push_str(query);
+    }
+    buf
 }
 
 /// `providers_list` — registered providers + the default.
