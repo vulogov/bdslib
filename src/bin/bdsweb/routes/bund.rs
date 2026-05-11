@@ -3,7 +3,9 @@ use axum::{extract::State, response::Html, Form};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{rpc, ModeBadge}, error::AppError, state::AppState};
+use crate::{client::{rpc, ModeBadge}, error::AppError,
+            error_pretty::{parse_bund_error, ErrorSegment},
+            state::AppState};
 
 // ── Full page ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,10 @@ pub struct EvalForm {
 struct BundResult {
     results:           Vec<String>,
     error_msg:         String,
+    /// Same error as `error_msg`, but parsed into typed segments so
+    /// the template can render token / reason / source / text spans
+    /// with distinct colors.  Empty when `has_error` is false.
+    error_segments:    Vec<ErrorSegment>,
     has_error:         bool,
     /// Some(badge) when the script's most-recent cls.* call left a
     /// cluster_meta on the per-thread cell.  None means either no
@@ -49,6 +55,7 @@ pub async fn eval(
         return Ok(Html(BundResult {
             results: vec![],
             error_msg: String::new(),
+            error_segments: vec![],
             has_error: false,
             cluster_badge: None,
             cluster_meta_json: String::new(),
@@ -81,13 +88,16 @@ pub async fn eval(
                 _ => (None, String::new()),
             };
             Ok(Html(BundResult {
-                results, error_msg: String::new(), has_error: false,
+                results, error_msg: String::new(), error_segments: vec![],
+                has_error: false,
                 cluster_badge, cluster_meta_json,
             }.render()?))
         }
         Err(AppError::Rpc(msg)) => {
+            let error_segments = parse_bund_error(&msg);
             Ok(Html(BundResult {
-                results: vec![], error_msg: msg, has_error: true,
+                results: vec![], error_msg: msg, error_segments,
+                has_error: true,
                 cluster_badge: None, cluster_meta_json: String::new(),
             }.render()?))
         }

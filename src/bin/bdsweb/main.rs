@@ -2,6 +2,7 @@ mod admin;
 mod auth;
 mod client;
 mod error;
+mod error_pretty;
 mod routes;
 mod state;
 

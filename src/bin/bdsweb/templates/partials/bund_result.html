@@ -1,9 +1,30 @@
 {% if has_error %}
+<style>
+  /* Colorized Bund error segments — semantic palette so the user can
+     visually pick out (a) the token that failed, (b) why, (c) where
+     in the source tree.  All segments share the same monospace font;
+     only color (and weight on tokens) differs. */
+  .bund-err-pre   { color: #fecaca; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .bund-err-token  { color: #fca5a5; font-weight: 600; background: rgba(220,38,38,0.08); padding: 0 0.25rem; border-radius: 0.25rem; }
+  .bund-err-reason { color: #fdba74; }
+  .bund-err-source { color: #94a3b8; font-style: italic; }
+  .bund-err-text   { color: #94a3b8; }
+  .bund-err-raw    { color: #64748b; font-size: 0.7rem; }
+</style>
 <div class="flex items-start gap-2 bg-red-950 border border-red-800 rounded-lg px-4 py-3">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mt-0.5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
     <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
   </svg>
-  <pre class="text-red-300 text-xs font-mono whitespace-pre-wrap break-all">{{ error_msg }}</pre>
+  <div class="flex-1 min-w-0">
+    <pre class="bund-err-pre">{% for seg in error_segments %}<span class="bund-err-{{ seg.kind }}">{{ seg.text }}</span>{% endfor %}</pre>
+    {# Original error text, collapsed under a disclosure — fallback for
+       cases where the parser missed something we want to inspect. #}
+    <details class="mt-2">
+      <summary class="bund-err-raw cursor-pointer select-none">raw error</summary>
+      <pre class="bund-err-raw mt-1 whitespace-pre-wrap break-all">{{ error_msg }}</pre>
+    </details>
+  </div>
 </div>
 {% else %}
   {% if let Some(badge) = cluster_badge %}
