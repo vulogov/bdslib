@@ -32,6 +32,14 @@ fn cls_llm_complete_base<'a>(vm: &'a mut VM, op: StackOps) -> Result<&'a mut VM,
 pub fn stdlib_cls_llm_complete_stack(vm: &mut VM)     -> Result<&mut VM, Error> { cls_llm_complete_base(vm, StackOps::FromStack) }
 pub fn stdlib_cls_llm_complete_workbench(vm: &mut VM) -> Result<&mut VM, Error> { cls_llm_complete_base(vm, StackOps::FromWorkBench) }
 
+// ── cls.llm.chat ─────────────────────────────────────────────────────
+
+fn cls_llm_chat_base<'a>(vm: &'a mut VM, op: StackOps) -> Result<&'a mut VM, Error> {
+    one_arg(vm, op, "cls.llm.chat", api::llm::chat)
+}
+pub fn stdlib_cls_llm_chat_stack(vm: &mut VM)     -> Result<&mut VM, Error> { cls_llm_chat_base(vm, StackOps::FromStack) }
+pub fn stdlib_cls_llm_chat_workbench(vm: &mut VM) -> Result<&mut VM, Error> { cls_llm_chat_base(vm, StackOps::FromWorkBench) }
+
 // ── cls.llm.embed ────────────────────────────────────────────────────
 
 fn cls_llm_embed_base<'a>(vm: &'a mut VM, op: StackOps) -> Result<&'a mut VM, Error> {
@@ -72,6 +80,8 @@ pub fn stdlib_llm_meta_workbench(vm: &mut VM) -> Result<&mut VM, Error> {
 pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
     let _ = vm.vm.register_inline("cls.llm.complete".into(),    stdlib_cls_llm_complete_stack)?;
     let _ = vm.vm.register_inline("cls.llm.complete.".into(),   stdlib_cls_llm_complete_workbench)?;
+    let _ = vm.vm.register_inline("cls.llm.chat".into(),        stdlib_cls_llm_chat_stack)?;
+    let _ = vm.vm.register_inline("cls.llm.chat.".into(),       stdlib_cls_llm_chat_workbench)?;
     let _ = vm.vm.register_inline("cls.llm.embed".into(),       stdlib_cls_llm_embed_stack)?;
     let _ = vm.vm.register_inline("cls.llm.embed.".into(),      stdlib_cls_llm_embed_workbench)?;
     let _ = vm.vm.register_inline("cls.llm.providers".into(),   stdlib_cls_llm_providers_stack)?;

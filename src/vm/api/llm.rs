@@ -15,6 +15,8 @@
 //! in its own step (needs the provider-agnostic chat-session module),
 //! `analyze` waits for Phase 2 (context.rs).
 
+use crate::common::jsonfingerprint::json_fingerprint;
+use crate::llm::chat as llm_chat;
 use crate::llm::manager;
 use crate::llm::providers::Provider;
 use crate::llm::types::{
@@ -28,6 +30,12 @@ use rust_dynamic::value::Value;
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
 use std::time::Instant;
+use uuid::Uuid;
+
+const DEFAULT_SYSTEM_PROMPT: &str =
+    "You are an expert site reliability engineer and telemetry analyst with access to \
+     real observability data. Analyse the provided context and answer the operator's \
+     question concisely and accurately.";
 
 // ─────────────────────────────────────────────────────────────────────
 // Provider resolution + request construction
@@ -215,6 +223,139 @@ pub fn embed(req: Value) -> Result<Value, Error> {
         "cache":    "disabled",
     }));
     Ok(json_to_dynamic(out))
+}
+
+/// `chat` — stateful chat turn (history persisted in the docstore).
+///
+/// Accepts a Value::Map with keys:
+/// - `chat_id`       (optional string UUID) — when absent, a new session
+///   is opened and `is_new_session: true` comes back
+/// - `message`       (required string)      — the user's turn
+/// - `provider`      (optional string)      — overrides session metadata for this turn
+/// - `model`         (optional string)      — overrides session metadata for this turn
+/// - `system_prompt` (optional string)      — only meaningful when opening
+///   a new session; ignored on existing sessions
+/// - `duration`      (optional string)      — when present and `context`
+///   is absent, an inline RAG context is built via `db.aggregationsearch`
+///   and prepended to the user message (matches the legacy
+///   `v2/chat.ollama` behaviour)
+/// - `context`       (optional string)      — pre-built RAG context that
+///   replaces the inline aggregation pass
+/// - `options`       (optional map)         — temperature, max_tokens, …
+///
+/// Returns `{chat_id, response, provider, model, is_new_session,
+/// telemetry_count, document_count, finish_reason?, tokens_in?,
+/// tokens_out?, ms}`.
+pub fn chat(req: Value) -> Result<Value, Error> {
+    meta::clear_llm();
+    let req_json = req_as_object(req, "vm::api::llm::chat")?;
+
+    let user_message = req_json.get("message").and_then(|v| v.as_str())
+        .ok_or_else(|| err_msg("vm::api::llm::chat: `message` (string) is required"))?
+        .to_owned();
+    let provider_override = req_json.get("provider").and_then(|v| v.as_str()).map(str::to_owned);
+    let model_override    = req_json.get("model").and_then(|v| v.as_str()).map(str::to_owned);
+    let chat_id_str       = req_json.get("chat_id").and_then(|v| v.as_str()).map(str::to_owned);
+    let system_prompt = req_json.get("system_prompt").and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_owned());
+    let options = parse_options(&req_json);
+
+    // Build RAG context: either supplied verbatim, or assembled from a
+    // db.aggregationsearch over the requested duration.  Empty when
+    // neither is present.
+    let (rag_context, telemetry_count, document_count) = build_rag_context(&req_json)?;
+    let enriched = if rag_context.is_empty() {
+        user_message.clone()
+    } else {
+        let dur = req_json.get("duration").and_then(|v| v.as_str()).unwrap_or("recent window");
+        format!(
+            "Relevant observability context (last {dur}):\n\n{rag_context}\n\n---\n\nUser question: {user_message}"
+        )
+    };
+
+    let outcome = match chat_id_str {
+        Some(id_str) => {
+            let chat_id = Uuid::parse_str(&id_str)
+                .map_err(|e| err_msg(format!("vm::api::llm::chat: invalid chat_id {id_str:?}: {e}")))?;
+            llm_chat::turn(
+                chat_id,
+                &enriched,
+                provider_override.as_deref(),
+                model_override.as_deref(),
+                options,
+            ).map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?
+        }
+        None => llm_chat::open_and_turn(
+            provider_override.as_deref(),
+            model_override.as_deref(),
+            &system_prompt,
+            &enriched,
+            options,
+        ).map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?,
+    };
+
+    let out = json!({
+        "chat_id":         outcome.chat_id.to_string(),
+        "response":        outcome.response,
+        "provider":        outcome.provider,
+        "model":           outcome.model,
+        "is_new_session":  outcome.is_new_session,
+        "telemetry_count": telemetry_count,
+        "document_count":  document_count,
+        "finish_reason":   outcome.finish_reason,
+        "tokens_in":       outcome.tokens_in,
+        "tokens_out":      outcome.tokens_out,
+        "ms":              outcome.ms,
+    });
+    meta::set_llm(json!({
+        "provider":   outcome.provider,
+        "model":      outcome.model,
+        "ms":         outcome.ms,
+        "tokens_in":  outcome.tokens_in,
+        "tokens_out": outcome.tokens_out,
+        "cache":      "disabled",
+    }));
+    Ok(json_to_dynamic(out))
+}
+
+/// Resolve a RAG context string from `req`.  Priority:
+/// 1. `context` (verbatim) → no DB hit
+/// 2. `duration` + `query` (or `message` as fallback query) → run
+///    `db.aggregationsearch` and fingerprint the top hits
+/// 3. neither → empty
+fn build_rag_context(req: &JsonValue) -> Result<(String, usize, usize), Error> {
+    if let Some(c) = req.get("context").and_then(|v| v.as_str()) {
+        return Ok((c.to_owned(), 0, 0));
+    }
+    let dur = match req.get("duration").and_then(|v| v.as_str()) {
+        Some(d) => d,
+        None    => return Ok((String::new(), 0, 0)),
+    };
+    let query = req.get("query").and_then(|v| v.as_str())
+        .or_else(|| req.get("message").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let db = crate::globals::get_db()
+        .map_err(|e| err_msg(format!("vm::api::llm::chat: get_db: {e}")))?;
+    let agg = db.aggregationsearch(dur, query)
+        .map_err(|e| err_msg(format!("vm::api::llm::chat: aggregationsearch: {e}")))?;
+    let telemetry_hits: Vec<JsonValue> = agg.get("observability")
+        .and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let doc_hits: Vec<JsonValue> = agg.get("documents")
+        .and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let n_tel = telemetry_hits.len();
+    let n_doc = doc_hits.len();
+
+    let mut parts: Vec<String> = Vec::new();
+    for (i, item) in telemetry_hits.iter().take(30).enumerate() {
+        let fp = json_fingerprint(item);
+        if !fp.is_empty() { parts.push(format!("[telemetry {}] {}", i + 1, fp)); }
+    }
+    for (i, item) in doc_hits.iter().take(10).enumerate() {
+        let fp = json_fingerprint(item);
+        if !fp.is_empty() { parts.push(format!("[document {}] {}", i + 1, fp)); }
+    }
+    Ok((parts.join("\n"), n_tel, n_doc))
 }
 
 /// `providers_list` — registered providers + the default.

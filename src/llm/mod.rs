@@ -7,6 +7,7 @@
 //! by name.  Helpers, RPCs, cache, dedup and job queue land in later
 //! phases — see the proposal in conversation history.
 
+pub mod chat;
 pub mod manager;
 pub mod providers;
 pub mod types;
