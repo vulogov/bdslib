@@ -88,6 +88,7 @@ output suitable for piping into `jq`.
     - [cluster secondaries / secondary](#cluster-secondaries--cluster-secondary)
     - [cluster tpl-* read family](#cluster-tpl-list-cluster-tpl-search-cluster-tpl-get-cluster-tpl-template-by-id-cluster-tpl-templates-recent-cluster-tpl-templates-by-timestamp)
 14c. [scheduler-last-seen](#14c-scheduler-last-seen--cluster-scheduler-introspection)
+14d. [user — cluster-replicated user management](#14d-user--cluster-replicated-user-management)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -2647,6 +2648,147 @@ and scripts are duplicated; widen `scheduler_dedup_window` in
 
 ---
 
+## 14d. `user` — Cluster-replicated user management
+
+Six subcommands wrapping the `v3/user.*` family
+(see [`CLUSTER.md` § 13](CLUSTER.md) for the architecture).
+Subcommands are grouped by HMAC requirement:
+
+| Group | Subcommands | `--secret` required? |
+|---|---|---|
+| Admin (mutating)        | `add`, `modify`, `delete`, `list` | yes (except first `add` on empty store — first-user bootstrap) |
+| Public                  | `authenticate`                    | no |
+| Local                   | `whoami`                          | yes (verifies HMAC offline) |
+
+`--secret` is read from `BDSCMD_CLUSTER_SECRET` or `-s`/`--secret` on
+the `user` subcommand (not on each leaf).  All admin subcommands use
+the same shared cluster secret that signs `v3/cluster.*` admin RPCs.
+
+```
+bdscmd user [--secret SECRET] <SUBCOMMAND> [OPTIONS]
+```
+
+### 14d.1 `user add` — create a user
+
+```
+bdscmd user add --username USERNAME --password PASSWORD [--display-name NAME] [--auth-method METHOD]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `-u, --username`     | yes | UTF-8 string, unique cluster-wide |
+| `-p, --password`     | yes | Plain text; hashed with argon2id on the receiving node |
+| `-n, --display-name` | no  | Stored in `metadata.display_name` |
+| `--auth-method`      | no (default `password`) | One of `password`, `oauth-<provider>`, `ldap-<server>`, `custom-<name>`.  Only `password` is shipped today — register additional verifiers at startup to enable the rest. |
+
+**First-user bootstrap**: when the user store is empty, this is the
+only admin command that works without `--secret` — the server
+admits the call so a fresh deployment can create its first admin.
+After the first user lands the bypass closes.
+
+```bash
+# Bootstrap: no secret yet, no users yet
+bdscmd user add -u alice -p 'hunter2' -n 'Alice Smith'
+
+# After that, --secret is required:
+bdscmd user -s "$BDSCMD_CLUSTER_SECRET" add -u bob -p 'hunter3'
+```
+
+### 14d.2 `user modify` — change fields
+
+```
+bdscmd user --secret S modify --id ID [--password NEW] [--display-name N] [--disable | --enable] [--new-auth-method M]
+```
+
+| Flag | Description |
+|---|---|
+| `-i, --id`            | UUIDv7 of the user (from `user list`) |
+| `-p, --password`      | New plaintext password — server re-hashes |
+| `-n, --display-name`  | New `metadata.display_name` value |
+| `--disable`           | Lock the account.  `authenticate` thereafter returns `ok: false` |
+| `--enable`            | Restore a previously-disabled account |
+| `--new-auth-method`   | Switch the row's auth method (e.g. `password` → `oauth-google`) |
+
+```bash
+# Reset Bob's password + disable the account in one call
+bdscmd user -s "$SECRET" modify -i 019e15a2-… -p NEWPASS --disable
+
+# Re-enable later
+bdscmd user -s "$SECRET" modify -i 019e15a2-… --enable
+```
+
+### 14d.3 `user delete` — hard delete + tombstone
+
+```
+bdscmd user --secret S delete --id ID
+```
+
+Writes a tombstone alongside the local delete so anti-entropy
+doesn't resurrect from a stale peer.
+
+### 14d.4 `user list` — hash-free listing
+
+```
+bdscmd user --secret S list
+```
+
+Returns the `UserSummary` array from `v3/user.list`.  The
+credential_hash column is OMITTED at the SQL boundary — admins never
+see the hash even by accident.
+
+```bash
+bdscmd user -s "$SECRET" list | jq '.users[].username'
+```
+
+### 14d.5 `user authenticate` — public login (smoke-test)
+
+```
+bdscmd user authenticate --username U --password P
+```
+
+No `--secret`.  Returns `{ok, user_id, session_token, ttl_secs,
+expires_at}` on success, `{ok: false, error: "invalid credentials"}`
+on any failure.  Unknown user and wrong password collapse to the
+same error to avoid information leak.
+
+```bash
+bdscmd user authenticate -u alice -p hunter2 | jq .ok
+```
+
+### 14d.6 `user whoami` — verify a session token offline
+
+```
+bdscmd user --secret S whoami --token TOKEN
+```
+
+Verifies the token's HMAC against `--secret` locally — no RPC
+needed.  Useful for diagnosing why a browser session got bounced
+to `/login`.
+
+```bash
+TOK="019e15a2-….1778507919.7c40…"
+bdscmd user -s "$SECRET" whoami -t "$TOK" | jq
+# { "ok": true, "user_id": "019e15a2-…", "expires_at": 1778507919 }
+```
+
+### Verified scenarios (3-node cluster)
+
+| #  | Scenario                                                  |
+|----|-----------------------------------------------------------|
+| 1  | First-user bootstrap (no `--secret`)                      |
+| 2  | Authenticate alice against a different node               |
+| 3  | `whoami` with correct secret                              |
+| 4  | `whoami` with wrong secret → `signature invalid`          |
+| 5  | HMAC-signed `user add` (2/2 peers)                        |
+| 6  | `user list` consistent on all 3 nodes                     |
+| 7  | `user modify -p … --disable`                              |
+| 8  | Disabled user authentication → `invalid credentials`      |
+| 9  | `--enable` restores login                                 |
+| 10 | `user delete`                                             |
+| 11 | Cluster-wide convergence after delete (1 user remains)    |
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -2699,6 +2841,12 @@ and scripts are duplicated; widen `scheduler_dedup_window` in
 | `eval` | `v2/eval` | `SOURCE`, `-c`, `-m` |
 | `eval-queued` | `v2/eval.queued` | `SOURCE` |
 | `scheduler-last-seen` | `v2/scheduler.last_seen` | `SCRIPT_ID` |
+| `user add`          | `v3/user.add`          | `-u`, `-p`, `[-n]`, `[--auth-method]`, parent `-s` (except bootstrap) |
+| `user modify`       | `v3/user.modify`       | `-i`, `[-p]`, `[-n]`, `[--disable\|--enable]`, `[--new-auth-method]`, parent `-s` |
+| `user delete`       | `v3/user.delete`       | `-i`, parent `-s` |
+| `user list`         | `v3/user.list`         | parent `-s` |
+| `user authenticate` | `v3/user.authenticate` | `-u`, `-p` (no secret) |
+| `user whoami`       | offline (no RPC)       | `-t`, parent `-s` |
 
 ---
 

@@ -125,6 +125,27 @@ Async-from-sync bridge: `vm::api::runtime::block_on` uses `tokio::task::block_in
 
 The existing `db.*` / `doc.*` words are untouched — scripts opt into cluster awareness by using `cls.*` instead.  See `examples/cluster/` for a tour.
 
+### Authentication (`src/cluster/{user_store,credential,session}`, `src/bin/bdsweb/auth.rs`)
+
+A 4th fully-replicated cluster store backs bdsweb's session-cookie auth.
+
+**Library**:
+- `cluster::user_store::UserStorage` — DuckDB at `<dbpath>/users/users.duckdb`. Columns: `id, username, credential_hash, auth_method, metadata, created_at, updated_at, disabled`. `UserSummary` projection drops `credential_hash` so admin listings can't leak hashes.
+- `cluster::credential::{AuthMethod, CredentialVerifier, PasswordVerifier, VerifierRegistry}` — pluggable verifier dispatch. `PasswordVerifier` uses argon2id (`m=19 MiB, t=2, p=1`). OAuth/LDAP register a new `CredentialVerifier` impl at startup with no schema change.
+- `cluster::session::{issue_session_token, verify_session_token}` — stateless tokens of form `<user_id>.<expires_at>.<hex_hmac_sha256>` signed with `cluster.shared_secret`. Single algorithm hard-coded (HMAC-SHA256) — no JWT `alg=none` confusion. `SessionError` enum with distinct variants for precise logging.
+
+**JSON-RPC**:
+- `v3/user.{add, modify, delete, authenticate, list}` — coordinator surface. All HMAC-protected EXCEPT `authenticate` (public login) and `add` on an empty store (first-user bootstrap).
+- `v2/user.{add, modify, delete, get_by_username, get_by_id, list_ids}` — receivers; called by `replicate_to_all`, hint replay, and anti-entropy.
+- Anti-entropy (`bdsnode/server/cluster.rs`) sweeps `users` alongside `docs/signals/scripts`. `pull_one` uses `UserStorage::add_with_hash` to copy a peer's exact hash without re-hashing (so two nodes can converge even if their argon2 setups differ).
+
+**bdsweb**:
+- `auth::require_session` axum middleware. Three short-circuits before cookie verification: open-access mode (no secret), public allow-list (`/login`, `/logout`, `/version`), first-user bootstrap window (cached `v3/user.list` empty for 30 s).
+- `routes::login` handles `/login` (GET+POST) and `/logout`. POST `/login` exchanges username+password for a `bds_session` cookie (`HttpOnly; SameSite=Lax; Max-Age=session_ttl`).
+- `routes::admin_users` powers the Administration → User management page at `/admin/users`. Add / reset password / disable / enable / delete forms, all HMAC-signed via `admin::signed_rpc`.
+
+**bdscmd**: `bdscmd user` subcommand group with `add`/`modify`/`delete`/`list`/`authenticate`/`whoami` (the last is fully offline — verifies the session token's HMAC locally).
+
 ## Integration Tests
 
 Tests live in `tests/storageengine_test.rs`. Each test creates its own DuckDB instance (`:memory:` or `tempfile`):

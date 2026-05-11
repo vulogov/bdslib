@@ -81,6 +81,7 @@ runtime into a single cohesive system backed by DuckDB.
 | **Cluster-wide reads** | `v3/search`, `v3/aggregationsearch`, `v3/topics*`, `v3/rca*`, `v3/trends`, `v3/timeline`, `v3/count`, `v3/keys*`, `v3/primaries*`, `v3/fulltext*`, `v3/signals*`, `v3/tpl.*` — fan-out + per-method merge in `cluster::merge` |
 | **Cluster-aware Bund** | `vm::api::*` helpers + `cls.*` stdlib words — Bund scripts auto-replicate writes and fan-out reads transparently; `?cluster.meta` introspection |
 | **Cluster-aware Scheduler** | `cluster.scheduler_dedup_window` suppresses duplicate fires of the same stored script across nodes via `v2/scheduler.last_seen` fan-out |
+| **Replicated user store + bdsweb auth** | 4th fully-replicated store (`<dbpath>/users/users.duckdb`); argon2id-hashed passwords; pluggable verifier registry (OAuth/LDAP hook); stateless HMAC-signed session tokens; bdsweb `/login` + Administration → User management; `bdscmd user …` CLI |
 
 ---
 
@@ -290,6 +291,7 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | **Chat** | `v2/chat.ollama` |
 | **Cluster (membership)** | `v3/cluster.hello` · `v3/cluster.peers` · `v3/cluster.ping` · `v3/cluster.status` · `v3/cluster.sync` · `v2/cluster.peers` (unauth mirror) |
 | **Cluster (data plane)** | `v3/add` · `v3/add.batch` · `v3/doc.*` · `v3/signal.*` · `v3/signals*` · `v3/script.*` · `v3/search*` · `v3/aggregationsearch` · `v3/fulltext*` · `v3/keys*` · `v3/primaries*` · `v3/topics*` · `v3/rca*` · `v3/trends` · `v3/timeline` · `v3/count` · `v3/tpl.*` |
+| **Authentication** | `v3/user.add` · `v3/user.modify` · `v3/user.delete` · `v3/user.authenticate` (public, no HMAC) · `v3/user.list` · `v2/user.*` (receivers) |
 
 ---
 

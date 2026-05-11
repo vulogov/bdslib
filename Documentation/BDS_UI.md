@@ -1078,6 +1078,93 @@ that backs the failing page.
 
 ---
 
+## 25. Signing in & user management
+
+### 25.1 First sign-in (fresh deployment)
+
+The first time you point a browser at a brand-new cluster-mode
+bdsweb, you'll see the dashboard immediately — **no login challenge
+yet**.  This is the first-user bootstrap window: the cluster has no
+users, so authentication is suppressed until you create the first
+one.
+
+Open **Administration** → **User management** (rightmost item in the
+top nav) and:
+
+1. Fill in the **Add user** form at the top: username, password,
+   optional display name.
+2. Click **Add user**.
+3. The page reloads with the new user in the table and a green
+   "User added." banner.
+
+After this first add, the bootstrap closes (within 30 s) and bdsweb
+starts requiring a `bds_session` cookie for every page.
+
+### 25.2 Signing in
+
+If you visit any page without a valid session you'll be redirected
+to `/login`:
+
+```
+┌─────────────────────────────────┐
+│           bdsweb · sign in      │
+│                                 │
+│  Username  [____________]       │
+│  Password  [____________]       │
+│                                 │
+│                       [ Sign in]│
+└─────────────────────────────────┘
+```
+
+On success you land back on the page you were trying to reach (or
+the dashboard if you came in cold).  On failure you see an inline
+"Invalid credentials." banner — bdsweb does NOT distinguish between
+unknown user, wrong password, and disabled account (this is
+intentional, to prevent user enumeration).
+
+### 25.3 Open-access mode
+
+If bdsweb was started without `--config` (or against a cluster with
+`cluster.enabled = false`), there's no shared secret and no
+authentication.  In that case `/login` still renders but shows a
+yellow banner:
+
+> bdsweb is running in **open-access mode** (no `cluster.shared_secret`
+> in config).  Signing in here is a no-op — you already have full
+> access.
+
+Don't run bdsweb open-access mode against a network-reachable
+bdsnode.  It's safe for local dev only.
+
+### 25.4 Administration → User management
+
+The User management page (`/admin/users`) shows every user in the
+cluster.  In v1 there's no RBAC — every authenticated user can
+manage every other user, so treat this like a root-shell.  Future
+versions will add roles.
+
+| Action | How |
+|---|---|
+| **Add a user**    | Fill the form at the top (username + password, optionally display name) and click *Add user*. |
+| **Reset password**| Click the ⋯ menu on the user's row, type the new password, click *Reset*. |
+| **Disable**       | ⋯ → *Disable*.  The user can still log in elsewhere via cookie if they already have one (until expiry), but `/login` and `v3/user.authenticate` return *invalid credentials* for new attempts. |
+| **Re-enable**     | ⋯ → *Re-enable* on a disabled row. |
+| **Delete**        | ⋯ → *Delete*.  Confirms first, because this fans out to every node in the cluster immediately (replicated delete + tombstone — see `CLUSTER.md` § 11.2). |
+
+Every successful mutation produces a green notice banner; failures
+show a red error banner with the underlying RPC message.
+
+### 25.5 Signing out
+
+Each page footer has a **Sign out** control (in the corner of the
+top-right Administration dropdown when collapsed).  Clicking it
+clears the `bds_session` cookie and redirects to `/login`.  Note
+that v1 has no server-side revocation list — if your token leaks,
+rotate your password (so re-issued tokens differ) and wait for the
+old one's natural expiry.
+
+---
+
 ## See also
 
 - [BDSWEB.md](BDSWEB.md) — operator reference: route paths,

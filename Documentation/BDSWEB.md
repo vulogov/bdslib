@@ -21,6 +21,7 @@ trend analysis, and an interactive BUND scripting workbench.
 10. [Trends](#10-trends)
 11. [Bund Workbench](#11-bund-workbench)
 12. [Common UI Patterns](#12-common-ui-patterns)
+13. [Authentication](#13-authentication)
 
 ---
 
@@ -434,3 +435,104 @@ produce a full-page error response with a link back to the dashboard.
 | Chart.js | 4.4.4 | Dashboard shard bar chart |
 | uPlot | 1.6.31 | Trends time-series chart |
 | CodeMirror | 5.65.16 | Bund editor with syntax highlighting |
+
+---
+
+## 13. Authentication
+
+### Modes
+
+bdsweb runs in one of two modes determined at startup by what's in
+the config file passed via `--config` / `BDS_CONFIG`:
+
+| Mode | Trigger | Behaviour |
+|---|---|---|
+| **Open-access** | No `--config`, or config has no `cluster` block / `cluster.enabled = false` | Auth middleware is a no-op.  Every route is wide open.  The `/login` page renders a yellow banner explaining why no challenge is presented.  Use only on private development networks. |
+| **Authenticated** | Config has `cluster.enabled = true` AND `cluster.shared_secret` populated | Every route except `/login`, `/logout`, `/version` requires a valid `bds_session` cookie.  Unauthenticated requests redirect to `/login?next=<original-path>`. |
+
+The bdsweb startup banner says which mode it ended up in:
+
+```
+[INFO] bdsweb auth enabled — shared_secret loaded (36 bytes)
+# or
+[WARN] bdsweb starting in OPEN-ACCESS mode — no cluster.shared_secret found in config; session auth is disabled
+```
+
+### First-user bootstrap
+
+When the cluster's user store is empty (probed via `v3/user.list`,
+cached for 30 s), the middleware passes EVERY request through
+unconditionally so an operator can reach `/admin/users` to mint the
+first admin without a chicken-and-egg login wall.  Once the first
+user lands, the cache flips on the next probe and the login wall
+takes effect.
+
+### Routes
+
+| Path | Method | Purpose |
+|---|---|---|
+| `/login`         | GET  | Render the login form. Accepts `?next=<encoded path>` for post-login redirect. |
+| `/login`         | POST | Submit `username` + `password` → `v3/user.authenticate` → set `bds_session` cookie → 303 to `next` (or `/`). |
+| `/logout`        | POST | Clear the cookie and 303 to `/login`. |
+| `/admin/users`   | GET  | Render the User management table.  Read-only — issues `v3/user.list` HMAC-signed. |
+| `/admin/users/add` | POST | Form-encoded `username, password, [display_name]` → `v3/user.add` (HMAC) → 303 with `notice=added` query. |
+| `/admin/users/reset_password/{id}` | POST | Form-encoded `password` → `v3/user.modify` (HMAC) → 303 with `notice=password-reset`. |
+| `/admin/users/disable/{id}` | POST | `v3/user.modify {disabled:true}` (HMAC) → 303 with `notice=disabled`. |
+| `/admin/users/enable/{id}`  | POST | `v3/user.modify {disabled:false}` (HMAC) → 303 with `notice=enabled`. |
+| `/admin/users/delete/{id}`  | POST | `v3/user.delete` (HMAC) → 303 with `notice=deleted`. |
+
+### Cookie
+
+`bds_session=<TOKEN>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<session_ttl>`
+
+The token is a stateless HMAC-signed payload (`<user_id>.<expires_at>.<hmac>`)
+issued by `v3/user.authenticate` and verified offline on each request via
+`bdslib::cluster::session::verify_session_token`.  No central session
+store; deletion of the cookie is the only logout mechanism.  Set the
+TTL (`cluster.session_ttl` in `bds.hjson`, default `8h`) according to
+your threat model.
+
+**Note on `Secure` flag**: the cookie is NOT marked `Secure` so it
+works on plain-HTTP loopback for local development.  Production
+deployments behind a TLS terminator should add `Secure` via the
+reverse proxy (e.g. nginx `proxy_cookie_flags bds_session secure`).
+
+### Administration → User management page
+
+Located at `/admin/users`.  Accessible to every authenticated user
+(no RBAC in v1 — every logged-in user can manage every user).  The
+page consists of:
+
+1. **Add-user form** at the top with `username`, `password`,
+   optional `display name` fields.
+2. **User table** listing all users with columns: username, display
+   name, auth method, created/updated timestamps, status badge
+   (active / disabled), and a per-row action menu (⋯).
+
+   The action menu opens an inline panel with:
+   - **Reset password** — small password input + Reset button.
+     Submits to `/admin/users/reset_password/<id>`.
+   - **Disable / Re-enable** — toggle.
+   - **Delete** — with `confirm()` dialog warning that the delete
+     fans out to every peer.
+
+All mutations issue a 303 redirect back to `/admin/users?notice=…`
+or `?error=…` so the user sees a green or red banner on the next
+page load.
+
+### Where the navigation lives
+
+The `Administration` dropdown is the **rightmost** item in the main
+top nav (`margin-left: auto`).  It contains a single sub-link to
+`/admin/users` ("User management").  Future admin pages
+(replication health, audit log, RBAC) hang off the same dropdown.
+
+### JSON-RPC calls behind the auth surface
+
+| User action | RPC method | HMAC |
+|---|---|---|
+| POST `/login` | `v3/user.authenticate` | no |
+| `/admin/users` page load | `v3/user.list` | yes |
+| Add user form submit | `v3/user.add` | yes (or unsigned during bootstrap) |
+| Reset password / disable / enable | `v3/user.modify` | yes |
+| Delete user | `v3/user.delete` | yes |

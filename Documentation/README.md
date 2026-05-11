@@ -184,8 +184,8 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 | [SHARD.md](SHARD.md) | `Shard` — single time-partition: telemetry, FTS, vector |
 | [SHARDSCACHE.md](SHARDSCACHE.md) | `ShardsCache` — LRU open-shard pool |
 | [SHARDSMANAGER.md](SHARDSMANAGER.md) | `ShardsManager` — shard lifecycle, ingestion, cross-shard queries |
-| [CLUSTER.md](CLUSTER.md) | **Cluster mode** — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases |
-| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads — with JSON-RPC examples for every mechanism |
+| [CLUSTER.md](CLUSTER.md) | **Cluster mode** — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases, **user store + authentication** |
+| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads, **`v3/user.*` + session tokens** — with JSON-RPC examples for every mechanism |
 | [EMBEDDINGENGINE.md](EMBEDDINGENGINE.md) | `EmbeddingEngine` — fastembed vector generation |
 | [FTSENGINE.md](FTSENGINE.md) | `FTSEngine` — Tantivy BM25 indexing |
 | [VECTORENGINE.md](VECTORENGINE.md) | `VectorEngine` — HNSW index via VecStore |
@@ -242,6 +242,13 @@ write replication) · `v3/doc.add` / `v3/signal.emit` /
 `v3/trends` / `v3/timeline` / `v3/count` / `v3/signals*` /
 `v3/tpl.*` (cluster-wide reads with per-method merge strategies in
 `cluster::merge`)
+
+**Cluster (authentication)** — `v3/user.add` · `v3/user.modify` ·
+`v3/user.delete` · `v3/user.authenticate` (public login) ·
+`v3/user.list` — argon2id-hashed users replicated across every
+node; `v3/user.authenticate` issues a stateless HMAC-signed
+session token bdsweb stores in `bds_session`.  Receivers under
+`v2/user.*`.
 
 ### BUND language
 

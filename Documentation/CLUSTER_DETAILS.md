@@ -24,6 +24,7 @@ first.
 8. [Hinted handoff + anti-entropy](#8-hinted-handoff--anti-entropy)
 9. [Read fan-out — v3/* surface](#9-read-fan-out--v3-surface)
 10. [Bdsweb mode-aware routing](#10-bdsweb-mode-aware-routing)
+11. [Authentication — `v3/user.*` + sessions](#11-authentication--v3user--sessions)
 
 ---
 
@@ -616,6 +617,182 @@ script result.  See [`Phase 6 commit`](../#) and
 [`examples/cluster/`](../examples/cluster/).
 
 ---
+
+## 11. Authentication — `v3/user.*` + sessions
+
+A 4th fully-replicated cluster store — `users` — backs bdsweb's
+login wall and the cluster-wide user-management RPCs.  Mechanics
+mirror docs/signals/scripts (§ 6.2, § 7.2, § 8) with one extra
+wrinkle: `v3/user.authenticate` is the public login path and is NOT
+HMAC-protected.  All other `v3/user.*` calls follow the standard
+admin-authentication rules.
+
+### 11.1 Store layout
+
+`<dbpath>/users/users.duckdb` holds:
+
+```sql
+CREATE TABLE users (
+  id              TEXT PRIMARY KEY,
+  username        TEXT UNIQUE NOT NULL,
+  credential_hash TEXT NOT NULL,         -- argon2id PHC string
+  auth_method     TEXT NOT NULL,         -- "password" | "oauth-google" | "ldap-…"
+  metadata        JSON NOT NULL,
+  created_at      BIGINT NOT NULL,
+  updated_at      BIGINT NOT NULL,
+  disabled        BOOLEAN NOT NULL DEFAULT false
+);
+```
+
+Hashes use argon2id (`m=19 MiB, t=2, p=1, 32-byte output`).  Salt is
+randomly generated per-row.  The PHC string serialised into
+`credential_hash` carries the parameters used so verifiers stay
+forward-compatible if defaults change.
+
+### 11.2 `v3/user.add` (and the bootstrap exception)
+
+Identical recipe to `v3/doc.add` (§ 7.2) — local commit, then fan
+out `v2/user.add` to every Alive peer with the same UUIDv7 so all
+replicas converge on the same identity.  Replicas re-hash the
+plaintext password locally (we deliberately do NOT ship the local
+hash; each peer's argon2 setup runs independently so future param
+changes can roll out without coordination).
+
+The standard HMAC gate applies — every payload carries `_hmac` over
+the canonical params.  **Exception**: when the user store is empty
+(`users.is_empty()`) the call is admitted unsigned.  This is the
+first-user bootstrap so a fresh deployment can mint its first admin
+without distributing the secret ahead of time.
+
+```bash
+# First admin on a fresh cluster — no HMAC required.
+$ curl -s -X POST http://10.0.0.5:9000 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"v3/user.add","params":{
+          "username":"alice","password":"…","auth_method":"password",
+          "metadata":{"display_name":"Alice"}
+        }}'
+{ "jsonrpc":"2.0","id":1, "result": {
+    "id":"019e15a2-…",
+    "outcome": { "peers_attempted": 2, "peers_succeeded": 2, "hints_queued": 0 },
+    "cluster_meta": { "enabled": false }
+  }
+}
+
+# After the first user lands, the bootstrap window closes:
+$ curl -s -X POST http://10.0.0.5:9000 \
+    -d '{"jsonrpc":"2.0","id":1,"method":"v3/user.add","params":{"username":"bob","password":"…"}}'
+{ "error": { "code": -32098, "message": "missing _hmac field" } }
+```
+
+### 11.3 `v3/user.modify` — LWW
+
+Same HMAC gate as `v3/user.add` (no bootstrap exception).  Local
+commit uses `if_newer = false` (operator intent is authoritative);
+replicas use `if_newer = true` (default, set by the `v2/user.modify`
+receiver) so a stale hint replay can't clobber a concurrent edit.
+
+Wire payload:
+
+```json
+{ "id":"019e15a2-…",
+  "password":"new-secret",         // optional — when present, re-hashed
+  "metadata":{"display_name":"Alice S."},  // optional
+  "disabled": false,               // optional
+  "new_auth_method":"oauth-google" // optional — switches the row
+}
+```
+
+### 11.4 `v3/user.delete` — tombstoned
+
+HMAC-protected.  Local delete + write a tombstone for the `"users"`
+store (same shared `tombstones.duckdb` used by docs/scripts) +
+replicate `v2/user.delete` to every Alive peer.  The anti-entropy
+loop applies remote tombstones to local rows on the next tick, so a
+delete from n1 reaches a transiently-Dead n2 via either hinted
+handoff or AE — whichever recovers first.
+
+### 11.5 `v3/user.authenticate` — public login
+
+NOT HMAC-protected; this is the path human users hit.  Recipe:
+
+1. **Local verify**: look up `username` in `users.duckdb`, dispatch
+   the row's `auth_method` to its registered `CredentialVerifier`,
+   argon2-verify the password.  Disabled rows, unknown rows, and
+   wrong passwords ALL collapse to `Ok(false)` — never disclose
+   which leg failed.
+2. **Local miss → fan-out fallback**: if the user isn't local yet
+   (AE window after a fresh `user.add` on a peer), fan
+   `v2/user.get_by_username` with `include_hash: true` out to every
+   Alive peer.  For each peer that returns a row, verify the
+   credential locally.  First successful match wins.
+3. **Issue session token**:
+
+```text
+<user_id>.<expires_at_unix_secs>.<hex_hmac_sha256>
+```
+
+where the HMAC covers `<user_id>.<expires_at>` keyed by
+`cluster.shared_secret`.  Single algorithm hard-coded (HMAC-SHA256)
+— no JWT `alg=none` confusion possible.
+
+Response shapes:
+
+```json
+// success
+{ "ok": true,
+  "user_id":       "019e15a2-…",
+  "session_token": "019e15a2-…1778507919.7c40…25df72d32fbc91404…",
+  "ttl_secs":      28800,
+  "expires_at":    1778507919 }
+
+// any failure (unknown user / wrong password / disabled)
+{ "ok": false, "error": "invalid credentials" }
+```
+
+### 11.6 Anti-entropy — `users` store
+
+AE adds `"users"` to its per-store sweep alongside docs/signals/
+scripts (§ 8.2).  Differences from the existing stores:
+
+- **list_ids**: `v2/user.list_ids` returns `{live:[{id, updated_at}],
+  tombstones:[{id, deleted_at}]}` matching the existing AE
+  contract.
+- **pull_one**: when local is missing an id the peer advertises,
+  AE calls `v2/user.get_by_id` (returns the FULL row including
+  `credential_hash`), then writes it locally via
+  `UserStorage::add_with_hash` — bypassing the verifier so the
+  exact argon2 hash from the peer lands verbatim.  Two nodes with
+  divergent argon2 setups can converge safely.
+- **overwrite_one** (LWW for `updated_at > local`): same fetch, then
+  delete + re-add locally.  Both halves are idempotent so a partial
+  failure converges on the next AE tick.
+- **Tombstone application**: AE marks the row deleted on the
+  receiver before applying — same flow as docs/scripts.
+
+### 11.7 Bdsweb session middleware
+
+bdsweb sets a `bds_session` cookie (`HttpOnly; SameSite=Lax;
+Max-Age=session_ttl`) after a successful login.  The middleware
+hits three short-circuits before checking the cookie:
+
+1. **Open-access mode** — `cluster.shared_secret` is empty in the
+   bdsweb config → no gating.
+2. **Public allow-list** — `/login`, `/logout`, `/version`.
+3. **First-user bootstrap window** — `v3/user.list` returns no
+   rows (cached 30 s) → middleware passes every request through so
+   the operator can reach `/admin/users` to mint the first user.
+
+Only then does the cookie get verified via
+`bdslib::cluster::session::verify_session_token`.  Distinct
+`SessionError` variants (Malformed, BadEncoding, Expired,
+BadSignature) are logged at debug; the user always gets a generic
+redirect to `/login?next=<original-path>` so the post-login flow
+returns them to where they were.
+
+There is no per-session revocation list in v1.  Cookie deletion
+(`/logout`) is purely client-side; an attacker holding a token can
+use it until expiry.  Tune `session_ttl` for your threat model.
 
 ## See also
 

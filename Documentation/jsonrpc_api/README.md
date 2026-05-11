@@ -186,6 +186,12 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/eval`](v2_eval.md) | Compile and evaluate a BUND VM script in a named context.  Returns `{result, cluster_meta}` — `cluster_meta` carries the most-recent `cls.*` helper's fan-out/replication summary or `null`. |
 | [`v2/eval.queued`](v2_eval_queued.md) | Submit a BUND script to the worker pool for async execution; returns a result-queue id immediately |
 | [`v2/scheduler.last_seen`](v2_scheduler_last_seen.md) | Read **this node's** most-recent local execution timestamp for a stored script.  Used by the cluster-aware Scheduler dedup; surfaced via `bdscmd scheduler-last-seen` |
+| [`v3/user.add`](v3_user_add.md) | Create a new user (HMAC-protected, first-user bootstrap exception); local + replicate to every Alive peer |
+| [`v3/user.modify`](v3_user_modify.md) | Partial update with LWW; HMAC-protected; local + replicate |
+| [`v3/user.delete`](v3_user_delete.md) | Hard delete + tombstone; HMAC-protected; local + replicate |
+| [`v3/user.authenticate`](v3_user_authenticate.md) | Public login path (NOT HMAC).  Local verify + peer fan-out fallback; issues stateless HMAC-signed session token |
+| [`v3/user.list`](v3_user_list.md) | Hash-free admin listing (HMAC-protected) |
+| [`v2/user.*`](v2_user.md) | Receiver methods for cluster replication: `add`, `modify`, `delete`, `get_by_username`, `get_by_id`, `list_ids` |
 | [`v2/aggregationsearch`](v2_aggregationsearch.md) | Parallel vector search over time-scoped telemetry shards + semantic document store search; returns `"observability"` and `"documents"` |
 | [`v2/doc.add`](v2_doc_add.md) | Store a document with JSON metadata and text content; auto-embeds both slots in the HNSW index |
 | [`v2/doc.add.file`](v2_doc_add_file.md) | Load a text file, split into overlapping chunks, and store each chunk as an independently searchable record |
