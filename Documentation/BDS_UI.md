@@ -35,10 +35,11 @@ component-oriented.
 18. [Scripts — store, run, and schedule BUND scripts](#18-scripts--store-run-and-schedule-bund-scripts)
 19. [Signals — emit and search named events](#19-signals--emit-and-search-named-events)
 20. [Bund — interactive scripting workbench](#20-bund--interactive-scripting-workbench)
-21. [Chat — Ollama-powered RAG assistant](#21-chat--ollama-powered-rag-assistant)
+21. [Chat — provider-aware RAG assistant](#21-chat--provider-aware-rag-assistant)
 22. [Common interaction patterns](#22-common-interaction-patterns)
 23. [Cookbook — typical workflows end to end](#23-cookbook--typical-workflows-end-to-end)
 24. [Troubleshooting](#24-troubleshooting)
+25. [Signing in & user management; Administration → LLM](#25-signing-in--user-management)
 
 ---
 
@@ -902,43 +903,83 @@ If the script throws an error, the error message appears in red.
 
 ---
 
-## 21. Chat — Ollama-powered RAG assistant
+## 21. Chat — provider-aware RAG assistant
 
 **URL:** `/chat`
 
-A retrieval-augmented chat interface powered by a local Ollama
-model. Ask operational questions in natural language; bdsnode
-retrieves relevant telemetry and document context, then sends the
-question + context to Ollama for an answer.
+A retrieval-augmented chat interface backed by the cluster-aware
+`v4/llm.chat` surface.  Pick any registered provider (Ollama,
+Anthropic, OpenAI) from the dropdown; bdsnode fetches relevant
+telemetry + documents for the chosen lookback window and feeds them
+to the model along with your question.  See [`LLM.md`](LLM.md) for
+the architecture.
 
 ### Controls
 
-- **Duration** dropdown — telemetry lookback window for retrieval.
-- **Question textarea** — multi-line input.
+- **Provider** dropdown — every provider registered in `bds.hjson`
+  appears here, labelled `<id> (<default_model>)`.  The configured
+  default is pre-selected; your last choice is remembered across
+  page loads via a HttpOnly cookie.
+- **Context window** dropdown — telemetry lookback window
+  (`15m` / `30m` / `1h` / `3h` / `6h` / `12h` / `1day`).
+- **Question textarea** — multi-line input; Ctrl/Cmd+Enter submits.
 - **Send** button.
-- **New session** — starts a fresh conversation. Sessions are
-  stateful (Ollama remembers context across messages within a
-  session), so use New session whenever you switch topics.
+- **New session** — starts a fresh conversation with a key-inventory
+  briefing.  Sessions are stateful (the model remembers context
+  across turns within a session); start a new one when you switch
+  topics.
 
 ### How it works
 
-1. Your question is sent to bdsnode (`v2/chat.ollama`).
-2. bdsnode runs an aggregation search over the lookback window:
-   matching telemetry records + matching documents.
-3. The combined context is prepended to your question and sent to
-   the configured Ollama model.
-4. The response streams back into the chat pane.
+1. Your question + duration + provider go to bdsnode (`v4/llm.chat`).
+2. bdsnode runs a **cluster-aware** aggregation search across every
+   Alive peer's local shards and merges the hits.
+3. The combined context + your question are sent to the selected
+   provider.
+4. The response renders below your turn.
+
+### Reading the context banner
+
+A small green banner appears above every assistant reply with the
+diagnostics for that turn:
+
+```
+208 telemetry events + 11 documents · last 1h · prompt=14823ch
+· num_ctx=32768 · provider=ollama model=llama3.2
+```
+
+- **N telemetry / M documents** — how many rows the cluster
+  aggregation search returned.  Zero here triggers the warning
+  banner below.
+- **prompt=…ch** — assembled prompt length in characters.
+- **num_ctx=…** — Ollama context window the runtime used (auto-sized
+  from the prompt size so retrieved rows don't get silently dropped
+  by Ollama's default 2048 limit).
+- **provider** / **model** — what actually answered.
+
+When the cluster returned zero rows, the banner flips to a yellow
+warning:
+
+```
+⚠ NO RAG context loaded for last 1h — model is answering without
+your data · provider=ollama model=llama3.2
+```
+
+That means the lookback window had no matching data anywhere on the
+cluster.  Try a longer duration, a different query, or check
+`bdsnode` logs for `[llm::chat] RAG returned NO rows …`.
 
 ### Tips
 
-- The quality of answers depends entirely on what's stored. If the
-  system has never seen logs about the topic, the assistant will
-  say so or hallucinate.
-- For deterministic answers, prefer specific questions ("Which
-  services had >5% error rate in the last hour?") over open-ended
-  ones ("What's wrong?").
-- New session resets the conversation; the underlying telemetry /
-  document context is re-fetched on the next question.
+- The model only knows what bdsnode retrieves for it.  If you ask
+  about a service that's not in the recent shards, expect "I don't
+  see specific details for that".
+- Switch providers per-turn for comparisons — e.g. Ollama for
+  cheap iteration, Claude/OpenAI for complex reasoning.  Each turn
+  routes to whichever provider is selected at submit time.
+- The inference cache short-circuits identical questions
+  (deterministic mode, `temperature == 0`).  A repeat question
+  shows `cache:hit` in the banner and returns instantly.
 
 ---
 
@@ -1163,18 +1204,38 @@ that v1 has no server-side revocation list — if your token leaks,
 rotate your password (so re-issued tokens differ) and wait for the
 old one's natural expiry.
 
----
+### 25.6 Administration → LLM
 
-## See also
+The LLM page (`/admin/llm`, second link under Administration) is the
+operator's view into the cluster-aware inference layer.  Three
+cards, top to bottom:
 
-- [BDSWEB.md](BDSWEB.md) — operator reference: route paths,
-  startup flags, the JSON-RPC method behind every page.
-- [BDSCLI.md](BDSCLI.md) — local CLI for offline analysis.
-- [BDSCMD.md](BDSCMD.md) — JSON-RPC command-line client; covers
-  every API the UI uses.
-- [DATABASE.md](DATABASE.md) — what's actually stored under the
-  hood.
-- [Algorithm/](Algorithm/README.md) — deep dives into the
-  algorithms behind every search, summary, RCA, and topic page.
-- [Bund/README.md](Bund/README.md) — BUND VM language reference;
-  read before writing scripts on the Scripts page.
+| Card                  | What you see                                                      |
+|-----------------------|-------------------------------------------------------------------|
+| **Providers**         | Every provider registered from `bds.hjson`: id, default model, chat / embed capability flags, and a ★ on the configured default. |
+| **Inference cache**   | TTL toggle + counters: row count, total hits across all rows, response-bytes footprint (human-formatted: B / KiB / MiB / GiB). |
+| **Recent async jobs** | Last 20 jobs from the local `llm_jobs` queue with state-coloured pills (done=green, failed=red, cancelled=amber, running=blue, pending=grey).  Hovering the truncated job id shows the full UUID. |
+
+Below the cache counters lives the **purge form** with three
+filters:
+
+| Filter            | Effect                                              |
+|-------------------|-----------------------------------------------------|
+| **Provider**      | Drop only rows from this provider                   |
+| **Kind**          | `complete` / `analyze:rca` / `analyze:supplied` / … |
+| **Older than (seconds)** | Drop only rows older than this              |
+
+All filters are optional and ANDed together.  Submitting with all
+three empty drops the entire cache — the button prompts a
+`confirm()` dialog before firing.  Success redirects back with a
+green "Cache purged." notice.
+
+The purge runs against the **node bdsweb is connected to**.  In
+a multi-node cluster, peers will eventually anti-entropy the row
+contents back if they still hold them (the cache replicates).  For
+cluster-wide purge, run the operation against every node, or rely
+on TTL expiry.
+
+When `cluster.shared_secret` is unset, an amber banner at the top
+of the page explains that all the cards will show empty data
+because v4/llm.* rejects unsigned requests.

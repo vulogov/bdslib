@@ -764,7 +764,30 @@ login page renders a yellow banner explaining why no challenge is
 presented.  Useful for local development; **do not** deploy in this
 mode against a network-reachable bdsnode.
 
-## 14. What's not yet implemented
+## 14. LLM surface (`v4/llm.*`)
+
+Phase 8 ships a cluster-aware LLM integration layer on top of the
+v3/* primitives.  Full architecture + wire protocol lives in
+[`LLM.md`](LLM.md); the touch points relevant to the cluster machinery
+are:
+
+| Concern              | Where it plugs in                                                |
+|----------------------|------------------------------------------------------------------|
+| **Provider layer**   | Process-wide `ProviderManager` (Ollama / Anthropic / OpenAI).  Standalone or cluster — same code path. |
+| **Replicated cache** | `<dbpath>/llm/cache.duckdb` joins docs/signals/scripts/users as a fully-replicated store.  Anti-entropy sweeps it under the name `"llm_cache"` via the same `pull_one` machinery as the others.  Writes fan out via `replicate_to_all`. |
+| **Cluster dedup**    | `Cluster.inference_log` (per-node DuckDB at `<dbpath>/network/inference_log.duckdb`) + `v2/llm.last_executed` fan-out.  Same shape as the Phase 6 Scheduler dedup. |
+| **Async runner**     | One tokio task per node, spawned alongside the gossip / scheduler / AE loops; pushes results onto the existing `ResultQueue` under each job's `result_id`. |
+
+`cluster.full_replication_stores` must include `"llm_cache"` for the
+cache to anti-entropy.  The library default already does; setups
+that override the list explicitly must add it back along with
+`"users"`.
+
+`cluster.shared_secret` is mandatory for the v4/* surface — every
+`v4/llm.*` method requires HMAC.  Open-access mode (no shared
+secret) means the LLM features are unavailable.
+
+## 15. What's not yet implemented
 
 Phases 1–5 ship the full cluster surface — membership, distributed
 reads, replicated writes (sharded + fully-replicated), and operational
@@ -779,6 +802,7 @@ tooling. Status:
 | 5 — Operations: AE telemetry, `v3/cluster.sync`, distinct count, LWW updates, signal AE, dashboard polish | ✅ shipped |
 | 6 — Cluster-aware Scheduler dedup (this section) | ✅ shipped |
 | 7 — Replicated user store + bdsweb authentication (§ 13) | ✅ shipped |
+| 8 — LLM surface (`v4/llm.*`): provider abstraction, replicated inference cache, cluster-wide dedup, async jobs | ✅ shipped — see [`LLM.md`](LLM.md) |
 
 **Resolved caveats** (called out by previous revisions of this doc, now
 addressed):

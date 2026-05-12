@@ -22,6 +22,7 @@ trend analysis, and an interactive BUND scripting workbench.
 11. [Bund Workbench](#11-bund-workbench)
 12. [Common UI Patterns](#12-common-ui-patterns)
 13. [Authentication](#13-authentication)
+14. [LLM — Chat + Administration](#14-llm--chat--administration)
 
 ---
 
@@ -536,3 +537,90 @@ top nav (`margin-left: auto`).  It contains a single sub-link to
 | Add user form submit | `v3/user.add` | yes (or unsigned during bootstrap) |
 | Reset password / disable / enable | `v3/user.modify` | yes |
 | Delete user | `v3/user.delete` | yes |
+
+---
+
+## 14. LLM — Chat + Administration
+
+Two pages consume the `v4/llm.*` surface (see [`LLM.md`](LLM.md) for
+the full architecture).  Every call goes through `admin::signed_rpc`
+— v4/* refuses unsigned requests, so the LLM features only work when
+`cluster.shared_secret` is configured.  Open-access mode (no secret)
+shows banners on both pages explaining the situation.
+
+### /chat — provider-aware RAG chat
+
+`GET /chat` renders the chat session UI; `POST /chat/new` opens a
+fresh session with a key-inventory briefing; `POST /chat/query`
+sends a follow-up turn; `GET /chat/reset` clears the
+`bds-chat-session` cookie (keeps the provider preference).
+
+Per-turn controls (above the message textarea):
+
+| Control       | Form field | Notes                                                          |
+|---------------|-----------|----------------------------------------------------------------|
+| **Provider**  | `provider`| Dropdown populated on page load from `v4/llm.providers.list`. Labelled `<id> (<default_model>)`.  Sticky via the `bds-chat-provider` HttpOnly cookie. |
+| **Context window** | `duration` | `15m` / `30m` / `1h` (default) / `3h` / `6h` / `12h` / `1day`.  Used as the RAG lookback. |
+| **Your question**  | `query`    | The actual message.  Ctrl/Cmd+Enter submits. |
+
+Header banner above each assistant reply shows what the model
+actually saw:
+
+```
+208 telemetry events + 11 documents · last 1h · prompt=14823ch · num_ctx=32768
+· provider=ollama model=llama3.2
+```
+
+`prompt=…ch` is the assembled prompt length; `num_ctx=…` is the
+Ollama context window auto-sized from prompt size to prevent silent
+truncation (Ollama defaults to 2048 tokens; see [`LLM.md`](LLM.md)
+§ _Operational gotchas_).
+
+When both `telemetry_count` and `document_count` are 0 the banner
+flips to a yellow warning:
+
+```
+⚠ NO RAG context loaded for last 1h — model is answering without
+your data · provider=ollama model=llama3.2
+```
+
+so the operator immediately knows why a response looks hallucinated.
+
+### /admin/llm — providers + cache + jobs
+
+Cards in order:
+
+- **Providers** — table from `v4/llm.providers.list`: id /
+  default_model / chat / embed / ★ on the configured default.
+  When no providers are registered, a helpful "Add an
+  `llm.providers.*` block to bds.hjson and restart bdsnode" line
+  replaces the table.
+
+- **Inference cache** — `v4/llm.cache.stats` totals (rows / total
+  hits / response bytes / TTL flag).  Inline purge form below the
+  stats with three filters (provider, kind, older-than-secs); empty
+  filter set purges EVERYTHING with a JS `confirm()` guard.
+
+- **Recent async jobs** — `v4/llm.jobs.list?limit=20` with
+  state-coloured rows: done=emerald · failed=red · cancelled=amber
+  · running=sky · pending=slate.  Each row shows truncated
+  `job_id`, kind, state, submitted/finished timestamps, and any
+  error message.
+
+### Where the navigation lives
+
+The `Administration` dropdown (rightmost, `margin-left: auto`) now
+contains two sub-links:
+
+- **User management** → `/admin/users`
+- **LLM** → `/admin/llm`
+
+### JSON-RPC calls behind the LLM surface
+
+| User action                          | RPC method                                | HMAC |
+|--------------------------------------|-------------------------------------------|------|
+| `/chat` page load                    | `v4/llm.providers.list`                   | yes  |
+| `/chat/new` form submit              | `v2/primaries.explore` then `v4/llm.chat` | last only |
+| `/chat/query` form submit            | `v4/llm.chat`                             | yes  |
+| `/admin/llm` page load               | `v4/llm.providers.list` + `v4/llm.cache.stats` + `v4/llm.jobs.list` | yes |
+| `/admin/llm/purge` form submit       | `v4/llm.cache.purge`                      | yes  |

@@ -794,6 +794,129 @@ There is no per-session revocation list in v1.  Cookie deletion
 (`/logout`) is purely client-side; an attacker holding a token can
 use it until expiry.  Tune `session_ttl` for your threat model.
 
+## 12. LLM surface — `v4/llm.*`
+
+The LLM integration layer plugs three new cluster artefacts into the
+Phase 4 + Phase 7 + Phase 6 (scheduler) machinery without changing
+any of those layers' wire protocols.  Full architecture +
+configuration + per-method schemas are in [`LLM.md`](LLM.md); this
+section documents only the cluster-mechanics-facing wire bits.
+
+### 12.1 Replicated inference cache (`llm_cache`)
+
+A 5th fully-replicated store joins `docs / signals / scripts / users`.
+Lives at `<dbpath>/llm/cache.duckdb`.  Anti-entropy sweeps it
+under the store name `"llm_cache"`; the existing `sync_store` loop
+in `bdsnode/server/cluster.rs` grew one extra match arm per branch
+(`list_method`, local-known query, tombstone-apply, `pull_one`) —
+the same shape that's repeated for `users` and the others.
+
+Distinguishing trait vs the other four stores: cache rows are keyed
+by **`cache_key`** (content sha256) AND by **`id`** (UUIDv7).
+Lookups by cache fingerprint (`v2/llm.cache.get`); AE walks `id`
+space (`v2/llm.cache.list_ids` → `v2/llm.cache.get.by_id`).
+
+Write fan-out:
+
+```
+v4/llm.complete coordinator (HMAC)
+   │
+   ▼
+provider call → response
+   │
+   ▼
+local cache.put
+   │
+   ▼
+replicate_to_all → v2/llm.cache.put on every Alive peer
+   │
+   ▼ (any failure)
+hints replay on next interval
+```
+
+Anti-entropy pull-one path on a node missing a row:
+
+```
+sync_store("llm_cache") sees a remote id we don't have locally
+   │
+   ▼
+v2/llm.cache.get.by_id { id }
+   │
+   ▼ ({found: true, ...row...})
+mgr.cache().put(row)  — idempotent on id AND cache_key
+```
+
+`cluster.full_replication_stores` must include `"llm_cache"` for
+the sweep to fire.  The library default
+(`["docs","signals","scripts","users","llm_cache"]`) already covers
+it; setups that override the list explicitly must add it back.
+
+Tombstones are not yet wired for this store — purges therefore
+don't propagate across the cluster the way doc/signal/script
+deletes do.  Cluster-wide purge relies on TTL expiry + per-node
+admin calls.  See [`LLM.md`](LLM.md) § _Operational gotchas_.
+
+### 12.2 Cluster-wide single-execution dedup
+
+Modelled directly on the Phase 6 Scheduler dedup (§ 5 above).  A
+per-node `<dbpath>/network/inference_log.duckdb` records every
+(cache_key, started_at, finished_at, node_id, state) tuple; the
+coordinator path in `vm::api::llm::{complete,analyze}` fans
+`v2/llm.last_executed` to every Alive peer before invoking a
+provider.
+
+```
+cache miss
+   ↓
+local recent_within(cache_key, window_secs)   — recent done/failed/running here?
+   ↓ (nothing)
+fan v2/llm.last_executed to every Alive peer
+   │
+   ▼ for each found-and-fresh row:
+       state == "running"  →  SkipRunning
+       state == "done"     →  SkipDone
+       state == "failed"   →  ignore (retry locally)
+       no found rows       →  Acquired (mint a local running row + run)
+   │
+   ▼
+provider call (acquired path)
+   │
+   ▼
+release_done / release_failed   — flips the local row to terminal
+```
+
+Same accepted race window as the scheduler: two coordinators that
+both query peers in the same sub-second tick and both see no
+running rows will both fire.  The phase-3 cache prevents the
+second one from doing real work — once the first replicates its
+result, the second's `cache_store` finds it already on disk and
+short-circuits on the next request.
+
+`SkipRunning` and `SkipDone` are not hard skips — the coordinator
+polls the inference cache for up to `wait_max_secs` (default 30s)
+hoping the peer's replicated result arrives.  Timeout → fall through
+and run anyway, so a stuck peer never deadlocks the caller.
+
+### 12.3 Async job runner
+
+Per-node tokio task spawned alongside the gossip / scheduler / sync
+/ AE loops (`bdsnode::server::llm_jobs::start`).  Drains the local
+`llm_jobs` queue (DuckDB at `<dbpath>/llm/jobs.duckdb`) — not
+replicated; cross-node "is this job claimed elsewhere" is the dedup
+lease's job, not the queue's.
+
+Result delivery reuses the existing `ResultQueue` machinery — the
+runner pushes `{job_id, kind, state, result|error}` onto
+`bdslib::vm::results()` under each job's `result_id`, exactly the
+same path queued Bund script evaluations use today.  bdsweb's
+existing `/scripts` polling loop (`v2/results.pull`) consumes
+LLM async results without code changes.
+
+Cancellation is checked twice — pre-flight (skip the provider
+call entirely) and post-flight (discard the result, push a
+`cancelled` sentinel).  The provider HTTP request is NOT aborted
+mid-flight; that's an accepted tradeoff matching scheduler.
+
 ## See also
 
 - [`CLUSTER.md`](CLUSTER.md) — configuration, operations, on-disk

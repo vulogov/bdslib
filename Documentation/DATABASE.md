@@ -524,17 +524,41 @@ A typical bdslib data directory after some activity:
 │   ├── vectors/
 │   └── frequency.db
 │
-└── scripts/                               ← Stored BUND scripts
-    ├── metadata.db
-    ├── blobs.db
-    ├── vectors/
-    └── frequency.db
+├── scripts/                               ← Stored BUND scripts
+│   ├── metadata.db
+│   ├── blobs.db
+│   ├── vectors/
+│   └── frequency.db
+│
+├── users/                                 ← Phase 7 — cluster-replicated users
+│   └── users.duckdb
+│
+├── llm/                                   ← Phase 8 — LLM cache + async jobs
+│   ├── cache.duckdb                       ← InferenceCache (REPLICATED via AE under "llm_cache")
+│   └── jobs.duckdb                        ← Local async job queue (NOT replicated)
+│
+└── network/                               ← Cluster artefacts
+    ├── node_id                            ← stable UUIDv7 for this node
+    ├── peers.json                         ← persisted PeerTable snapshot
+    ├── hints.duckdb                       ← hinted-handoff replay queue
+    ├── tombstones.duckdb                  ← delete tombstones for AE
+    ├── scheduler_log.duckdb               ← Phase 6 — scheduler-fire dedup
+    └── inference_log.duckdb               ← Phase 8 — LLM single-execution dedup
 ```
 
-Every `*.db` file is a DuckDB database. Every `vectors/` directory is
-a VecStore HNSW index. Every `fts/` directory is a Tantivy index. The
-top-level `shards_info.db` and the per-shard `obs.db` are
+Every `*.db` / `*.duckdb` file is a DuckDB database. Every `vectors/`
+directory is a VecStore HNSW index. Every `fts/` directory is a Tantivy
+index. The top-level `shards_info.db` and the per-shard `obs.db` are
 schema-different DuckDB databases — they do not share rows.
+
+The two new top-level directories are:
+
+| Directory | Replication | Lifecycle |
+|---|---|---|
+| `users/` | full (Phase 7 AE) | created on first node start; survives `--new` no — wiped along with `dbpath` |
+| `llm/cache.duckdb` | full (Phase 8 AE under store name `"llm_cache"`) | created at startup if `llm.cache.enabled` (default true) |
+| `llm/jobs.duckdb` | none — per-node | created at startup if a dbpath is available |
+| `network/inference_log.duckdb` | none — per-node | created at startup when cluster mode is on |
 
 ---
 

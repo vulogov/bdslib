@@ -530,3 +530,29 @@ All three `verify_*.sh` scripts accept an optional positional argument pointing 
 # Use a custom path:
 ./scripts/verify_logs.sh /etc/bdslib/production.hjson
 ```
+
+## See also — driving v4/llm.* from the shell
+
+The LLM surface ships with its own CLI subcommand group rather than a
+shell-script wrapper.  After ingestion (`fill-store.sh` /
+`send_*_to_node.sh`) you can exercise the model layer directly via
+`bdscmd llm`:
+
+```bash
+# Inspect what's registered + cached
+bdscmd llm providers
+bdscmd llm cache stats
+
+# Ask the cluster
+bdscmd llm chat -m "summarise the last hour" --duration 1h
+bdscmd llm analyze -k rca --duration 1h -q "what broke?"
+
+# Async fan-out, polled via the existing results queue
+bdscmd llm async -k complete -p "long analysis"
+bdscmd results-pull --id <result-uuid>
+```
+
+Full reference: [`BDSCMD.md`](BDSCMD.md) § _14e. llm_ and the
+canonical [`LLM.md`](LLM.md) architecture overview.  Every
+subcommand requires `--secret` (or `BDSCMD_CLUSTER_SECRET`) matching
+`cluster.shared_secret` — v4/* refuses unsigned requests by design.

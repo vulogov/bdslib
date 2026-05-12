@@ -89,6 +89,7 @@ output suitable for piping into `jq`.
     - [cluster tpl-* read family](#cluster-tpl-list-cluster-tpl-search-cluster-tpl-get-cluster-tpl-template-by-id-cluster-tpl-templates-recent-cluster-tpl-templates-by-timestamp)
 14c. [scheduler-last-seen](#14c-scheduler-last-seen--cluster-scheduler-introspection)
 14d. [user — cluster-replicated user management](#14d-user--cluster-replicated-user-management)
+14e. [llm — drive the v4/llm.* surface](#14e-llm--drive-the-v4llm-surface)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -2789,6 +2790,138 @@ bdscmd user -s "$SECRET" whoami -t "$TOK" | jq
 
 ---
 
+## 14e. `llm` — Drive the v4/llm.* surface
+
+`bdscmd llm <subcommand>` exposes every method in the cluster-aware
+LLM layer.  See [`LLM.md`](LLM.md) for the architecture; this
+section is the operator's CLI reference.
+
+**HMAC is mandatory.**  Every v4/llm.* method requires
+`--secret` (or `BDSCMD_CLUSTER_SECRET`) matching `cluster.shared_secret`.
+There is no first-user-style bootstrap bypass for the LLM surface —
+bdscmd will bail with a clear message if `--secret` is missing.
+
+### Subcommand table
+
+| Subcommand              | JSON-RPC method                                          |
+|-------------------------|----------------------------------------------------------|
+| `complete`              | `v4/llm.complete`                                        |
+| `chat`                  | `v4/llm.chat`                                            |
+| `analyze`               | `v4/llm.analyze`                                         |
+| `embed`                 | `v4/llm.embed`                                           |
+| `providers`             | `v4/llm.providers.list`                                  |
+| `async`                 | `v4/llm.complete_async` or `v4/llm.analyze_async`         |
+| `status`                | `v4/llm.jobs.status`                                     |
+| `cancel`                | `v4/llm.jobs.cancel`                                     |
+| `jobs`                  | `v4/llm.jobs.list`                                       |
+| `cache stats`           | `v4/llm.cache.stats`                                     |
+| `cache purge`           | `v4/llm.cache.purge`                                     |
+
+### Sync ops
+
+```bash
+# Single-shot completion
+bdscmd llm complete -p "summarise the data we just ingested"
+bdscmd llm complete --provider anthropic --model claude-sonnet-4-5 \
+    --temperature 0.7 --max-tokens 800 \
+    -p "operator briefing for the on-call team"
+bdscmd llm complete --messages-file conv.json   # JSON `[{role,content},…]`
+bdscmd llm complete -p "non-deterministic" --temperature 0.5 --no-cache
+
+# Chat
+bdscmd llm chat -m "first turn" --duration 1h   # opens new session, RAG over 1h
+bdscmd llm chat -m "follow up" --chat-id <uuid> --duration 1h
+bdscmd llm chat --message-file long_question.txt --chat-id <uuid>
+bdscmd llm chat -m "what about X?" --context "[telemetry] foo … bar"  # supplied RAG
+
+# Analyze with a ContextSource variant
+bdscmd llm analyze -k rca       --duration 1h -q "what broke?"
+bdscmd llm analyze -k anomaly   --duration 1h
+bdscmd llm analyze -k knn       --duration 1h --k 20 -q "neighbours of timeout"
+bdscmd llm analyze -k templates --duration 1h --top-n 20
+bdscmd llm analyze -k documents --id <uuid>,<uuid>
+bdscmd llm analyze -k supplied  --rows-file rows.json -q "summarise"
+
+# Embeddings
+bdscmd llm embed -t "embed me"
+bdscmd llm embed --texts-file lines.txt        # one text per line
+
+# Discovery
+bdscmd llm providers
+```
+
+### Async ops
+
+```bash
+# Submit
+bdscmd llm async -k complete -p "long-running prompt"
+bdscmd llm async -k analyze --analyze-kind rca --duration 1h -q "why?"
+
+# Reuse an existing ResultQueue id (lets one waiter collect several jobs)
+bdscmd llm async -k complete -p "job 1" --result-id <uuid>
+bdscmd llm async -k complete -p "job 2" --result-id <uuid>
+
+# Inspect / cancel / list
+bdscmd llm status -i <job-uuid>
+bdscmd llm cancel -i <job-uuid>
+bdscmd llm jobs                    # all, limit=100
+bdscmd llm jobs --state pending
+bdscmd llm jobs --state failed --limit 20
+
+# Poll the result (same pull path the scripts UI uses)
+bdscmd results-pull --id <result-uuid>
+```
+
+The result payload pushed onto the queue:
+
+```json
+{
+  "job_id":    "01997e92-…",
+  "result_id": "01997e93-…",
+  "kind":      "complete",
+  "state":     "done",
+  "result":    { …full v4/llm.complete response… }
+}
+```
+
+### Cache admin
+
+```bash
+bdscmd llm cache stats
+# { "enabled": true, "ttl_secs": 86400, "rows": 812,
+#   "total_hits": 4471, "bytes_rough": 9437184 }
+
+# Drop matching rows
+bdscmd llm cache purge --provider ollama
+bdscmd llm cache purge --kind "analyze:rca"
+bdscmd llm cache purge --older-than-secs 86400    # > 24h old
+
+# Drop everything (no filters)
+bdscmd llm cache purge
+```
+
+The purge runs against the node that received the call.  See
+[`LLM.md`](LLM.md) § _Operational gotchas_ for the cluster-wide
+purge story (TTL + AE convergence vs running purge per-node).
+
+### Input ergonomics summary
+
+| Flag pair                      | Subcommands                  |
+|--------------------------------|------------------------------|
+| `--prompt` / `--messages-file` | `complete`, `async`          |
+| `--message` / `--message-file` | `chat`                       |
+| `--context` / `--context-file` | `chat`                       |
+| `--texts-file`                 | `embed`                      |
+| `--rows-file`                  | `analyze --kind supplied`, `async --kind analyze --analyze-kind supplied` |
+| `--id` (CSV or repeatable)     | `analyze --kind documents`   |
+
+Generation knobs (`--temperature`, `--max-tokens`, `--top-p`, `--seed`)
+map onto `options.*` in the request.  `--no-cache` forces `cache: false`.
+`--older-than-secs` on `cache purge` is converted to absolute
+`older_than_created` unix seconds before being sent.
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -2847,6 +2980,17 @@ bdscmd user -s "$SECRET" whoami -t "$TOK" | jq
 | `user list`         | `v3/user.list`         | parent `-s` |
 | `user authenticate` | `v3/user.authenticate` | `-u`, `-p` (no secret) |
 | `user whoami`       | offline (no RPC)       | `-t`, parent `-s` |
+| `llm complete`      | `v4/llm.complete`      | `-p` \| `--messages-file`, `[--provider]`, `[--model]`, generation opts, `[--no-cache]`, parent `-s` |
+| `llm chat`          | `v4/llm.chat`          | `-m` \| `--message-file`, `[--chat-id]`, `[--duration]`, `[--context]`/`[--context-file]`, parent `-s` |
+| `llm analyze`       | `v4/llm.analyze`       | `-k`, plus per-kind: `--duration` / `-q` / `--id` / `--rows-file` / …, parent `-s` |
+| `llm embed`         | `v4/llm.embed`         | `-t` \| `--texts-file`, `[--provider]`, `[--model]`, parent `-s` |
+| `llm providers`     | `v4/llm.providers.list`| parent `-s` |
+| `llm async`         | `v4/llm.complete_async` or `v4/llm.analyze_async` | `-k complete\|analyze`, per-kind args, `[--result-id]`, parent `-s` |
+| `llm status`        | `v4/llm.jobs.status`   | `-i`, parent `-s` |
+| `llm cancel`        | `v4/llm.jobs.cancel`   | `-i`, parent `-s` |
+| `llm jobs`          | `v4/llm.jobs.list`     | `[--state]`, `[--limit]`, parent `-s` |
+| `llm cache stats`   | `v4/llm.cache.stats`   | parent `-s` |
+| `llm cache purge`   | `v4/llm.cache.purge`   | `[--provider]`, `[--kind]`, `[--older-than-secs]`, parent `-s` |
 
 ---
 

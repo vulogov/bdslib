@@ -214,3 +214,17 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v2/script`](v2_script.md) | Fetch a single BUND script body and metadata by UUIDv7 |
 | [`v2/script_update`](v2_script_update.md) | Replace metadata and body of an existing script (full overwrite, not merge) |
 | [`v2/script_delete`](v2_script_delete.md) | Remove a script from all sub-stores; idempotent |
+| [`v4/llm.complete`](v4_llm_complete.md) | Single-shot text completion (HMAC-signed).  Cluster-aware via the cache (Phase 3) + dedup (Phase 4) layers.  See [`../LLM.md`](../LLM.md). |
+| [`v4/llm.chat`](v4_llm_chat.md) | Stateful chat turn — history persisted in the docstore; optional inline RAG via `duration` |
+| [`v4/llm.analyze`](v4_llm_analyze.md) | RAG over a `ContextSource` kind (`aggregation`/`knn`/`rca`/`anomaly`/`templates`/`telemetry`/`documents`/`supplied`) then one completion |
+| [`v4/llm.embed`](v4_llm_embed.md) | Vector embeddings (batch) |
+| [`v4/llm.providers.list`](v4_llm_providers_list.md) | Registered providers + capabilities + the default |
+| [`v4/llm.complete_async`](v4_llm_complete_async.md) | Enqueue a completion for the background runner; returns `{job_id, result_id}` for `v2/results.pull` |
+| [`v4/llm.analyze_async`](v4_llm_analyze_async.md) | Enqueue an analyze job; same result-delivery channel |
+| [`v4/llm.jobs.list`](v4_llm_jobs_list.md) | List queued / in-flight / terminal jobs |
+| [`v4/llm.jobs.status`](v4_llm_jobs_status.md) | Inspect a single job by id |
+| [`v4/llm.jobs.cancel`](v4_llm_jobs_cancel.md) | Cancel a pending or running job (idempotent on terminal states) |
+| [`v4/llm.cache.stats`](v4_llm_cache_stats.md) | Inference-cache totals: rows / total hits / response bytes / TTL |
+| [`v4/llm.cache.purge`](v4_llm_cache_purge.md) | Drop matching cache rows (provider / kind / older-than filters; empty = drop all) |
+| [`v2/llm.cache.{get,get.by_id,put,list_ids,delete}`](v2_llm_cache.md) | Unauthenticated receivers used by `replicate_to_all`, anti-entropy, and (future) cluster-wide cache reads |
+| [`v2/llm.last_executed`](v2_llm_last_executed.md) | Most-recent inference-log row for a `cache_key` — peer of `v2/scheduler.last_seen`; used by the dedup fan-out |

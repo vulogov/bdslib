@@ -184,8 +184,9 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 | [SHARD.md](SHARD.md) | `Shard` — single time-partition: telemetry, FTS, vector |
 | [SHARDSCACHE.md](SHARDSCACHE.md) | `ShardsCache` — LRU open-shard pool |
 | [SHARDSMANAGER.md](SHARDSMANAGER.md) | `ShardsManager` — shard lifecycle, ingestion, cross-shard queries |
-| [CLUSTER.md](CLUSTER.md) | **Cluster mode** — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases, **user store + authentication** |
-| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads, **`v3/user.*` + session tokens** — with JSON-RPC examples for every mechanism |
+| [CLUSTER.md](CLUSTER.md) | **Cluster mode** — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases, **user store + authentication**, **LLM surface** |
+| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads, **`v3/user.*` + session tokens**, **`v4/llm.*` wire mechanics** — with JSON-RPC examples for every mechanism |
+| [LLM.md](LLM.md) | **LLM surface** — provider abstraction (Ollama / Anthropic / OpenAI), replicated inference cache, cluster-wide single-execution dedup, async jobs + RESULTS delivery, `v4/llm.*` RPC, `cls.llm.*` Bund words, `bdscmd llm` |
 | [EMBEDDINGENGINE.md](EMBEDDINGENGINE.md) | `EmbeddingEngine` — fastembed vector generation |
 | [FTSENGINE.md](FTSENGINE.md) | `FTSEngine` — Tantivy BM25 indexing |
 | [VECTORENGINE.md](VECTORENGINE.md) | `VectorEngine` — HNSW index via VecStore |
