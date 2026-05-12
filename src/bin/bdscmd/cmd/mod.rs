@@ -68,3 +68,4 @@ pub mod tpl_templates_by_timestamp;
 pub mod tpl_templates_recent;
 pub mod tpl_update;
 pub mod user;
+pub mod llm;

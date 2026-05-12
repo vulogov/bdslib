@@ -249,6 +249,13 @@ enum Commands {
     /// `authenticate` is unauthenticated; `whoami` uses the secret
     /// to verify the token's HMAC offline.
     User(cmd::user::Cmd),
+
+    /// Drive the v4/llm.* surface from the shell: complete / chat /
+    /// analyze / embed / providers; async submit + jobs status /
+    /// cancel / list; cache stats + purge.  Every subcommand is
+    /// HMAC-signed under `--secret` matching `cluster.shared_secret`
+    /// from bds.hjson — v4/* refuses unsigned requests.
+    Llm(cmd::llm::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -343,6 +350,7 @@ fn main() -> Result<()> {
         Commands::SignalsQuery(a)             => cmd::signals_query::run(&url, &session, a),
         Commands::SchedulerLastSeen(a)        => cmd::scheduler_last_seen::run(&url, &session, a),
         Commands::User(a)                     => cmd::user::run(&url, &session, a),
+        Commands::Llm(a)                      => cmd::llm::run(&url, &session, a),
     }?;
 
     if cli.raw {
