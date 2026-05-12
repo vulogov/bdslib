@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{admin::signed_rpc, admin::signed_rpc_with_timeout, client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -53,9 +53,41 @@ fn row_from_search(v: &serde_json::Value) -> TplRow {
 #[derive(Template)]
 #[template(path = "templates.html")]
 struct TemplatesPage {
-    duration:   String,
-    q:          String,
-    mode_badge: ModeBadge,
+    duration:         String,
+    q:                String,
+    mode_badge:       ModeBadge,
+    /// Default LLM provider id for "Analyze this!" — surfaced on a
+    /// `data-` attribute so the wait-message JS can name the actual
+    /// upstream.  Empty when bdsnode reports no providers registered.
+    analyze_provider: String,
+    /// Default model name for that provider.  Empty when unavailable.
+    analyze_model:    String,
+}
+
+/// Fetch the default v4/llm provider + model so the wait-message JS
+/// can name the actual upstream.  All failure modes (missing HMAC
+/// secret, bdsnode unreachable, empty list, default-not-found)
+/// collapse to `("", "")` — the page falls back to generic phrasing.
+async fn fetch_analyze_provider(state: &AppState) -> (String, String) {
+    if state.shared_secret.is_empty() {
+        return (String::new(), String::new());
+    }
+    let resp = match signed_rpc(state, "v4/llm.providers.list", json!({})).await {
+        Ok(v)  => v,
+        Err(e) => {
+            log::warn!("[templates] v4/llm.providers.list failed: {e}");
+            return (String::new(), String::new());
+        }
+    };
+    let default_id = resp.get("default").and_then(|v| v.as_str()).unwrap_or("");
+    if default_id.is_empty() { return (String::new(), String::new()); }
+    let model = resp.get("providers").and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p|
+            p.get("id").and_then(|x| x.as_str()) == Some(default_id)))
+        .and_then(|p| p.get("default_model").and_then(|x| x.as_str()))
+        .unwrap_or("")
+        .to_owned();
+    (default_id.to_owned(), model)
 }
 
 pub async fn page(
@@ -63,7 +95,14 @@ pub async fn page(
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
     let mode_badge = mode_badge_for_page(&state, true).await;
-    Ok(Html(TemplatesPage { duration: p.duration, q: p.q, mode_badge }.render()?))
+    let (analyze_provider, analyze_model) = fetch_analyze_provider(&state).await;
+    Ok(Html(TemplatesPage {
+        duration: p.duration,
+        q:        p.q,
+        mode_badge,
+        analyze_provider,
+        analyze_model,
+    }.render()?))
 }
 
 // ── HTMX results fragment ─────────────────────────────────────────────────────
@@ -118,5 +157,181 @@ pub async fn results(
             .unwrap_or_default();
 
         Ok(Html(TemplateRows { rows, duration: p.duration, q: p.q, searching: true, mode_badge }.render()?))
+    }
+}
+
+// ── HTMX: "Analyze this!" — one-shot LLM analysis of drain3 templates ────────
+//
+// Mirror of `routes::logs::analyze` / `routes::telemetry::analyze`,
+// but the underlying RPCs are `v?/tpl.templates_recent` (browse mode,
+// empty `q`) and `v?/tpl.search` (semantic search, non-empty `q`).
+// Reads its prompt + timeout from `state.templates_analyze`.
+
+#[derive(Template)]
+#[template(path = "partials/templates_analysis.html")]
+struct TemplatesAnalysis {
+    response:      String,
+    response_html: String,
+    provider:      String,
+    model:         String,
+    ms:            u64,
+    n_rows:        usize,
+    q:             String,
+    duration:      String,
+    /// `"miss"`, `"hit"`, or `""`.
+    cache:         String,
+    /// Empty when the LLM ran cleanly; a short banner message when
+    /// the route caught a v4/v2 failure but still wants to render
+    /// the panel.
+    error:         String,
+    /// `true` when the operator had a non-empty query in the search
+    /// box (semantic search mode); `false` for the browse-recent
+    /// path.  Echoed back so the panel header tells them which set
+    /// of templates was analysed.
+    searched:      bool,
+}
+
+pub async fn analyze(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let cfg = state.templates_analyze.clone();
+    let searched = !p.q.is_empty();
+
+    // Pull the same templates the page is showing — browse-recent when
+    // q is empty, semantic search when set.  Errors render in the
+    // panel rather than 500-ing.
+    let resp = if searched {
+        rpc_versioned(&state, "v2/tpl.search", "v3/tpl.search", json!({
+            "session":  SESSION,
+            "duration": p.duration,
+            "query":    p.q,
+            "limit":    cfg.max_rows as u64,
+        })).await
+    } else {
+        rpc_versioned(&state, "v2/tpl.templates_recent", "v3/tpl.templates_recent", json!({
+            "session":  SESSION,
+            "duration": p.duration,
+        })).await
+    };
+
+    let resp = match resp {
+        Ok(v)  => v,
+        Err(e) => return Ok(Html(TemplatesAnalysis {
+            response:      String::new(),
+            response_html: String::new(),
+            provider: String::new(),
+            model:    String::new(),
+            ms:       0,
+            n_rows:   0,
+            q:        p.q.clone(),
+            duration: p.duration.clone(),
+            cache:    String::new(),
+            error:    format!("Could not fetch templates for analysis: {e}"),
+            searched,
+        }.render()?)),
+    };
+
+    // Both RPCs report rows under a different field name.  Pull just
+    // the relevant subset (id, name, body, timestamp) so the LLM sees
+    // the meaningful surface area and we don't blow the prompt
+    // budget on internal HNSW scoring metadata.
+    let raw_rows: Vec<serde_json::Value> = if searched {
+        resp.get("results").and_then(|x| x.as_array()).cloned().unwrap_or_default()
+    } else {
+        resp.get("templates").and_then(|x| x.as_array()).cloned().unwrap_or_default()
+    };
+
+    // For the recent path the template body lives at `body`; for the
+    // search path it's at `document`.  Project both shapes into a
+    // single `{id, name, ts, body}` form so the LLM sees consistent
+    // structure regardless of which call produced the rows.
+    let take_n = cfg.max_rows;
+    let projected: Vec<serde_json::Value> = raw_rows.iter().take(take_n).map(|r| {
+        let id   = r.get("id").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+        let meta = r.get("metadata").cloned().unwrap_or_default();
+        let name = meta.get("name").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+        let ts   = meta.get("timestamp").and_then(|x| x.as_u64()).unwrap_or(0);
+        let body = r.get("body").and_then(|x| x.as_str())
+            .or_else(|| r.get("document").and_then(|x| x.as_str()))
+            .unwrap_or("").to_owned();
+        json!({ "id": id, "name": name, "ts": ts, "body": body })
+    }).collect();
+    let n_rows = projected.len();
+
+    if n_rows == 0 {
+        let banner = if searched {
+            format!(
+                "Search for `{}` over the last {} returned no templates — nothing for the LLM to analyze.",
+                p.q, p.duration
+            )
+        } else {
+            format!(
+                "No templates observed in the last {} — nothing for the LLM to analyze.  Wait for drain3 \
+                 to mine some patterns or widen the duration window.",
+                p.duration
+            )
+        };
+        return Ok(Html(TemplatesAnalysis {
+            response:      String::new(),
+            response_html: String::new(),
+            provider: String::new(),
+            model:    String::new(),
+            ms:       0,
+            n_rows:   0,
+            q:        p.q.clone(),
+            duration: p.duration.clone(),
+            cache:    String::new(),
+            error:    banner,
+            searched,
+        }.render()?));
+    }
+
+    // Hand the projected rows to v4/llm.analyze (HMAC-signed).  Prompt
+    // and timeout come from `web.analyze.templates.*`.
+    let analyze_resp = signed_rpc_with_timeout(
+        &state,
+        "v4/llm.analyze",
+        json!({
+            "kind":            "supplied",
+            "rows":            projected,
+            "query":           p.q,
+            "prompt_template": cfg.prompt_template,
+        }),
+        Some(std::time::Duration::from_secs(cfg.timeout_secs)),
+    ).await;
+
+    match analyze_resp {
+        Ok(v) => {
+            let response = v.get("response").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+            let provider = v.get("provider").and_then(|x| x.as_str()).unwrap_or("?").to_owned();
+            let model    = v.get("model").and_then(|x| x.as_str()).unwrap_or("?").to_owned();
+            let ms       = v.get("ms").and_then(|x| x.as_u64()).unwrap_or(0);
+            let cache    = v.get("cache").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+            Ok(Html(TemplatesAnalysis {
+                response_html: crate::markdown::render(&response),
+                response,
+                provider, model, ms,
+                n_rows,
+                q:        p.q,
+                duration: p.duration,
+                cache,
+                error:    String::new(),
+                searched,
+            }.render()?))
+        }
+        Err(e) => Ok(Html(TemplatesAnalysis {
+            response:      String::new(),
+            response_html: String::new(),
+            provider: String::new(),
+            model:    String::new(),
+            ms:       0,
+            n_rows,
+            q:        p.q,
+            duration: p.duration,
+            cache:    String::new(),
+            error:    format!("v4/llm.analyze failed: {e}"),
+            searched,
+        }.render()?)),
     }
 }

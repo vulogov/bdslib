@@ -320,25 +320,49 @@
   //
   // web: {
   //   analyze: {
+  //     // ── Telemetry → Logs (text records, SRE log-slice analysis) ──
   //     logs: {
   //       // Per-request timeout for bdsweb → bdsnode on this one call.
   //       // CPU-bound local Ollama on llama3.2 + 50 rows typically
   //       // needs 60–180s for the first invocation; cached repeats are
   //       // sub-50ms.  Floor 30s; default 600s.
   //       timeout_secs: 600
-  //
-  //       // How many search hits feed into the prompt.  Clamped to
-  //       // 1..500.  Default 50.
+  //       // How many search hits feed into the prompt (1..500).  Default 50.
   //       max_rows: 50
-  //
-  //       // Operator-supplied prompt template.  Rewrite to change
+  //       // Operator-supplied prompt template — rewrite to change
   //       // analysis style, audience, language, or output format.
   //       prompt_template:
   //         '''
   //         You are reviewing a slice of operational log records …
   //         '''
   //     }
-  //     // Future: web.analyze.metrics, web.analyze.rca, …
+  //
+  //     // ── Telemetry → Metrics (numeric records, numeric reasoning) ──
+  //     // Same three knobs, different default prompt (numeric frame
+  //     // covering ranges, outliers, trends, correlation, verdict).
+  //     metrics: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing a slice of numeric telemetry records …
+  //         '''
+  //     }
+  //
+  //     // ── Telemetry → Templates (drain3-mined log patterns) ──
+  //     // Each row is a pattern with `<*>` wildcards.  Default prompt
+  //     // frames the analysis around system-behavior themes, failure
+  //     // indicators, benign noise, and suspicious wildcards.
+  //     templates: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing a slice of drain3-mined log templates …
+  //         '''
+  //     }
+  //
+  //     // Future: web.analyze.rca, web.analyze.signals, …
   //   }
   // }
 

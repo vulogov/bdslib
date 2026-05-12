@@ -105,8 +105,9 @@
   }
 
   // ── bdsweb "Analyze this!" buttons (under web.analyze.<target>) ──
-  // Per-target sub-blocks; more targets (metrics, rca, …) will slot in
-  // here.  All keys are optional; defaults live in bdsweb code.
+  // Per-target sub-blocks; more targets (rca, signals, …) will slot
+  // in here alongside logs and metrics.  All keys are optional;
+  // defaults live in bdsweb code.
   // web: {
   //   analyze: {
   //     logs: {
@@ -114,6 +115,20 @@
   //       max_rows:     50
   //       prompt_template: '''
   //         You are reviewing a slice of operational log records …
+  //       '''
+  //     }
+  //     metrics: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing a slice of numeric telemetry records …
+  //       '''
+  //     }
+  //     templates: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing a slice of drain3-mined log templates …
   //       '''
   //     }
   //   }

@@ -57,7 +57,11 @@ struct WebConfig {
     /// applied per-IP to `POST /login`.  `0` disables the limit.
     auth_rate_limit_per_minute: u32,
     /// Operator-tunable knobs for Telemetry → Logs → "Analyze this!".
-    logs_analyze:           state::LogsAnalyzeConfig,
+    logs_analyze:           state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Telemetry → Metrics → "Analyze this!".
+    metrics_analyze:        state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Telemetry → Templates → "Analyze this!".
+    templates_analyze:      state::AnalyzeTargetConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -66,7 +70,9 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         cluster_refresh_secs:   10,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
-        logs_analyze: state::LogsAnalyzeConfig::default(),
+        logs_analyze:      state::AnalyzeTargetConfig::logs_default(),
+        metrics_analyze:   state::AnalyzeTargetConfig::metrics_default(),
+        templates_analyze: state::AnalyzeTargetConfig::templates_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -100,23 +106,20 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         .map(|n| n as u32)
         .unwrap_or(defaults.auth_rate_limit_per_minute);
 
-    // `web.analyze.logs.*` — every key is optional; the struct's
-    // Default impl supplies the fallback values, so a missing block
-    // (or any missing key inside it) keeps the current behaviour.
-    //
-    // The block lives under `web.analyze.<target>` so more "Analyze
-    // this!" buttons can be added later (`web.analyze.metrics`,
-    // `web.analyze.rca`, etc.) without re-shuffling the schema.
-    let logs_analyze = {
-        let d = state::LogsAnalyzeConfig::default();
+    // `web.analyze.<target>.*` — every key is optional; the
+    // per-target default factory supplies the fallback values, so a
+    // missing block (or any missing key inside it) keeps the current
+    // behaviour.  Adding `rca`, `signals`, … later is one more
+    // closure call below, mirroring `logs` and `metrics`.
+    let parse_target = |sub: &str, d: state::AnalyzeTargetConfig| -> state::AnalyzeTargetConfig {
         let block = obj.get("web")
             .and_then(|v| v.as_object())
             .and_then(|w| w.get("analyze"))
             .and_then(|v| v.as_object())
-            .and_then(|a| a.get("logs"))
+            .and_then(|a| a.get(sub))
             .and_then(|v| v.as_object());
         match block {
-            Some(b) => state::LogsAnalyzeConfig {
+            Some(b) => state::AnalyzeTargetConfig {
                 timeout_secs: b.get("timeout_secs")
                     .and_then(|v| v.as_f64()).map(|n| n as u64)
                     .unwrap_or(d.timeout_secs).max(30),
@@ -130,6 +133,9 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             None => d,
         }
     };
+    let logs_analyze      = parse_target("logs",      state::AnalyzeTargetConfig::logs_default());
+    let metrics_analyze   = parse_target("metrics",   state::AnalyzeTargetConfig::metrics_default());
+    let templates_analyze = parse_target("templates", state::AnalyzeTargetConfig::templates_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -145,6 +151,8 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         shared_secret,
         auth_rate_limit_per_minute,
         logs_analyze,
+        metrics_analyze,
+        templates_analyze,
     }
 }
 
@@ -172,12 +180,26 @@ async fn main() {
         cfg.logs_analyze.max_rows,
         cfg.logs_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.metrics: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.metrics_analyze.timeout_secs,
+        cfg.metrics_analyze.max_rows,
+        cfg.metrics_analyze.prompt_template.len(),
+    );
+    log::info!(
+        "web.analyze.templates: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.templates_analyze.timeout_secs,
+        cfg.templates_analyze.max_rows,
+        cfg.templates_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
         cfg.cluster_refresh_secs,
         cfg.shared_secret,
         cfg.logs_analyze,
+        cfg.metrics_analyze,
+        cfg.templates_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -241,6 +263,7 @@ async fn main() {
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))
+        .route("/telemetry/analyze", get(routes::telemetry::analyze))
         .route("/logs",              get(routes::logs::page))
         .route("/logs/results",      get(routes::logs::results))
         .route("/logs/keys",         get(routes::logs::keys))
@@ -260,6 +283,7 @@ async fn main() {
         .route("/rca/templates/results", get(routes::rca_templates::results))
         .route("/templates",         get(routes::templates::page))
         .route("/templates/results", get(routes::templates::results))
+        .route("/templates/analyze", get(routes::templates::analyze))
         .route("/templates_summary",         get(routes::templates_summary::page))
         .route("/templates_summary/results", get(routes::templates_summary::results))
         .route("/primary_summary",         get(routes::primary_summary::page))

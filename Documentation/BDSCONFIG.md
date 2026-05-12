@@ -983,9 +983,15 @@ its own sub-block under `web.analyze.<target>` so future targets
 (metrics, rca, …) slot in alongside `logs` without re-shuffling the
 schema.
 
-#### `web.analyze.logs` (Telemetry → Logs page)
+Every target accepts the same three keys:
 
-Three knobs:
+| Field             | Type    | Default                              | Floor / Range |
+|-------------------|---------|--------------------------------------|---------------|
+| `timeout_secs`    | integer | 600                                  | floor 30      |
+| `max_rows`        | integer | 50                                   | 1 – 500       |
+| `prompt_template` | string  | per-target compiled-in default       | —             |
+
+#### `web.analyze.logs` (Telemetry → Logs page)
 
 ```hjson
 web: {
@@ -998,16 +1004,49 @@ web: {
         You are reviewing a slice of operational log records …
         '''
     }
-    // Future: web.analyze.metrics, web.analyze.rca, …
   }
 }
 ```
 
-| Field             | Type    | Default                              | Floor / Range |
-|-------------------|---------|--------------------------------------|---------------|
-| `timeout_secs`    | integer | 600                                  | floor 30      |
-| `max_rows`        | integer | 50                                   | 1 – 500       |
-| `prompt_template` | string  | built-in 5-step SRE analysis prompt  | —             |
+Default prompt — 5-step "SRE reading a log slice" frame: dominant theme, recurring failures, anomalies, root cause, next step.
+
+#### `web.analyze.metrics` (Telemetry → Metrics page)
+
+```hjson
+web: {
+  analyze: {
+    metrics: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing a slice of numeric telemetry records …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *numeric* frame: metric description + typical ranges, per-key min/max/median + outliers, trend direction with bracketing timestamps, cross-metric correlation, operational interpretation (healthy / capacity / failure / noise), next step.  Use this knob to tighten the analysis ("only flag CPU% above 90"), change the audience ("explain like I'm a junior on-call"), or change output format ("return strict JSON with `metric`, `range`, `verdict`").
+
+#### `web.analyze.templates` (Telemetry → Templates page)
+
+```hjson
+web: {
+  analyze: {
+    templates: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing a slice of drain3-mined log templates …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *pattern* frame designed for drain3 output (each row is a recurring log-line pattern with `<*>` placeholders): system-behavior themes, failure-indicator templates with verbatim citations, benign/high-volume templates the operator can tune out, suspicious wildcards (drain3 over-collapsing different value classes), most-likely incident, next step.  Operators rewriting it should preserve the "quote bodies verbatim" instruction — that's what lets the SRE grep / drill down from the answer.  Works in both browse-recent mode (empty query, lists the last `duration` of templates) and search mode (vector search over the tpl store).
 
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
@@ -1023,21 +1062,21 @@ web: {
 
 - **`prompt_template`** — operator-supplied instruction text prepended
   to the rows when calling `v4/llm.analyze`.  Use hjson triple-quoted
-  multi-line strings (`'''…'''`) for readability.  The default is the
-  built-in "5-step SRE analysis" prompt; rewrite it to change the
-  analysis style — narrower focus ("only mention auth failures"),
-  audience ("explain like I'm a junior on-call"), language ("respond
-  in Russian"), or output format ("return strict JSON with keys
-  `theme`, `errors`, `next_step`").
+  multi-line strings (`'''…'''`) for readability.  Each target has its
+  own compiled-in default (logs: SRE log frame, metrics: numeric
+  frame); rewrite to change analysis style, audience, language, or
+  output format.
 
-Missing block or missing keys fall back to the built-in defaults;
-operators who don't care about this feature don't need to edit
-anything.
+Missing block or missing keys fall back to the per-target built-in
+defaults; operators who don't care about this feature don't need to
+edit anything.
 
 Active settings are logged at bdsweb startup:
 
 ```
-[INFO] web.analyze.logs: timeout=600s, max_rows=50, prompt_chars=621
+[INFO] web.analyze.logs:      timeout=600s, max_rows=50, prompt_chars=621
+[INFO] web.analyze.metrics:   timeout=600s, max_rows=50, prompt_chars=863
+[INFO] web.analyze.templates: timeout=600s, max_rows=50, prompt_chars=1110
 ```
 
 ---
