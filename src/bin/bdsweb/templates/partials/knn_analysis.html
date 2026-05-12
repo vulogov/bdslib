@@ -1,0 +1,56 @@
+{% if !error.is_empty() %}
+<div class="card rounded-lg p-4 mb-3 text-sm" style="border-color:#7f1d1d;background:#1f1115">
+  <div class="text-red-300 font-medium mb-1">Analysis unavailable</div>
+  <div class="text-slate-300">{{ error }}</div>
+</div>
+{% endif %}
+
+{% if !response.is_empty() %}
+
+<!-- Metadata strip — clusters and anomalies are the two value-add
+     counts here.  Slash notation ("X/Y") shows when sampling
+     kicked in. -->
+<div class="flex flex-wrap items-center gap-2 mb-3 text-xs text-slate-500">
+  <span class="px-2 py-0.5 rounded text-emerald-300"
+        style="background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.18)"
+        title="Cluster rows fed to the LLM (after the budget split)">
+    {{ n_clusters_fed }}{% if n_clusters_fed != matched_clusters %}/{{ matched_clusters }}{% endif %} cluster{% if matched_clusters != 1 %}s{% endif %}
+  </span>
+  <span class="px-2 py-0.5 rounded text-amber-300"
+        style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.18)"
+        title="Anomaly rows fed to the LLM (after the budget split)">
+    {{ n_anomalies_fed }}{% if n_anomalies_fed != matched_anomalies %}/{{ matched_anomalies }}{% endif %} anomal{% if matched_anomalies != 1 %}ies{% else %}y{% endif %}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)"
+        title="Total records scanned by the k-NN detector in this window">
+    {{ n_logs }} record{% if n_logs != 1 %}s{% endif %} scanned
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)"
+        title="k = number of nearest neighbours">
+    k={{ k }}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)"
+        title="Anomaly threshold — records with max_similarity below this become anomalies">
+    thr {{ "{:.2}"|format(anomaly_threshold) }}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    last {{ duration }}
+  </span>
+  <span class="px-2 py-0.5 rounded font-mono" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ provider }} / {{ model }}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ ms }}ms
+  </span>
+  {% if cache == "hit" %}
+  <span class="px-2 py-0.5 rounded text-emerald-300" style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2)" title="Served from the inference cache — same k-NN output already analyzed">
+    cache hit
+  </span>
+  {% endif %}
+</div>
+
+<!-- The analysis (markdown-rendered server-side; sanitised by ammonia) -->
+<div class="card rounded-lg p-4 text-sm text-slate-200 md"
+     style="word-break:break-word;line-height:1.55">{{ response_html|safe }}</div>
+
+{% endif %}

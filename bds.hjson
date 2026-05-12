@@ -476,6 +476,41 @@
   //         '''
   //     }
   //
+  //     // ── Analysis → Denoise (kept vs removed corpus split) ──
+  //     // Two-corpus target.  The LLM tells the story from the kept
+  //     // (signal) records AND sanity-checks the filter by
+  //     // characterising what got removed — flags false positives in
+  //     // REMOVED and false negatives in KEPT to guide threshold
+  //     // tuning.  max_rows caps the TOTAL kept + removed row count
+  //     // with a 60/40 split favouring kept; stats row always
+  //     // passes through.
+  //     denoise_recent: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing the output of an n-gram commonness denoiser …
+  //         '''
+  //     }
+  //
+  //     // ── Analysis → k-NN (clusters + anomalies) ──
+  //     // Two-output target.  The LLM interprets each cluster's
+  //     // operational theme (rather than re-listing) and assesses
+  //     // the anomalies as either novel-worth-investigating or
+  //     // noisy edge cases.  max_rows caps the TOTAL clusters +
+  //     // anomalies row count with a 60/40 split favouring
+  //     // clusters; per-cluster member lists are clipped to 5
+  //     // verbatim quotes so one 200-member cluster can't crowd
+  //     // out the others.
+  //     knn: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing the output of a k-Nearest-Neighbour clustering …
+  //         '''
+  //     }
+  //
   //     // Future: web.analyze.rca, web.analyze.signals, …
   //   }
   // }

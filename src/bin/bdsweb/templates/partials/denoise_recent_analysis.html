@@ -1,0 +1,51 @@
+{% if !error.is_empty() %}
+<div class="card rounded-lg p-4 mb-3 text-sm" style="border-color:#7f1d1d;background:#1f1115">
+  <div class="text-red-300 font-medium mb-1">Analysis unavailable</div>
+  <div class="text-slate-300">{{ error }}</div>
+</div>
+{% endif %}
+
+{% if !response.is_empty() %}
+
+<!-- Metadata strip — show what fed the model: both corpora with
+     "fed/matched" notation when sampling kicked in. -->
+<div class="flex flex-wrap items-center gap-2 mb-3 text-xs text-slate-500">
+  <span class="px-2 py-0.5 rounded text-emerald-300"
+        style="background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.18)"
+        title="Kept rows (signal) fed to the LLM (after the budget split)">
+    {{ n_kept_fed }}{% if n_kept_fed != matched_kept %}/{{ matched_kept }}{% endif %} kept
+  </span>
+  <span class="px-2 py-0.5 rounded text-slate-400"
+        style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07)"
+        title="Removed rows (noise floor) fed to the LLM (after the budget split)">
+    {{ n_removed_fed }}{% if n_removed_fed != matched_removed %}/{{ matched_removed }}{% endif %} removed
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)"
+        title="Total records scanned by the denoiser in this window">
+    {{ n_logs }} record{% if n_logs != 1 %}s{% endif %} scanned
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)"
+        title="Noise threshold — records with commonness ≥ this are filtered out">
+    thr {{ "{:.2}"|format(noise_threshold) }}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    last {{ duration }}
+  </span>
+  <span class="px-2 py-0.5 rounded font-mono" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ provider }} / {{ model }}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ ms }}ms
+  </span>
+  {% if cache == "hit" %}
+  <span class="px-2 py-0.5 rounded text-emerald-300" style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2)" title="Served from the inference cache — same denoise output already analyzed">
+    cache hit
+  </span>
+  {% endif %}
+</div>
+
+<!-- The analysis (markdown-rendered server-side; sanitised by ammonia) -->
+<div class="card rounded-lg p-4 text-sm text-slate-200 md"
+     style="word-break:break-word;line-height:1.55">{{ response_html|safe }}</div>
+
+{% endif %}

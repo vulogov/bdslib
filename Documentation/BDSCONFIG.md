@@ -1186,6 +1186,44 @@ web: {
 
 Default prompt — 6-step *outline-the-nature* frame designed for `v?/anomaly.recent` output.  Unlike the summary targets which receive a single derived blob, this one receives a row list: one synthetic `_kind=anomaly_window_stats` row carrying the population context (`n_logs`, `n_unique_ngrams`, threshold, mean rarity), plus N `_kind=anomaly` rows each with `idx`, `rarity`, the record `text`, and the `novel_ngrams` that drove the rarity score.  The prompt asks the model to **explain** the anomalies, not list them: population framing, themes across anomalies (clustering by key/source/time/n-gram family), severity ranking weighted by operational impact rather than raw rarity, **false-positive candidates** so the operator can tune them out, most-likely incident, next step.  `max_rows` caps the anomaly rows fed to the LLM; the stats row is always included on top of that so the model never loses population context.  Critical guardrail: *"If the anomaly set is dominated by noise … say so plainly rather than forcing a narrative."*
 
+#### `web.analyze.denoise_recent` (Analysis → Denoise page)
+
+```hjson
+web: {
+  analyze: {
+    denoise_recent: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing the output of an n-gram commonness denoiser …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *story-from-signal + filter sanity check* frame.  Unlike `anomaly_recent` (which surfaces *rare* records), the denoiser splits a window into **two correlated corpora**: `kept` records (low commonness — the signal) and `removed` records (high commonness — boilerplate / heartbeats / templated chatter).  The LLM does both halves: it tells the story the kept set describes AND sanity-checks the filter by characterising what got removed.  Steps: population context (kept vs removed split), the signal (story from KEPT, with `[idx]` citations), the noise floor (what got REMOVED, plausibility check), **filter quality** (false positives — real signal in REMOVED; false negatives — boilerplate in KEPT — to guide threshold tuning), most-likely incident from kept, next step.  The supplied payload carries one `_kind=denoise_window_stats` row + rows tagged `_kind=denoise_kept` and `_kind=denoise_removed`.  `max_rows` caps the **total** kept + removed row count with a **60/40 split in favour of kept** (slack from either side redistributes); the stats row always passes through on top.
+
+#### `web.analyze.knn` (Analysis → k-NN page)
+
+```hjson
+web: {
+  analyze: {
+    knn: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing the output of a k-Nearest-Neighbour clustering analysis …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 7-step *interpret-the-clustering-structure* frame for `v?/knn` output.  k-NN returns two complementary outputs: **clusters** (groups of records bound by vector similarity, each with a `representative` and a `members` list) and **anomalies** (records whose `max_similarity` to any cluster fell below the threshold — singletons that didn't fit anywhere).  The prompt asks the model to interpret each cluster's operational meaning rather than re-listing them, rank by relevance (a 3-member error cluster usually matters more than a 200-member heartbeat cluster), call out failure clusters separately from routine ones, and assess anomalies as either novel-worth-investigating or just noisy edge cases.  The supplied payload carries one `_kind=knn_window_stats` row + N `_kind=knn_cluster` rows (each with its representative and a clipped members list — 5 verbatim members per cluster, so one 200-member cluster can't crowd out the others) + M `_kind=knn_anomaly` rows.  `max_rows` caps clusters + anomalies combined with a **60/40 split in favour of clusters** (each cluster row carries denser info per row); slack from either side redistributes.
+
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
   on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
@@ -1222,6 +1260,8 @@ Active settings are logged at bdsweb startup:
 [INFO] web.analyze.primary_lsa_summary:       timeout=600s, max_rows=50, prompt_chars=1758
 [INFO] web.analyze.primary_lsa_query_summary: timeout=600s, max_rows=50, prompt_chars=2042
 [INFO] web.analyze.anomaly_recent:            timeout=600s, max_rows=50, prompt_chars=2470
+[INFO] web.analyze.denoise_recent:            timeout=600s, max_rows=50, prompt_chars=3110
+[INFO] web.analyze.knn:                       timeout=600s, max_rows=50, prompt_chars=2870
 ```
 
 ---

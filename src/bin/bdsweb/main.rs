@@ -78,6 +78,8 @@ struct WebConfig {
     anomaly_recent_analyze:            state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Analysis → Denoise → "Analyze this!".
     denoise_recent_analyze:            state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → k-NN → "Analyze this!".
+    knn_analyze:                       state::AnalyzeTargetConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -97,6 +99,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         primary_lsa_query_summary_analyze: state::AnalyzeTargetConfig::primary_lsa_query_summary_default(),
         anomaly_recent_analyze:            state::AnalyzeTargetConfig::anomaly_recent_default(),
         denoise_recent_analyze:            state::AnalyzeTargetConfig::denoise_recent_default(),
+        knn_analyze:                       state::AnalyzeTargetConfig::knn_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -168,6 +171,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     let primary_lsa_query_summary_analyze = parse_target("primary_lsa_query_summary", state::AnalyzeTargetConfig::primary_lsa_query_summary_default());
     let anomaly_recent_analyze            = parse_target("anomaly_recent",            state::AnalyzeTargetConfig::anomaly_recent_default());
     let denoise_recent_analyze            = parse_target("denoise_recent",            state::AnalyzeTargetConfig::denoise_recent_default());
+    let knn_analyze                       = parse_target("knn",                       state::AnalyzeTargetConfig::knn_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -192,6 +196,8 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         primary_lsa_summary_analyze,
         primary_lsa_query_summary_analyze,
         anomaly_recent_analyze,
+        denoise_recent_analyze,
+        knn_analyze,
     }
 }
 
@@ -273,6 +279,18 @@ async fn main() {
         cfg.anomaly_recent_analyze.max_rows,
         cfg.anomaly_recent_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.denoise_recent: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.denoise_recent_analyze.timeout_secs,
+        cfg.denoise_recent_analyze.max_rows,
+        cfg.denoise_recent_analyze.prompt_template.len(),
+    );
+    log::info!(
+        "web.analyze.knn: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.knn_analyze.timeout_secs,
+        cfg.knn_analyze.max_rows,
+        cfg.knn_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -288,6 +306,8 @@ async fn main() {
         cfg.primary_lsa_summary_analyze,
         cfg.primary_lsa_query_summary_analyze,
         cfg.anomaly_recent_analyze,
+        cfg.denoise_recent_analyze,
+        cfg.knn_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -393,8 +413,10 @@ async fn main() {
         .route("/anomaly_recent/analyze", get(routes::anomaly_recent::analyze))
         .route("/denoise_recent",         get(routes::denoise_recent::page))
         .route("/denoise_recent/results", get(routes::denoise_recent::results))
+        .route("/denoise_recent/analyze", get(routes::denoise_recent::analyze))
         .route("/knn",                    get(routes::knn::page))
         .route("/knn/results",            get(routes::knn::results))
+        .route("/knn/analyze",            get(routes::knn::analyze))
         .route("/chat",           get(routes::chat::page))
         .route("/chat/query",     post(routes::chat::query))
         .route("/chat/new",       post(routes::chat::new_session))

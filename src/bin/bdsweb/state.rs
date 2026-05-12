@@ -206,6 +206,73 @@ pub const DEFAULT_PRIMARY_LSA_SUMMARY_ANALYZE_PROMPT: &str =
      corpora into noisy dimensions), say so honestly — sometimes the right answer is \
      \"concept #3 is noise, ignore it\".";
 
+/// Default prompt for `web.analyze.knn` — output of `v?/knn`, the
+/// k-Nearest-Neighbour clustering analysis.  Returns two related
+/// outputs: `clusters` (groups of records bound by vector
+/// similarity, each with a `representative` and a `members` list)
+/// and `anomalies` (records whose `max_similarity` to any cluster
+/// fell below the threshold — singletons).  Plus stats: n_logs, k,
+/// anomaly_threshold, n_clusters, n_anomalies.
+///
+/// The LLM's job is to **interpret the clustering structure** — not
+/// re-list the clusters, but tell the operator what each cluster
+/// *means* operationally and what the anomalies reveal as
+/// singletons.
+///
+/// Supplied payload: one `_kind=knn_window_stats` row + N
+/// `_kind=knn_cluster` rows (each carrying id/size/representative/
+/// trimmed members) + M `_kind=knn_anomaly` rows.  `max_rows` caps
+/// clusters + anomalies combined with a 60/40 split (clusters take
+/// the larger share — each cluster carries denser info per row);
+/// the stats row is always included on top.  Member lists inside
+/// each cluster are clipped to keep one verbose cluster from
+/// crowding out the others.
+pub const DEFAULT_KNN_ANALYZE_PROMPT: &str =
+    "You are reviewing the output of a k-Nearest-Neighbour clustering analysis over \
+     recent primary telemetry records.  The detector groups records by vector \
+     similarity into CLUSTERS (each with a `representative` record and a `members` list \
+     of similar records) and lists records that didn't fit any cluster as ANOMALIES \
+     (with `max_similarity` showing how far they are from the nearest cluster).\n\
+     \n\
+     The leading `_kind=knn_window_stats` row carries the population context (records \
+     scanned, k, threshold, cluster count, anomaly count).  Your job is to \
+     **interpret the clustering structure** — not re-list the clusters, but tell the \
+     operator what each cluster *means* operationally, which clusters matter, and \
+     what the anomalies reveal as singletons.\n\
+     \n\
+     Produce a concise analysis covering:\n\
+     1. **Population context** — using the stats row, characterise the clustering: how \
+     many records were scanned, how many clusters were found, what fraction is \
+     anomalous?  A large anomaly fraction means the system is producing too much \
+     novelty for k-NN to coherently cluster — that's itself a finding worth calling \
+     out.\n\
+     2. **Cluster themes** — for each cluster, identify what operational behaviour it \
+     represents (auth, networking, errors, scheduled jobs, lifecycle events, …).  \
+     Quote the cluster's representative text verbatim and reference its size.  Rank \
+     clusters by operational relevance — a 3-member error cluster usually matters \
+     more than a 200-member heartbeat cluster.\n\
+     3. **Failure clusters** — clusters whose representative or members suggest \
+     errors, timeouts, panics, unauthorized access, non-2xx HTTP, OOM, certificate \
+     issues, …  These are the operator's top priority; quote verbatim.\n\
+     4. **Routine clusters** — heartbeats, periodic status writes, polling, scheduled \
+     job artefacts.  List them by cluster `[id]` so the operator can mentally tune \
+     them out without rechecking each one.\n\
+     5. **Anomalies** — singletons that didn't fit any cluster.  Each is either \
+     (a) genuinely novel and worth investigating, or (b) just a noisy edge case \
+     (a stray timestamped log line, a one-off debug print, …).  Assess each \
+     verbatim and call out which category it belongs to.\n\
+     6. **Story** — what does the cluster + anomaly mix collectively say about what \
+     the system has been doing in this window?  Cite both cluster `[id]` and anomaly \
+     `[idx]` references as evidence.\n\
+     7. One concrete **next investigative step** — usually a vector search for one \
+     of the failure-cluster representatives, a per-key drill-down on a large but \
+     non-routine cluster, or lowering the anomaly threshold to surface near-singletons.\n\
+     \n\
+     Quote cluster representatives and anomaly text verbatim when citing evidence.  \
+     Bullet points are fine; be terse.  If the clustering is dominated by routine \
+     traffic and the anomalies look like benign noise, say so plainly rather than \
+     forcing an incident narrative.";
+
 /// Default prompt for `web.analyze.denoise_recent` — output of
 /// `v?/denoise.recent`, the n-gram commonness denoiser.  The
 /// detector splits the window into TWO correlated corpora:
@@ -688,6 +755,19 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_DENOISE_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.knn`.  Two-output target:
+    /// `max_rows` caps clusters + anomalies combined (60/40 split in
+    /// favour of clusters, slack redistributed); members lists
+    /// inside each cluster are clipped separately so one verbose
+    /// cluster can't crowd out the rest.
+    pub fn knn_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_KNN_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -756,6 +836,9 @@ pub struct AppState {
     /// Operator-configurable knobs for the "Analyze this!" button on
     /// the Analysis → Denoise page (`web.analyze.denoise_recent.*`).
     pub denoise_recent_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → k-NN page (`web.analyze.knn.*`).
+    pub knn_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -775,6 +858,7 @@ impl AppState {
         primary_lsa_query_summary_analyze: AnalyzeTargetConfig,
         anomaly_recent_analyze:            AnalyzeTargetConfig,
         denoise_recent_analyze:            AnalyzeTargetConfig,
+        knn_analyze:                       AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -801,6 +885,7 @@ impl AppState {
             primary_lsa_query_summary_analyze: Arc::new(primary_lsa_query_summary_analyze),
             anomaly_recent_analyze:            Arc::new(anomaly_recent_analyze),
             denoise_recent_analyze:            Arc::new(denoise_recent_analyze),
+            knn_analyze:                       Arc::new(knn_analyze),
         }
     }
 }
