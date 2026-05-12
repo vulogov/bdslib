@@ -1,0 +1,2 @@
+- If I still see generic answers, num_ctx and prompt_chars in
+  the new chat header will tell you whether the context fit or whether you need to override options.num_ctx higher.
