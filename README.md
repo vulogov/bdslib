@@ -65,11 +65,22 @@ runtime into a single cohesive system backed by DuckDB.
 | **BUND worker pool** | Process-wide pool of threads each running an independent Bund VM; jobs submitted via crossbeam MPMC channel; results written to global result queues |
 | **Async eval** | `v2/eval.queued` — submit a BUND script, get a UUIDv7 job handle immediately, poll results via `v2/results.*` |
 
-### AI integration
+### AI integration — `v4/llm.*` surface
+
+A cluster-aware LLM layer with pluggable providers, replicated cache,
+single-execution dedup, and async jobs.  Full reference:
+[`Documentation/LLM.md`](Documentation/LLM.md).
 
 | Capability | Description |
 |---|---|
-| **Ollama chat (RAG)** | `v2/chat.ollama` — retrieval-augmented generation combining observability + document store context with a local Ollama model; stateful sessions |
+| **Provider abstraction** | Ollama (`/api/chat` + `/api/embed`), Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions` + `/v1/embeddings`); registry-driven, per-call override |
+| **Cluster-aware RAG** | `v4/llm.analyze` over 8 `ContextSource` variants (aggregation / knn / rca / anomaly / templates / telemetry / documents / supplied); each routes through the matching cluster-aware `vm::api::*` helper, so standalone and cluster mode share one code path |
+| **Replicated inference cache** | 5th fully-replicated cluster store (`<dbpath>/llm/cache.duckdb`); sha256 keys with secret-field redaction; anti-entropy convergence under the store name `"llm_cache"`; per-call opt-out + temperature gate |
+| **Cluster-wide single-execution** | `InferenceLog` + `v2/llm.last_executed` fan-out — peer of the cluster-aware Scheduler dedup; prevents two coordinators running the same inference concurrently |
+| **Async jobs** | `v4/llm.complete_async` / `analyze_async` enqueue work; background runner per node drives them through the same sync helpers, delivers results via the existing `ResultQueue` (same path `v2/eval.queued` uses) |
+| **Diagnostics** | `?llm.meta` Bund word, response carries `cache` (hit / miss / disabled) + `dedup` (ran / waited / disabled) + `prompt_chars` + `num_ctx` (auto-bumped past Ollama's 2048-token default to prevent silent RAG truncation) |
+| **Driver surfaces** | bdsweb `/chat` (provider picker, sticky cookie) + `/admin/llm` (providers / cache / jobs admin); `bdscmd llm <subcommand>` family; `cls.llm.*` Bund words |
+| **Legacy compatibility** | `v2/chat.ollama` still ships for back-compat; new deployments should use `v4/llm.chat` (same response shape, HMAC-signed) |
 
 ### Cluster mode
 
@@ -82,6 +93,7 @@ runtime into a single cohesive system backed by DuckDB.
 | **Cluster-aware Bund** | `vm::api::*` helpers + `cls.*` stdlib words — Bund scripts auto-replicate writes and fan-out reads transparently; `?cluster.meta` introspection |
 | **Cluster-aware Scheduler** | `cluster.scheduler_dedup_window` suppresses duplicate fires of the same stored script across nodes via `v2/scheduler.last_seen` fan-out |
 | **Replicated user store + bdsweb auth** | 4th fully-replicated store (`<dbpath>/users/users.duckdb`); argon2id-hashed passwords; pluggable verifier registry (OAuth/LDAP hook); stateless HMAC-signed session tokens; bdsweb `/login` + Administration → User management; `bdscmd user …` CLI |
+| **LLM surface** | 5th fully-replicated store (`<dbpath>/llm/cache.duckdb`); cluster-wide single-execution dedup via `inference_log` + `v2/llm.last_executed` fan-out; async job runner alongside the existing scheduler / AE loops; HMAC-signed `v4/llm.*` coordinator surface.  See [`Documentation/LLM.md`](Documentation/LLM.md). |
 
 ---
 
@@ -99,7 +111,8 @@ runtime into a single cohesive system backed by DuckDB.
 ┌────────────────────────────▼────────────────────────────────────┐
 │                           bdsnode                               │
 │              JSON-RPC 2.0 server  ·  default port 9000          │
-│              BundWorkerPool  ·  Ollama chat sessions            │
+│              BundWorkerPool  ·  LLM provider manager            │
+│              Inference cache  ·  Async job runner               │
 └────────────────────────────┬────────────────────────────────────┘
                              │  Rust API (in-process)
 ┌────────────────────────────▼────────────────────────────────────┐
@@ -155,8 +168,9 @@ HTMX partial updates. No JavaScript framework required.
 | Documents | Semantic document search |
 | **RCA** | Telemetry RCA, Template RCA |
 | Signals | Signal timeline and semantic search |
-| Chat | Ollama RAG chat |
+| Chat | Provider-aware RAG chat (`v4/llm.chat`) — Ollama / Anthropic / OpenAI picker |
 | Bund | Interactive BUND scripting workbench |
+| **Administration** | User management (`/admin/users`), LLM (`/admin/llm` — providers + cache + jobs) |
 
 ---
 
@@ -191,7 +205,27 @@ cargo test test_storage_engine_full_lifecycle -- --show-output
   drain_enabled: true
   drain_load_duration: "7days"
   n_workers: 4           // BundWorkerPool threads
-  ollama_model: "llama3.2"
+
+  // LLM surface (v4/llm.*) — see Documentation/LLM.md for the full block.
+  // Localhost Ollama only; add `anthropic` / `openai` to register more.
+  llm: {
+    default: "ollama"
+    providers: {
+      ollama: {
+        url:           "http://127.0.0.1:11434"
+        default_model: "llama3.2"
+      }
+    }
+  }
+
+  // Cluster mode (optional — required for v4/llm.* HMAC, replicated cache,
+  // and cluster-wide dedup).
+  cluster: {
+    enabled:       true
+    shared_secret: "at-least-16-chars-of-shared-secret"
+    bind_url:      "http://127.0.0.1:9000"
+    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache"]
+  }
 }
 ```
 
@@ -261,12 +295,33 @@ bdscmd eval-queued my_script.bund
 bdscmd results-pull --id 019f2a3b-...
 ```
 
-**8. Open the web UI**
+**8. Drive the LLM surface**
+
+```bash
+# Inspect what's registered + cached
+bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm providers
+bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm cache stats
+
+# Sync ops
+bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm complete -p "summarise the data"
+bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm chat -m "what should I investigate?" --duration 1h
+bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm analyze -k rca --duration 1h -q "what broke?"
+
+# Async — submit and poll
+bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm async -k complete -p "long-running prompt"
+# → { "job_id": "...", "result_id": "...", "kind": "complete", "state": "pending" }
+bdscmd results-pull --id <result-uuid>
+```
+
+**9. Open the web UI**
 
 ```bash
 bdsweb --node http://127.0.0.1:9000
 # → http://127.0.0.1:8080
 ```
+
+Visit `/chat` for the provider-aware RAG chat and `/admin/llm` for
+provider / cache / async-job admin.
 
 ---
 
@@ -288,10 +343,14 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | **Signals** | `v2/signal.emit` · `v2/signal.update` · `v2/signals` · `v2/signals_query` |
 | **BUND VM** | `v2/eval` (response carries `cluster_meta` from any `cls.*` Bund word the script ran) · `v2/eval.queued` · `v2/scheduler.last_seen` |
 | **Result queues** | `v2/results.len` · `v2/results.push` · `v2/results.pull` · `v2/results.empty` |
-| **Chat** | `v2/chat.ollama` |
+| **Chat (legacy)** | `v2/chat.ollama` (kept for back-compat — use `v4/llm.chat` for new clients) |
 | **Cluster (membership)** | `v3/cluster.hello` · `v3/cluster.peers` · `v3/cluster.ping` · `v3/cluster.status` · `v3/cluster.sync` · `v2/cluster.peers` (unauth mirror) |
 | **Cluster (data plane)** | `v3/add` · `v3/add.batch` · `v3/doc.*` · `v3/signal.*` · `v3/signals*` · `v3/script.*` · `v3/search*` · `v3/aggregationsearch` · `v3/fulltext*` · `v3/keys*` · `v3/primaries*` · `v3/topics*` · `v3/rca*` · `v3/trends` · `v3/timeline` · `v3/count` · `v3/tpl.*` |
 | **Authentication** | `v3/user.add` · `v3/user.modify` · `v3/user.delete` · `v3/user.authenticate` (public, no HMAC) · `v3/user.list` · `v2/user.*` (receivers) |
+| **LLM (sync)** | `v4/llm.complete` · `v4/llm.chat` · `v4/llm.analyze` · `v4/llm.embed` · `v4/llm.providers.list` |
+| **LLM (async + jobs)** | `v4/llm.complete_async` · `v4/llm.analyze_async` · `v4/llm.jobs.list` · `v4/llm.jobs.status` · `v4/llm.jobs.cancel` |
+| **LLM (cache admin)** | `v4/llm.cache.stats` · `v4/llm.cache.purge` |
+| **LLM (receivers)** | `v2/llm.cache.{get,get.by_id,put,list_ids,delete}` · `v2/llm.last_executed` — internal, used by replicate_to_all + anti-entropy + dedup fan-out |
 
 ---
 
@@ -303,8 +362,9 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | [Documentation/BDSCLI.md](Documentation/BDSCLI.md) | `bdscli` local CLI — all subcommands |
 | [Documentation/BDSCMD.md](Documentation/BDSCMD.md) | `bdscmd` RPC client — all subcommands and quick reference |
 | [Documentation/BDSWEB.md](Documentation/BDSWEB.md) | `bdsweb` web interface — all pages, startup flags |
-| [Documentation/CLUSTER.md](Documentation/CLUSTER.md) | Cluster mode — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases |
-| [Documentation/CLUSTER_DETAILS.md](Documentation/CLUSTER_DETAILS.md) | Cluster protocol-level reference — gossip, eviction, re-acceptance, schedule control, replication, fan-out reads — with JSON-RPC examples for every mechanism |
+| [Documentation/CLUSTER.md](Documentation/CLUSTER.md) | Cluster mode — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases, **LLM surface (§ 14)** |
+| [Documentation/CLUSTER_DETAILS.md](Documentation/CLUSTER_DETAILS.md) | Cluster protocol-level reference — gossip, eviction, re-acceptance, schedule control, replication, fan-out reads, **`v4/llm.*` wire mechanics (§ 12)** — with JSON-RPC examples for every mechanism |
+| [Documentation/LLM.md](Documentation/LLM.md) | **LLM surface** — provider abstraction (Ollama / Anthropic / OpenAI), replicated inference cache, cluster-wide single-execution dedup, async jobs + RESULTS delivery, full `v4/llm.*` RPC + `cls.llm.*` Bund words + `bdscmd llm` reference, diagnostics, operational gotchas |
 | [Documentation/SCRIPTS.md](Documentation/SCRIPTS.md) | Operational shell scripts for ingest, load testing, and pipeline verification |
 | [examples/cluster/README.md](examples/cluster/README.md) | Eight runnable Bund scripts demonstrating the `cls.*` cluster-aware family + `?cluster.meta` |
 | [Documentation/jsonrpc_api/README.md](Documentation/jsonrpc_api/README.md) | All `v2/*` JSON-RPC methods with parameters, response shapes, and examples |
