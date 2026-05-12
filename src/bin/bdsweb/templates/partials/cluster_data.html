@@ -1,0 +1,149 @@
+{# Rendered into `#cluster-data` by /cluster/data and /cluster/refresh.
+   Same structure as the original cluster.html body; kept as a partial
+   so the shell can swap it cleanly under HTMX. #}
+
+{% if !enabled %}
+  <div class="card rounded-lg p-6 mb-6">
+    <div class="flex items-start gap-3">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-slate-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <div>
+        <p class="text-slate-200 font-medium mb-1">Cluster mode is disabled on this node.</p>
+        <p class="text-sm text-slate-400">
+          Enable it in <code class="text-blue-300">bds.hjson</code> by setting
+          <code class="text-blue-300">cluster.enabled: true</code> and supplying
+          <code class="text-blue-300">cluster.shared_secret</code> + <code class="text-blue-300">cluster.bind_url</code>.
+          See the <a href="/cluster_doc" class="text-blue-400 underline">cluster documentation</a> for the full configuration reference.
+        </p>
+      </div>
+    </div>
+  </div>
+{% else %}
+
+<!-- ── Self status card ─────────────────────────────────────────────────── -->
+<div class="card rounded-lg p-5 mb-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-base font-semibold text-slate-200">This node</h2>
+    <span class="badge {{ mode_class }} bg-slate-800/50 uppercase text-xs">{{ mode }}</span>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Node ID</div>
+      <div class="font-mono text-slate-200 break-all">{{ node_id }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Bind URL</div>
+      <div class="font-mono text-slate-200 break-all">{{ bind_url }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Embedding model</div>
+      <div class="font-mono text-slate-200">{{ embedding_model }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Uptime (s)</div>
+      <div class="font-mono text-slate-200">{{ uptime_secs }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Stat tiles ───────────────────────────────────────────────────────── -->
+<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Alive peers</div>
+    <div class="text-2xl font-semibold text-emerald-400">{{ alive }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Suspect</div>
+    <div class="text-2xl font-semibold text-yellow-400">{{ suspect }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Dead</div>
+    <div class="text-2xl font-semibold text-red-400">{{ dead }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Full-mode threshold</div>
+    <div class="text-2xl font-semibold text-slate-200">{{ full_mode_threshold }}</div>
+  </div>
+  <div class="card rounded-lg p-4">
+    <div class="text-xs text-slate-500 mb-1">Replication factor</div>
+    <div class="text-2xl font-semibold text-slate-200">{{ replication_factor }}</div>
+  </div>
+</div>
+
+<!-- ── Replication health (Phase 5) ─────────────────────────────────────── -->
+<div class="card rounded-lg p-5 mb-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-base font-semibold text-slate-200">Replication health</h2>
+    <span class="text-xs text-slate-500">hints, tombstones, last background ticks</span>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Hint backlog</div>
+      <div class="text-xl font-semibold {% if hint_backlog == 0 %}text-emerald-400{% else %}text-yellow-400{% endif %}">{{ hint_backlog }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Tombstones</div>
+      <div class="text-xl font-semibold text-slate-200">{{ tombstone_total }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Last hint tick</div>
+      <div class="text-sm font-mono text-slate-300">
+        {% if has_hint_tick %}{{ last_hint_tick_age_secs }}s ago · replayed {{ last_hint_tick_replayed }}{% else %}—{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 mb-1">Last AE tick</div>
+      <div class="text-sm font-mono text-slate-300">
+        {% if has_ae_tick %}{{ last_ae_tick_age_secs }}s ago · pulled {{ last_ae_tick_pulled }} · ts {{ last_ae_tick_tombstones }} · pruned {{ last_ae_tick_pruned }}{% else %}—{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Peer table ───────────────────────────────────────────────────────── -->
+<div class="card rounded-lg overflow-hidden">
+  <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+    <h2 class="text-base font-semibold text-slate-200">Peers</h2>
+    <span class="text-xs text-slate-500">last-seen, version, embedding model, hint queue</span>
+  </div>
+  {% if has_peers %}
+  <div class="overflow-x-auto">
+    <table>
+      <thead>
+        <tr>
+          <th>State</th>
+          <th>Node ID</th>
+          <th>URL</th>
+          <th>Last seen</th>
+          <th>Age (s)</th>
+          <th>Version</th>
+          <th>Embedding</th>
+          <th>Misses</th>
+          <th>Hints</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in peers %}
+        <tr>
+          <td><span class="{{ p.state_class }} font-medium uppercase text-xs">{{ p.state }}</span></td>
+          <td><span class="font-mono text-slate-300" title="{{ p.node_id }}">{{ p.short_id }}</span></td>
+          <td class="font-mono text-slate-400 break-all">{{ p.url }}</td>
+          <td class="text-slate-400">{{ p.last_seen }}</td>
+          <td class="text-slate-400 text-right">{{ p.age_secs }}</td>
+          <td class="text-slate-400">{{ p.version }}</td>
+          <td class="text-slate-400">{{ p.embedding_model }}</td>
+          <td class="text-slate-400 text-right">{{ p.miss_count }}</td>
+          <td class="text-right {% if p.hints == 0 %}text-slate-500{% else %}text-yellow-400 font-semibold{% endif %}">{{ p.hints }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-6 text-sm text-slate-500">
+    No peers yet. Either no <code class="text-blue-300">cluster.bootstrap</code> URL is configured,
+    or the configured peer hasn't responded yet. Gossip will retry on every tick.
+  </div>
+  {% endif %}
+</div>
+
+{% endif %}

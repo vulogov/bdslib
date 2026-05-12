@@ -41,6 +41,11 @@ struct Args {
 
 struct WebConfig {
     dashboard_refresh_secs: u64,
+    /// Background-poll interval for the Cluster page (`/cluster`).
+    /// Mirrors `dashboard_refresh_secs`'s semantics: the poller fires
+    /// `v2/cluster.peers` once per interval and the page reads from a
+    /// cached snapshot.  `1` is the floor; defaults to 10 s.
+    cluster_refresh_secs:   u64,
     /// Cluster shared secret read from `cluster.shared_secret` in
     /// `bds.hjson`.  Empty when the config file is missing, the
     /// cluster block is absent, or `cluster.enabled = false` — in
@@ -55,6 +60,7 @@ struct WebConfig {
 fn load_config(config_path: Option<&str>) -> WebConfig {
     let defaults = WebConfig {
         dashboard_refresh_secs: 30,
+        cluster_refresh_secs:   10,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
     };
@@ -95,6 +101,11 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             .map(|n| n as u64)
             .unwrap_or(defaults.dashboard_refresh_secs)
             .max(1),
+        cluster_refresh_secs: obj.get("cluster_refresh_secs")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u64)
+            .unwrap_or(defaults.cluster_refresh_secs)
+            .max(1),
         shared_secret,
         auth_rate_limit_per_minute,
     }
@@ -118,8 +129,12 @@ async fn main() {
     } else {
         log::info!("bdsweb auth enabled — shared_secret loaded ({} bytes)", cfg.shared_secret.len());
     }
-    let state = AppState::new(args.node.clone(), cfg.dashboard_refresh_secs,
-                              cfg.shared_secret);
+    let state = AppState::new(
+        args.node.clone(),
+        cfg.dashboard_refresh_secs,
+        cfg.cluster_refresh_secs,
+        cfg.shared_secret,
+    );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
     {
@@ -145,11 +160,40 @@ async fn main() {
         });
     }
 
+    // Background poller: same recipe as the dashboard one but for the
+    // Cluster page.  Polls v2/cluster.peers and parks the response in
+    // `state.cluster_cache` so /cluster/data renders without hitting
+    // bdsnode on every page load.
+    {
+        let poller_state = state.clone();
+        tokio::spawn(async move {
+            let interval = std::time::Duration::from_secs(poller_state.cluster_refresh_secs);
+            log::info!(
+                "cluster background poller started (interval={}s)",
+                poller_state.cluster_refresh_secs
+            );
+            loop {
+                match routes::cluster::collect(&poller_state).await {
+                    Ok(snap) => {
+                        *poller_state.cluster_cache.write().await = Some(snap);
+                        log::debug!("cluster cache refreshed");
+                    }
+                    Err(e) => {
+                        log::warn!("cluster background poll failed: {e}");
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/",                  get(routes::dashboard::page))
         .route("/dashboard/data",    get(routes::dashboard::data))
         .route("/dashboard/refresh", get(routes::dashboard::refresh))
         .route("/cluster",           get(routes::cluster::page))
+        .route("/cluster/data",      get(routes::cluster::data))
+        .route("/cluster/refresh",   get(routes::cluster::refresh))
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))

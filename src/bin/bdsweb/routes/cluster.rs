@@ -1,13 +1,21 @@
-//! `/cluster` — peer-table view backed by `v2/cluster.peers`.
+//! `/cluster` — peer-table view backed by `v2/cluster.peers`, mirroring
+//! the Dashboard pattern: a thin shell on first load (`page`), a
+//! cached partial (`data`) backed by a background poller in `main`,
+//! and a `refresh` endpoint that force-fetches.  Auto-refresh
+//! interval is configured by `cluster_refresh_secs` in `bds.hjson`.
 //!
-//! The page renders a friendly "cluster mode disabled" panel when the node's
+//! Renders a friendly "cluster mode disabled" panel when the node's
 //! `bds.hjson` has `cluster.enabled = false` (or the block is absent).
 
 use askama::Template;
 use axum::{extract::State, response::Html};
 use serde_json::{json, Value};
 
-use crate::{client::{rpc, fmt_ts}, error::AppError, state::AppState};
+use crate::{
+    client::{rpc, fmt_ts},
+    error::AppError,
+    state::{AppState, ClusterSnapshot},
+};
 
 #[derive(Debug)]
 pub struct PeerRow {
@@ -46,9 +54,37 @@ fn mode_class(mode: &str) -> &'static str {
     }
 }
 
+// ── Shell (instant) ───────────────────────────────────────────────────────────
+
 #[derive(Template)]
 #[template(path = "cluster.html")]
-struct ClusterPage {
+struct ClusterShell {
+    refresh_secs: u64,
+}
+
+/// Returns the page skeleton immediately.  HTMX fires `/cluster/data`
+/// on load and re-fetches every `cluster_refresh_secs` so the table
+/// picks up the background-collected snapshot.
+pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppError> {
+    Ok(Html(ClusterShell {
+        refresh_secs: state.cluster_refresh_secs,
+    }.render()?))
+}
+
+// ── Wait partial ──────────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "partials/cluster_wait.html")]
+struct ClusterWait {
+    poll_url: String,
+    message:  String,
+}
+
+// ── Data partial (rendered from a snapshot) ───────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "partials/cluster_data.html")]
+struct ClusterData {
     enabled:                  bool,
     node_id:                  String,
     bind_url:                 String,
@@ -109,8 +145,8 @@ fn parse_peers(arr: &[Value]) -> Vec<PeerRow> {
     }).collect()
 }
 
-pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppError> {
-    let resp = rpc(&state, "v2/cluster.peers", json!({})).await?;
+fn render_snapshot(snap: &ClusterSnapshot) -> Result<String, AppError> {
+    let resp = &snap.peers;
 
     let enabled = resp.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     let peers   = resp.get("peers").and_then(|v| v.as_array())
@@ -127,7 +163,7 @@ pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppErro
     let last_ae_tick_tombstones  = stats.get("last_ae_tick_tombstones").and_then(|v| v.as_u64()).unwrap_or(0);
     let last_ae_tick_pruned      = stats.get("last_ae_tick_pruned").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let tmpl = ClusterPage {
+    let tmpl = ClusterData {
         enabled,
         node_id:             resp.get("node_id").and_then(|v| v.as_str()).unwrap_or("—").to_owned(),
         bind_url:            resp.get("bind_url").and_then(|v| v.as_str()).unwrap_or("—").to_owned(),
@@ -153,5 +189,39 @@ pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppErro
         peers,
         has_peers,
     };
-    Ok(Html(tmpl.render()?))
+    Ok(tmpl.render()?)
+}
+
+// ── Cached fetch (background-collected by the poller) ────────────────────────
+
+/// Fetches v2/cluster.peers from bdsnode and wraps it in a
+/// `ClusterSnapshot`.  Used by both `/cluster/refresh` and the
+/// background poller spawned in `main`.
+pub async fn collect(state: &AppState) -> Result<ClusterSnapshot, AppError> {
+    let peers = rpc(state, "v2/cluster.peers", json!({})).await?;
+    Ok(ClusterSnapshot { peers })
+}
+
+/// Renders the cluster panel from the cached snapshot.  If the
+/// background poller hasn't populated the cache yet, returns a "Wait"
+/// partial that auto-refreshes every 2 seconds (same UX as the
+/// dashboard).
+pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppError> {
+    let cached = state.cluster_cache.read().await.clone();
+    match cached {
+        Some(snap) => Ok(Html(render_snapshot(&snap)?)),
+        None       => Ok(Html(ClusterWait {
+            poll_url: "/cluster/data".to_owned(),
+            message:  "Background poller is fetching cluster state…".to_owned(),
+        }.render()?)),
+    }
+}
+
+/// Forces a live fetch from bdsnode, overwrites the cache, and
+/// renders.  The "Reload" button on the cluster page targets this
+/// endpoint.
+pub async fn refresh(State(state): State<AppState>) -> Result<Html<String>, AppError> {
+    let snap = collect(&state).await?;
+    *state.cluster_cache.write().await = Some(snap.clone());
+    Ok(Html(render_snapshot(&snap)?))
 }

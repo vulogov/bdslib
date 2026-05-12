@@ -14,6 +14,16 @@ pub struct DashboardSnapshot {
     pub shards:   serde_json::Value,
 }
 
+/// Latest `v2/cluster.peers` snapshot for the /cluster page.  Populated
+/// by the background poller in `main` and consumed by
+/// `routes::cluster::data`.  `None` means the poller hasn't completed
+/// its first successful fetch — the page renders a "Wait" placeholder
+/// in that case (same pattern as DashboardSnapshot).
+#[derive(Clone, Debug)]
+pub struct ClusterSnapshot {
+    pub peers: serde_json::Value,
+}
+
 /// Cached cluster-mode flag with a 30-second TTL.  Avoids hitting v2/status
 /// for every Telemetry / Analysis / RCA page load while still picking up
 /// configuration changes promptly.
@@ -41,6 +51,10 @@ pub struct AppState {
     pub dashboard_refresh_secs: u64,
     /// Most-recent Dashboard snapshot collected by the background task.
     pub dashboard_cache: Arc<RwLock<Option<DashboardSnapshot>>>,
+    /// Background-poll interval for the cached Cluster snapshot, in seconds.
+    pub cluster_refresh_secs: u64,
+    /// Most-recent Cluster snapshot collected by the background task.
+    pub cluster_cache: Arc<RwLock<Option<ClusterSnapshot>>>,
     /// Cluster-mode flag (cached).  When true, the per-route handlers
     /// route their RPCs through v3/* (cluster-aware) instead of v2/*.
     pub cluster_mode: Arc<RwLock<ClusterModeCache>>,
@@ -63,6 +77,7 @@ impl AppState {
     pub fn new(
         node_url: String,
         dashboard_refresh_secs: u64,
+        cluster_refresh_secs:   u64,
         shared_secret: String,
     ) -> Self {
         let http = reqwest::Client::builder()
@@ -74,6 +89,8 @@ impl AppState {
             http,
             dashboard_refresh_secs,
             dashboard_cache: Arc::new(RwLock::new(None)),
+            cluster_refresh_secs,
+            cluster_cache:   Arc::new(RwLock::new(None)),
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             shared_secret:   Arc::new(shared_secret),
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),

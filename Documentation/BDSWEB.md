@@ -14,6 +14,7 @@ trend analysis, and an interactive BUND scripting workbench.
 3. [Environment Variables](#3-environment-variables)
 4. [Navigation](#4-navigation)
 5. [Dashboard](#5-dashboard)
+5b. [Cluster](#5b-cluster)
 6. [Telemetry Search](#6-telemetry-search)
 7. [Log Search](#7-log-search)
 8. [Document Search](#8-document-search)
@@ -91,7 +92,19 @@ The active page is highlighted in blue.
 
 **Path:** `GET /`
 
-A read-only health page. No inputs required.
+A read-only health page.  Renders from a cached snapshot maintained
+by a background poller in bdsweb — page loads never block on bdsnode
+RPCs.  Auto-refreshes via HTMX every `dashboard_refresh_secs` (config
+key in `bds.hjson`; defaults to 30 s).  A **Reload** button at the
+top-right forces a live fetch + cache write through `/dashboard/refresh`.
+
+Routes:
+
+| Route                  | Method | Purpose                                                          |
+|------------------------|--------|------------------------------------------------------------------|
+| `/`                    | GET    | Shell template + HTMX trigger for `/dashboard/data`              |
+| `/dashboard/data`      | GET    | Renders the cached snapshot.  "Wait" partial when not yet primed |
+| `/dashboard/refresh`   | GET    | Force live RPC fetch + cache write + render (Reload button)      |
 
 ### Displayed Information
 
@@ -122,6 +135,81 @@ A read-only health page. No inputs required.
 | `v2/count` | Total record count |
 | `v2/timeline` | Oldest / newest event timestamps |
 | `v2/shards` | Per-shard record counts |
+
+The four calls are fired concurrently by the background poller via
+`tokio::try_join!`; on success the snapshot replaces the cached one.
+
+### Configuration
+
+```hjson
+// bds.hjson — refresh tuning for the Dashboard page
+dashboard_refresh_secs: 30   // background poll interval + HTMX trigger
+```
+
+Floor 1 s.  Lower values pin more bdsweb CPU to RPC fan-out but pick
+up changes faster.
+
+---
+
+## 5b. Cluster
+
+**Path:** `GET /cluster`
+
+Read-only cluster-health page modelled on the Dashboard.  A
+background poller calls `v2/cluster.peers` once per
+`cluster_refresh_secs` and parks the response in
+`state.cluster_cache`; the page renders from the cache so
+navigation never blocks on the RPC.  Auto-refreshes via HTMX every
+`cluster_refresh_secs`; a **Reload** button forces a live fetch
+through `/cluster/refresh`.
+
+Renders a friendly "cluster mode is disabled" panel when
+`cluster.enabled = false` on the connected node.
+
+Routes:
+
+| Route               | Method | Purpose                                                      |
+|---------------------|--------|--------------------------------------------------------------|
+| `/cluster`          | GET    | Shell template + HTMX trigger for `/cluster/data`            |
+| `/cluster/data`     | GET    | Renders cached snapshot.  "Wait" partial when not yet primed |
+| `/cluster/refresh`  | GET    | Force live `v2/cluster.peers` fetch + cache write + render   |
+
+### Displayed Information
+
+**This-node card** (when cluster enabled):
+- Node ID · bind URL · embedding model · uptime seconds · mode badge
+  (full / partial / standalone)
+
+**Stat tiles row:**
+- Alive peers · Suspect peers · Dead peers · full-mode threshold ·
+  replication factor
+
+**Replication health card (Phase 5):**
+- Hint backlog (yellow when non-zero) · tombstone total ·
+  last hint-tick age + replay count · last anti-entropy tick age +
+  pulled / tombstones-applied / pruned counts
+
+**Peer table:**
+- One row per known peer: state badge · short node id (full id on
+  hover) · URL · last_seen + age · version · embedding model ·
+  miss_count · hint count (yellow when non-zero)
+
+### JSON-RPC calls made
+
+| Method               | Purpose                                                       |
+|----------------------|---------------------------------------------------------------|
+| `v2/cluster.peers`   | Full peer table + replication stats; unauthenticated read     |
+
+### Configuration
+
+```hjson
+// bds.hjson — refresh tuning for the Cluster page
+cluster_refresh_secs: 10     // background poll interval + HTMX trigger
+```
+
+Floor 1 s.  Defaults to 10 s — faster than the Dashboard because
+peer-state changes (gossip transitions, fan-out failures, hint
+queue churn) are what operators want to observe in near-real-time.
 
 ---
 
