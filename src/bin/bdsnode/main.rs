@@ -282,6 +282,14 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to read scheduler config")?;
     let scheduler_handle = server::scheduler::start(scheduler_cfg);
 
+    // Phase 5.c — async LLM job runner.  Drains <dbpath>/llm/jobs.duckdb,
+    // pushes results onto the per-node ResultQueue under each job's
+    // result_id, marks rows terminal.  No-op when the queue isn't
+    // initialised or when llm.runner.enabled is false.
+    let llm_runner_cfg = server::llm_jobs::Config::from_config(cli.config.as_deref())
+        .context("failed to read llm.runner config")?;
+    let llm_runner_handle = server::llm_jobs::start(llm_runner_cfg);
+
     // Periodic global sync — checkpoints DuckDB WAL, commits Tantivy, flushes
     // VecStore on every open shard. Bounds recovery time after an unclean
     // exit. Disabled by setting `sync_interval_secs: 0` in bds.hjson.
@@ -343,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
 
     results_sweeper_handle.stop().await;
     scheduler_handle.stop().await;
+    llm_runner_handle.stop().await;
     sync_handle.stop().await;
     cluster_handle.stop().await;
 
