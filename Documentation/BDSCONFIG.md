@@ -1086,6 +1086,44 @@ web: {
 
 Default prompt — 6-step *story-from-summary* frame.  This page is structurally different from the others: instead of analysing raw rows, the LLM is handed a single TextRank summary (`v?/textrank.templates`) **plus** the LDA-discovered topic keywords (`v?/topics.all`), and asked to weave both into a coherent narrative: headline, themes anchored to keywords, trouble signals quoted verbatim from the summary, healthy noise to tune out, most-likely incident citing *both* the summary AND the keywords, next investigative step.  Each payload entry carries a synthetic `_kind=textrank_summary` (always exactly one row) or `_kind=topic_keywords` (one row per log key, carrying the LDA top-N words).  `max_rows` caps only the topic rows — the summary always gets through.  Use this knob to rewrite the prompt for a different storytelling angle ("narrate as an exec summary", "focus only on the security keywords", "respond in markdown table form").
 
+#### `web.analyze.primary_summary` (Analysis → Primary Summary page)
+
+```hjson
+web: {
+  analyze: {
+    primary_summary: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing a TextRank-PageRank summary …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *story-from-summary* frame tuned for primary telemetry text bodies (`v?/summary_for_recent`).  Numeric-only records are filtered out upstream, so the summary reaches the LLM as the system's text-emitted operational language — warnings, status lines, error messages, audit notes.  The prompt asks the model to **interpret** the summary, not re-summarise it: headline anchored with verbatim phrasing, thematic clusters, signals of trouble quoted verbatim, healthy chatter to tune out, most-likely incident, next step.  The supplied payload is always exactly one `_kind=primary_summary` row carrying the summary text plus the operator's TextRank knobs (`max_sentences`, `min_word_len`) — `max_rows` doesn't gate anything here, it's retained for schema parity.
+
+#### `web.analyze.primary_query_summary` (Analysis → Primary Query Summary page)
+
+```hjson
+web: {
+  analyze: {
+    primary_query_summary: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing a TextRank-PageRank summary that distills …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 5-step *answer-the-question* frame.  This page is unique in being query-driven: the operator already asked a specific question (semantic vector search), the records summarised are those matching the question, and the LLM's job is to **answer the operator** using the summary as evidence — not to tell a general story.  Steps: direct answer with verbatim anchoring, supporting evidence (2–4 quoted sentences), signals of trouble within the query scope, **caveats** for thin / off-topic summaries (so operators stop chasing weak retrieval matches), next investigative step.  The supplied payload is always exactly one `_kind=primary_query_summary` row carrying the query, the summary, and the TextRank knobs; the query is also passed to `v4/llm.analyze` separately so the inference cache key is query-aware.  The prompt explicitly tells the model to *refuse to force an answer* when the summary doesn't actually speak to the question — important for keeping operators out of dead ends.
+
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
   on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
@@ -1112,11 +1150,13 @@ edit anything.
 Active settings are logged at bdsweb startup:
 
 ```
-[INFO] web.analyze.logs:              timeout=600s, max_rows=50, prompt_chars=621
-[INFO] web.analyze.metrics:           timeout=600s, max_rows=50, prompt_chars=863
-[INFO] web.analyze.templates:         timeout=600s, max_rows=50, prompt_chars=1110
-[INFO] web.analyze.agg_search:        timeout=600s, max_rows=50, prompt_chars=1457
-[INFO] web.analyze.templates_summary: timeout=600s, max_rows=50, prompt_chars=1620
+[INFO] web.analyze.logs:                  timeout=600s, max_rows=50, prompt_chars=621
+[INFO] web.analyze.metrics:               timeout=600s, max_rows=50, prompt_chars=863
+[INFO] web.analyze.templates:             timeout=600s, max_rows=50, prompt_chars=1110
+[INFO] web.analyze.agg_search:            timeout=600s, max_rows=50, prompt_chars=1457
+[INFO] web.analyze.templates_summary:     timeout=600s, max_rows=50, prompt_chars=1620
+[INFO] web.analyze.primary_summary:       timeout=600s, max_rows=50, prompt_chars=1495
+[INFO] web.analyze.primary_query_summary: timeout=600s, max_rows=50, prompt_chars=1502
 ```
 
 ---

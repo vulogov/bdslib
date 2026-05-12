@@ -145,6 +145,20 @@
   //         You are reviewing two complementary derived views …
   //       '''
   //     }
+  //     primary_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing a TextRank-PageRank summary of recent …
+  //       '''
+  //     }
+  //     primary_query_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing a TextRank-PageRank summary that distills …
+  //       '''
+  //     }
   //   }
   // }
 }

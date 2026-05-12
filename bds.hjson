@@ -396,6 +396,38 @@
   //         '''
   //     }
   //
+  //     // ── Analysis → Primary Summary (TextRank over telemetry text) ──
+  //     // The page derives a TextRank summary of recent text-bearing
+  //     // primary telemetry records (numeric-only records are
+  //     // filtered out).  The LLM is asked to TELL THE STORY behind
+  //     // the summary — interpret, not re-summarise.  Payload is one
+  //     // `_kind=primary_summary` row carrying the summary text and
+  //     // the operator's TextRank knobs.
+  //     primary_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing a TextRank-PageRank summary of recent …
+  //         '''
+  //     }
+  //
+  //     // ── Analysis → Primary Query Summary (query-focused TextRank) ──
+  //     // Query-driven variant: the operator asked a specific
+  //     // question, the records summarised are those matching the
+  //     // query, and the LLM is asked to ANSWER the question using
+  //     // the summary as evidence.  Prompt explicitly tells the
+  //     // model to refuse to force an answer when retrieval was
+  //     // weak — keeps operators out of dead ends.
+  //     primary_query_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing a TextRank-PageRank summary that distills …
+  //         '''
+  //     }
+  //
   //     // Future: web.analyze.rca, web.analyze.signals, …
   //   }
   // }

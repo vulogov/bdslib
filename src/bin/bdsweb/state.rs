@@ -152,6 +152,99 @@ pub const DEFAULT_AGG_SEARCH_ANALYZE_PROMPT: &str =
      citing evidence.  Be terse; bullet points are fine.  If one corpus is empty or \
      dominated by noise, say so explicitly rather than padding the answer.";
 
+/// Default prompt for `web.analyze.primary_query_summary` — output
+/// of `v?/summary_for_query`, a TextRank-PageRank extract of the
+/// text bodies from primary telemetry records that **matched a
+/// specific operator query**.  Unlike `primary_summary` (which
+/// summarises everything in a time window), this summary is
+/// already focused: the operator asked a question and the vector
+/// search picked the records that look most relevant to it.
+///
+/// The model's job is therefore narrower — **answer the question**
+/// the operator was asking, using the summary as evidence.  Not
+/// "what is the system doing?" but "what does the system say
+/// about *this*?".
+///
+/// Supplied payload: one row tagged `_kind=primary_query_summary`
+/// carrying the query, the summary, and the TextRank knobs.
+pub const DEFAULT_PRIMARY_QUERY_SUMMARY_ANALYZE_PROMPT: &str =
+    "You are reviewing a TextRank-PageRank summary that distills the text bodies of \
+     primary telemetry records matching a specific operator query (carried in the \
+     `query` field of the supplied row).  The records summarised below are the ones \
+     the vector search judged most relevant to that question; the summary is the \
+     highest-rank sentences extracted from them.\n\
+     \n\
+     Your job is to **answer the operator's question** using the summary as evidence \
+     — tell them what the system has to say about the topic they searched for, NOT \
+     what the system is doing in general.  Produce a concise analysis covering:\n\
+     1. **Direct answer** — one or two sentences that take a position based on the \
+     summary.  Anchor with verbatim phrasing pulled from the summary.\n\
+     2. **Supporting evidence** — quote 2–4 specific summary sentences that back \
+     the answer.\n\
+     3. **Signals of trouble within the query scope** — failure-flavoured sentences \
+     (`error`, `fail`, `timeout`, `panic`, `unauthorized`, `rejected`, …) quoted \
+     verbatim, each with a one-line interpretation of the condition it points to.\n\
+     4. **Caveats** — places where the summary is thin, ambiguous, or doesn't \
+     actually speak to the query topic (e.g. the top-rank sentences are about an \
+     adjacent system that the vector search drifted into).  Operators waste time \
+     chasing weak retrieval matches; flag them honestly.\n\
+     5. One concrete **next investigative step** — usually a tighter vector search \
+     for a verbatim phrase from the summary, a per-key drill-down, or a runbook \
+     lookup tied to one of the trouble signals.\n\
+     \n\
+     Quote summary sentences verbatim when citing evidence.  Bullet points are fine; \
+     be terse.  If the summary doesn't actually answer the question — for example, \
+     the records were retrieved on weak semantic similarity rather than substantive \
+     overlap — say so plainly rather than forcing an answer out of unrelated text.";
+
+/// Default prompt for `web.analyze.primary_summary` — output of
+/// `v?/summary_for_recent`, a TextRank-PageRank extract of the
+/// highest-rank text bodies from primary telemetry records in the
+/// lookback window.  Numeric records (`data` is a bare number, or
+/// `data["value"]` is numeric) are filtered out upstream — what
+/// reaches this prompt is the system's text-emitted operational
+/// language: warnings, status lines, error messages, audit notes.
+/// The model's job is to **tell the story** that this summary
+/// collectively describes — not to summarise the summary, but to
+/// interpret it.
+///
+/// The supplied payload contains exactly one row tagged
+/// `_kind=primary_summary` carrying the summary text and the
+/// TextRank knobs the operator picked (`max_sentences`,
+/// `min_word_len`) so the model can calibrate its confidence.
+pub const DEFAULT_PRIMARY_SUMMARY_ANALYZE_PROMPT: &str =
+    "You are reviewing a TextRank-PageRank summary of recent text-bearing primary \
+     telemetry records.  Each sentence in this summary is one of the highest-rank text \
+     bodies the system emitted in the lookback window — `data.value` / `data.raw` \
+     strings extracted from records whose `data` wasn't purely numeric.  Your job is to \
+     **tell the story** these sentences collectively describe — interpret them, don't \
+     just re-summarise them.\n\
+     \n\
+     Produce a concise analysis covering:\n\
+     1. **Headline** — one sentence answering \"what is the system reporting right \
+     now?\"  Anchor it with verbatim phrasing pulled from the summary.\n\
+     2. **Themes** — group the summary sentences into 2–4 thematic clusters \
+     (auth, networking, storage, scheduling, errors, lifecycle events, …).  Describe \
+     each in one or two lines.\n\
+     3. **Signals of trouble** — call out summary sentences that look like warnings or \
+     failures (`error`, `fail`, `timeout`, `panic`, non-2xx HTTP, OOM, certificate, \
+     unauthorized, rejected, …).  Quote the snippet verbatim and explain what condition \
+     it points to.\n\
+     4. **Healthy chatter** — sentences that read as routine / operational noise \
+     (heartbeats, periodic status, lifecycle events) so the operator can mentally tune \
+     them out.\n\
+     5. **Most likely incident or condition** the summary collectively points to, if \
+     any.  Cite specific summary sentences as evidence.\n\
+     6. One concrete **next investigative step** — usually a vector search for one of \
+     the failure-indicator phrases or a per-key drill-down on a record category that \
+     stood out.\n\
+     \n\
+     Quote summary sentences verbatim when citing evidence so the operator can grep / \
+     drill down.  Bullet points are fine; be terse.  If the summary is very short or \
+     dominated by boilerplate / repetitive lines, say so plainly rather than \
+     speculating — sometimes the right answer is \"this window has nothing interesting \
+     in it\".";
+
 /// Default prompt for `web.analyze.templates_summary` — output of
 /// `v?/textrank.templates` (a TextRank-PageRank extract of the
 /// highest-rank drain3 templates) plus the LDA-discovered topic
@@ -291,6 +384,30 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_TEMPLATES_SUMMARY_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.primary_summary`.  The
+    /// payload is always exactly one row (the summary itself), so
+    /// `max_rows` doesn't gate anything here — it's retained for
+    /// schema parity with the other targets and may be used by
+    /// future per-key drill-down variants.
+    pub fn primary_summary_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_PRIMARY_SUMMARY_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+
+    /// Default settings for `web.analyze.primary_query_summary`.
+    /// Same single-row payload shape as `primary_summary`; the only
+    /// difference is the query-focused default prompt.
+    pub fn primary_query_summary_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_PRIMARY_QUERY_SUMMARY_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -337,6 +454,14 @@ pub struct AppState {
     /// the Analysis → Templates Summary page
     /// (`web.analyze.templates_summary.*`).
     pub templates_summary_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Primary Summary page
+    /// (`web.analyze.primary_summary.*`).
+    pub primary_summary_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Primary Query Summary page
+    /// (`web.analyze.primary_query_summary.*`).
+    pub primary_query_summary_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -345,11 +470,13 @@ impl AppState {
         dashboard_refresh_secs: u64,
         cluster_refresh_secs:   u64,
         shared_secret: String,
-        logs_analyze:              AnalyzeTargetConfig,
-        metrics_analyze:           AnalyzeTargetConfig,
-        templates_analyze:         AnalyzeTargetConfig,
-        agg_search_analyze:        AnalyzeTargetConfig,
-        templates_summary_analyze: AnalyzeTargetConfig,
+        logs_analyze:                  AnalyzeTargetConfig,
+        metrics_analyze:               AnalyzeTargetConfig,
+        templates_analyze:             AnalyzeTargetConfig,
+        agg_search_analyze:            AnalyzeTargetConfig,
+        templates_summary_analyze:     AnalyzeTargetConfig,
+        primary_summary_analyze:       AnalyzeTargetConfig,
+        primary_query_summary_analyze: AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -365,11 +492,13 @@ impl AppState {
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             shared_secret:   Arc::new(shared_secret),
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),
-            logs_analyze:              Arc::new(logs_analyze),
-            metrics_analyze:           Arc::new(metrics_analyze),
-            templates_analyze:         Arc::new(templates_analyze),
-            agg_search_analyze:        Arc::new(agg_search_analyze),
-            templates_summary_analyze: Arc::new(templates_summary_analyze),
+            logs_analyze:                  Arc::new(logs_analyze),
+            metrics_analyze:               Arc::new(metrics_analyze),
+            templates_analyze:             Arc::new(templates_analyze),
+            agg_search_analyze:            Arc::new(agg_search_analyze),
+            templates_summary_analyze:     Arc::new(templates_summary_analyze),
+            primary_summary_analyze:       Arc::new(primary_summary_analyze),
+            primary_query_summary_analyze: Arc::new(primary_query_summary_analyze),
         }
     }
 }
