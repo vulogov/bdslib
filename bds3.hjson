@@ -32,10 +32,21 @@
     full_mode_threshold:     3
     replication_factor:      3
 
-    full_replication_stores: ["docs", "signals", "scripts"]
+    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache"]
 
     // Floating bootstrap (see bds1.hjson for details).
     floating_bootstrap:      true
     bootstrap_retry_interval: "30s"
+  }
+
+  // ── LLM (v4/llm.* surface) — see bds1.hjson for the rationale.
+  llm: {
+    default: "ollama"
+    providers: {
+      ollama: {
+        url:           "http://127.0.0.1:11434"
+        default_model: "llama3.2"
+      }
+    }
   }
 }

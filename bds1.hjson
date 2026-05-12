@@ -44,8 +44,11 @@
     full_mode_threshold:     3
     replication_factor:      3
 
-    // All three replicated stores.
-    full_replication_stores: ["docs", "signals", "scripts"]
+    // Fully-replicated stores swept by anti-entropy.  Matches the
+    // library default — users (Phase 7) + llm_cache (Phase 3.c) need
+    // to be listed explicitly here because this config overrides the
+    // default list entirely.
+    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache"]
 
     // Floating bootstrap: when n2/n3 restart and find n1 down, they'll
     // try every URL in their persisted peers.json in parallel — any
@@ -54,5 +57,19 @@
     // ever tried).
     floating_bootstrap:      true
     bootstrap_retry_interval: "30s"
+  }
+
+  // ── LLM (v4/llm.* surface) ──
+  // Localhost Ollama only.  Each node calls its own 127.0.0.1:11434
+  // instance, so `bdscmd llm ...` works against any node without
+  // needing an external API key.
+  llm: {
+    default: "ollama"
+    providers: {
+      ollama: {
+        url:           "http://127.0.0.1:11434"
+        default_model: "llama3.2"
+      }
+    }
   }
 }
