@@ -216,6 +216,37 @@ fn vm_api_chat_followup_reuses_session() {
 }
 
 #[test]
+fn vm_api_chat_with_stale_chat_id_opens_new_session_instead_of_erroring() {
+    // Regression: a bdsweb cookie pointing at a session that was wiped
+    // (e.g. by `bdsnode --new`) used to surface "session not found" as
+    // a hard error.  v4/llm.chat now silently recovers by opening a
+    // new session — the response carries the fresh chat_id and the
+    // client cookie picks it up on the next turn.
+    ensure_setup();
+    let _g = capture_lock();
+    shared_state().requests.lock().clear();
+
+    // A UUID that DOES NOT exist in the docstore.
+    let stale = Uuid::now_v7().to_string();
+    let v = llm_api::chat(json_to_dynamic(json!({
+        "chat_id": stale.clone(),
+        "message": "after a stale cookie",
+    }))).expect("recovery, not error");
+    let j = dynamic_to_json(v);
+
+    // Auto-recovery → new session id (NOT the stale one) + is_new_session.
+    let returned = j["chat_id"].as_str().unwrap();
+    assert_ne!(returned, stale,
+        "stale chat_id should be replaced by a fresh one, got {returned}");
+    assert_eq!(j["is_new_session"], json!(true));
+    assert_eq!(j["response"], json!("reply:after a stale cookie"));
+
+    // The new session is real — `session_metadata` finds it.
+    let fresh_id = Uuid::parse_str(returned).unwrap();
+    assert!(llm_chat::session_metadata(fresh_id).unwrap().is_some());
+}
+
+#[test]
 fn vm_api_chat_supplied_context_prepends_to_user_message() {
     ensure_setup();
     let _g = capture_lock();

@@ -659,18 +659,41 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         )
     };
 
-    let outcome = match chat_id_str {
+    // Resolve the chat_id path with cookie-recovery semantics: if the
+    // caller supplied a chat_id but the session no longer exists (a
+    // common case after `bdsnode --new` wipes the docstore but the
+    // bdsweb cookie survives), silently open a NEW session instead of
+    // surfacing "session not found" to the user.  The fresh chat_id
+    // lands in the response and the caller's cookie picks it up.
+    let resume_id = match chat_id_str.as_deref() {
         Some(id_str) => {
-            let chat_id = Uuid::parse_str(&id_str)
+            let chat_id = Uuid::parse_str(id_str)
                 .map_err(|e| err_msg(format!("vm::api::llm::chat: invalid chat_id {id_str:?}: {e}")))?;
-            llm_chat::turn(
-                chat_id,
-                &enriched,
-                provider_override.as_deref(),
-                model_override.as_deref(),
-                options,
-            ).map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?
+            match llm_chat::session_metadata(chat_id) {
+                Ok(Some(_)) => Some(chat_id),
+                Ok(None)    => {
+                    log::info!("vm::api::llm::chat: chat_id {chat_id} not found in docstore — \
+                                opening a new session");
+                    None
+                }
+                Err(e) => {
+                    log::warn!("vm::api::llm::chat: session_metadata({chat_id}) failed: {e} \
+                                — falling back to new session");
+                    None
+                }
+            }
         }
+        None => None,
+    };
+
+    let outcome = match resume_id {
+        Some(chat_id) => llm_chat::turn(
+            chat_id,
+            &enriched,
+            provider_override.as_deref(),
+            model_override.as_deref(),
+            options,
+        ).map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?,
         None => llm_chat::open_and_turn(
             provider_override.as_deref(),
             model_override.as_deref(),
