@@ -7,6 +7,7 @@ pub mod jsonfingerprint;
 pub mod logparser;
 pub mod math;
 pub mod pipe;
+pub mod realistic;
 pub mod sql;
 pub mod time;
 pub mod timerange;

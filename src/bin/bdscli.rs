@@ -231,6 +231,62 @@ enum GenerateMode {
         count: usize,
     },
 
+    /// Generate a realistic, structured telemetry + log corpus tuned
+    /// for emulating RCA, anomaly detection, denoising, k-NN
+    /// clustering, drain3 template mining, and aggregated search.
+    ///
+    /// Three layers are mixed: (1) high-cadence background noise
+    /// (heartbeats, health probes, cron ticks, audit lines);
+    /// (2) embedded incident scenarios with causal precursor →
+    /// failure → consequence chains (DB overload, OOM kill, TLS cert
+    /// expiry, deployment regression, network partition); (3) rare
+    /// anomalies with unusual vocabulary (kernel soft-lockup, ECC
+    /// errors, novel exceptions).
+    ///
+    /// Unlike `generate telemetry`/`log` which emit independently
+    /// random records, every record here is part of a structured
+    /// scenario or a noise floor — making the output suitable for
+    /// validating RCA / anomaly / denoise / k-NN analyses.
+    Realistic {
+        /// Humantime duration window for generated timestamps
+        /// (default: 6h).
+        #[arg(short, long, default_value = "6h")]
+        duration: String,
+
+        /// Approximate total record count.  Actual output may be
+        /// somewhat higher because each scenario emits 30–60
+        /// records on top of the noise+anomaly target.
+        #[arg(short = 'n', long, default_value_t = 2000)]
+        total: usize,
+
+        /// Number of incident cascades to embed (default 3).  Each
+        /// scenario contributes 30–60 records spanning a few
+        /// minutes of the timeline.
+        #[arg(long, default_value_t = 3)]
+        scenarios: usize,
+
+        /// Fraction of `--total` reserved for background noise.
+        /// Clamped to [0.0, 0.95].  Default 0.7.
+        #[arg(long, default_value_t = 0.7)]
+        noise_ratio: f64,
+
+        /// Fraction of `--total` reserved for anomaly records with
+        /// rare vocabulary.  Clamped to [0.0, 0.10].  Default 0.02.
+        #[arg(long, default_value_t = 0.02)]
+        anomaly_ratio: f64,
+
+        /// Optional RNG seed for reproducibility.  Same seed +
+        /// same flags → same scenario archetypes & key sequence
+        /// across runs.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Ingest the generated documents into the DB instead of
+        /// printing them.
+        #[arg(long, default_value_t = false)]
+        ingest: bool,
+    },
+
     /// Generate realistic IT operational documents and tickets for the docstore.
     ///
     /// Produces runbooks, incident tickets, post-mortems, KB articles, and
@@ -586,6 +642,7 @@ fn mode_duration(mode: &GenerateMode) -> &str {
         GenerateMode::Mixed     { duration, .. } => duration,
         GenerateMode::Templated { duration, .. } => duration,
         GenerateMode::Syslog    { duration, .. } => duration,
+        GenerateMode::Realistic { duration, .. } => duration,
         GenerateMode::Docs      { .. } => "1h", // unreachable: Docs exits early in cmd_generate
     }
 }
@@ -634,6 +691,19 @@ fn cmd_generate(config: Option<&str>, duplicate: f64, mode: GenerateMode) -> Res
         return cmd_generate_docs(config, count, doc_type, ingest);
     }
 
+    // Realistic uses a structured scenario engine; it produces the
+    // full corpus in one shot via `bdslib::generate_realistic` and
+    // skips duplicate injection (duplicates would smear the
+    // scenario timings the analyses depend on).
+    if let GenerateMode::Realistic {
+        duration, total, scenarios, noise_ratio, anomaly_ratio, seed, ingest
+    } = mode {
+        let docs = bdslib::generate_realistic(&bdslib::RealisticConfig {
+            duration, total, scenarios, noise_ratio, anomaly_ratio, seed,
+        });
+        return emit_or_ingest(config, docs, ingest);
+    }
+
     let duration_secs = humantime::parse_duration(mode_duration(&mode))
         .map(|d| d.as_secs())
         .unwrap_or(3600);
@@ -665,8 +735,9 @@ fn cmd_generate(config: Option<&str>, duplicate: f64, mode: GenerateMode) -> Res
             let docs = bdslib::Generator::new().templated(&duration, &tmpl, count);
             (docs, ingest)
         }
-        GenerateMode::Syslog { .. } => unreachable!(),
-        GenerateMode::Docs { .. }   => unreachable!(),
+        GenerateMode::Syslog    { .. } => unreachable!(),
+        GenerateMode::Docs      { .. } => unreachable!(),
+        GenerateMode::Realistic { .. } => unreachable!(),
     };
 
     inject_duplicates(&mut docs, duplicate, duration_secs);

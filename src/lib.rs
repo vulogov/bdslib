@@ -39,6 +39,7 @@ pub use analysis::{
     TemplateCausalCandidate, TemplateCluster, TextRankConfig, TopicSummary,
 };
 pub use common::generator::{Generator, LogFormat};
+pub use common::realistic::{generate as generate_realistic, RealisticConfig};
 pub use common::jsonfingerprint::json_fingerprint;
 pub use common::pipe;
 pub use common::uuid::timestamp_from_v7;
