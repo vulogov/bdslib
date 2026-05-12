@@ -12,7 +12,7 @@
   ingest_channel_capacity: 10000
 
   drain_enabled:        true
-  scheduler_interval_secs: 0
+  scheduler_interval_secs: 60   // fire stored BUND scripts whose crontab matches the current minute
   sync_interval_secs:      0
   n_workers:            2
 
