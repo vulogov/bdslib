@@ -123,14 +123,20 @@
   <div>
     <h1 class="text-xl font-semibold text-slate-200">AI Chat</h1>
     <p class="text-xs text-slate-500 mt-0.5">
-      RAG over observability data · model: <code class="text-slate-400">{{ model }}</code>
+      RAG over observability data via <code class="text-slate-400">v4/llm.chat</code>
+      {% if !has_providers %}
+        · <span class="text-amber-400">no LLM providers registered — configure `llm.providers` in bds.hjson</span>
+      {% endif %}
+      {% if needs_secret %}
+        · <span class="text-amber-400">cluster.shared_secret unset — v4/llm.* will reject requests</span>
+      {% endif %}
     </p>
   </div>
   <button id="new-session-btn"
           hx-post="/chat/new"
           hx-target="#chat-messages"
           hx-swap="innerHTML"
-          hx-include="[name='duration']"
+          hx-include="[name='duration'],[name='provider']"
           hx-indicator="#chat-spinner"
           class="text-xs text-slate-500 hover:text-slate-300 transition-colors border border-slate-700 hover:border-slate-500 rounded px-2.5 py-1 cursor-pointer">
     New session
@@ -161,6 +167,23 @@
           hx-indicator="#chat-spinner">
 
       <div class="flex items-end gap-2">
+        <!-- Provider -->
+        <div class="shrink-0">
+          <label class="block text-xs text-slate-500 mb-1">Provider</label>
+          <select name="provider" id="provider-sel"
+                  class="rounded px-2 py-2 text-xs"
+                  style="min-width: 9rem;"
+                  {% if !has_providers %}disabled{% endif %}>
+            {% if has_providers %}
+              {% for p in providers %}
+                <option value="{{ p.id }}"{% if p.selected %} selected{% endif %}>{{ p.id }} ({{ p.default_model }})</option>
+              {% endfor %}
+            {% else %}
+              <option value="">(none registered)</option>
+            {% endif %}
+          </select>
+        </div>
+
         <!-- Duration -->
         <div class="shrink-0">
           <label class="block text-xs text-slate-500 mb-1">Context window</label>
