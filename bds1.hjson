@@ -77,5 +77,18 @@
         default_model: "llama3.2"
       }
     }
+
+    // ── In-chat Bund snippet execution ──
+    // When a chat message contains a ```bund fenced block (or starts
+    // with a leading `/`), bdsnode evaluates the snippet locally and
+    // splices the result into the LLM prompt instead of running the
+    // standard aggregated-search RAG.  Off by default in the library
+    // (any chat user can execute arbitrary Bund), on here because
+    // this is a test cluster.
+    chat: {
+      bund: {
+        enabled: true
+      }
+    }
   }
 }

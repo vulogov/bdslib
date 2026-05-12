@@ -708,16 +708,72 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         }
     }
 
+    // Resolve the chat_id path BEFORE building the enriched prompt so
+    // we can mine prior Bund-snippet pins from history.  Same
+    // cookie-recovery semantics as below: a stale chat_id silently
+    // opens a new session.
+    let resume_id = match chat_id_str.as_deref() {
+        Some(id_str) => {
+            let chat_id = Uuid::parse_str(id_str)
+                .map_err(|e| err_msg(format!("vm::api::llm::chat: invalid chat_id {id_str:?}: {e}")))?;
+            match llm_chat::session_metadata(chat_id) {
+                Ok(Some(_)) => Some(chat_id),
+                Ok(None)    => {
+                    log::info!("vm::api::llm::chat: chat_id {chat_id} not found in docstore — \
+                                opening a new session");
+                    None
+                }
+                Err(e) => {
+                    log::warn!("vm::api::llm::chat: session_metadata({chat_id}) failed: {e} \
+                                — falling back to new session");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    // Bund-snippet pin: when the chat has prior snippet runs, surface
+    // up to 2 of the most recent ones (truncated to 1024 chars each)
+    // as a high-priority preamble to the user message.  Without this,
+    // a 50k-char doc RAG dump on the follow-up turn buries the prior
+    // snippet result in user-1, and the model loses track of what it
+    // just told the operator.
+    let bund_pins: Vec<crate::llm::chat::BundPin> = resume_id
+        .and_then(|cid| llm_chat::recent_bund_pins(cid, 2, 1024).ok())
+        .unwrap_or_default();
+    let pin_block = if bund_pins.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::from(
+            "Earlier in this conversation, the operator ran Bund snippets — \
+             these results are authoritative for any follow-up question:\n\n");
+        for (i, p) in bund_pins.iter().enumerate() {
+            s.push_str(&format!(
+                "[snippet {}]\n```bund\n{}\n```\n→ {}\n",
+                i + 1, p.code, p.result
+            ));
+            if !p.summary.is_empty() {
+                s.push_str(&format!("(model said: {})\n", p.summary));
+            }
+            s.push('\n');
+        }
+        s.push_str("---\n\n");
+        s
+    };
+
     // Build RAG context: either supplied verbatim, or assembled from a
     // db.aggregationsearch over the requested duration.  Empty when
     // neither is present.
     let (rag_context, telemetry_count, document_count) = build_rag_context(&req_json)?;
-    let enriched = if rag_context.is_empty() {
+    let enriched = if rag_context.is_empty() && pin_block.is_empty() {
         user_message.clone()
+    } else if rag_context.is_empty() {
+        format!("{pin_block}User question: {user_message}")
     } else {
         let dur = req_json.get("duration").and_then(|v| v.as_str()).unwrap_or("recent window");
         format!(
-            "Relevant observability context (last {dur}):\n\n{rag_context}\n\n---\n\nUser question: {user_message}"
+            "{pin_block}Relevant observability context (last {dur}):\n\n{rag_context}\n\n---\n\nUser question: {user_message}"
         )
     };
 
@@ -756,33 +812,6 @@ pub fn chat(req: Value) -> Result<Value, Error> {
     }
     let prompt_chars = enriched.len();
     let chosen_num_ctx = options.num_ctx;
-
-    // Resolve the chat_id path with cookie-recovery semantics: if the
-    // caller supplied a chat_id but the session no longer exists (a
-    // common case after `bdsnode --new` wipes the docstore but the
-    // bdsweb cookie survives), silently open a NEW session instead of
-    // surfacing "session not found" to the user.  The fresh chat_id
-    // lands in the response and the caller's cookie picks it up.
-    let resume_id = match chat_id_str.as_deref() {
-        Some(id_str) => {
-            let chat_id = Uuid::parse_str(id_str)
-                .map_err(|e| err_msg(format!("vm::api::llm::chat: invalid chat_id {id_str:?}: {e}")))?;
-            match llm_chat::session_metadata(chat_id) {
-                Ok(Some(_)) => Some(chat_id),
-                Ok(None)    => {
-                    log::info!("vm::api::llm::chat: chat_id {chat_id} not found in docstore — \
-                                opening a new session");
-                    None
-                }
-                Err(e) => {
-                    log::warn!("vm::api::llm::chat: session_metadata({chat_id}) failed: {e} \
-                                — falling back to new session");
-                    None
-                }
-            }
-        }
-        None => None,
-    };
 
     let outcome = match resume_id {
         Some(chat_id) => llm_chat::turn(
@@ -901,18 +930,24 @@ fn run_chat_with_bund_result(
     } else {
         snip.remainder.clone()
     };
+    // The enriched user-message MUST carry the snippet source verbatim
+    // so future turns can pin it (see `chat::recent_bund_pins`).  The
+    // leading "Bund snippet executed:" header is a stable marker the
+    // pin extractor matches on.
     let enriched = if formatted.kind == "fingerprint" {
         format!(
-            "Bund snippet result ({} items, {} ms, fingerprinted because the JSON \
-             encoding exceeded `llm.chat.bund.max_result_chars`):\n\n{}\n\n---\n\n\
+            "Bund snippet executed:\n\n```bund\n{}\n```\n\n\
+             Result ({} items, {} ms, fingerprinted because the JSON encoding \
+             exceeded `llm.chat.bund.max_result_chars`):\n\n{}\n\n---\n\n\
              User question: {}",
-            success.items.len(), success.ms, formatted.body, question,
+            snip.code.trim(), success.items.len(), success.ms, formatted.body, question,
         )
     } else {
         format!(
-            "Bund snippet result ({} items, {} ms):\n\n```json\n{}\n```\n\n---\n\n\
+            "Bund snippet executed:\n\n```bund\n{}\n```\n\n\
+             Result ({} items, {} ms):\n\n```json\n{}\n```\n\n---\n\n\
              User question: {}",
-            success.items.len(), success.ms, formatted.body, question,
+            snip.code.trim(), success.items.len(), success.ms, formatted.body, question,
         )
     };
 

@@ -166,6 +166,116 @@ pub fn open_and_turn(
     Ok(outcome)
 }
 
+/// One Bund-result entry pulled from a chat session's history.  Used
+/// by [`recent_bund_pins`] to surface prior snippet runs into the
+/// next turn's prompt so a follow-up question like "what was the
+/// answer?" can be answered without re-running the snippet.
+#[derive(Debug, Clone)]
+pub struct BundPin {
+    /// Bund source code the operator submitted (verbatim, trimmed).
+    pub code:    String,
+    /// The result body as written into the enriched user-message —
+    /// either a `\`\`\`json` block or a fingerprint line.  Truncated to
+    /// the caller's `max_chars_per_pin` budget with a trailing "…"
+    /// marker when oversize.
+    pub result:  String,
+    /// The assistant reply that immediately followed this snippet
+    /// turn, truncated the same way.  Empty when there was no reply
+    /// (shouldn't happen in normal flow but the extractor is
+    /// defensive).
+    pub summary: String,
+}
+
+/// Mine a chat session's persisted history for the most recent
+/// Bund-snippet runs.  Returns at most `max_results` pins in
+/// chronological order (oldest → newest), each truncated to
+/// `max_chars_per_pin`.  Skips silently and returns an empty Vec for
+/// any error condition (missing session, malformed history) — the
+/// caller treats this as a best-effort enrichment.
+///
+/// The extractor matches the stable header written by
+/// [`crate::vm::api::llm::run_chat_with_bund_result`]:
+///
+/// ```text
+/// Bund snippet executed:
+///
+/// ```bund
+/// <source>
+/// ```
+///
+/// Result (N items, M ms):
+///
+/// ```json
+/// <items>
+/// ```
+///
+/// ---
+///
+/// User question: ...
+/// ```
+pub fn recent_bund_pins(
+    chat_id:           Uuid,
+    max_results:       usize,
+    max_chars_per_pin: usize,
+) -> Result<Vec<BundPin>> {
+    if max_results == 0 { return Ok(Vec::new()); }
+    let db = get_db()?;
+    let raw = match db.doc_get_content(chat_id) {
+        Ok(Some(b)) => b,
+        _           => return Ok(Vec::new()),
+    };
+    let history: Vec<Message> = match serde_json::from_slice(&raw) {
+        Ok(h) => h,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let trunc = |s: &str| -> String {
+        if s.chars().count() <= max_chars_per_pin {
+            s.to_owned()
+        } else {
+            let cut: String = s.chars().take(max_chars_per_pin).collect();
+            format!("{cut}…")
+        }
+    };
+
+    let mut pins: Vec<BundPin> = Vec::new();
+    for (i, msg) in history.iter().enumerate() {
+        if msg.role != Role::User { continue; }
+        let txt = &msg.content;
+        if !txt.starts_with("Bund snippet executed:") { continue; }
+
+        // Extract source between ```bund and the next ``` line.
+        let Some(src_start) = txt.find("```bund\n") else { continue };
+        let after_marker   = &txt[src_start + "```bund\n".len()..];
+        let Some(src_end)  = after_marker.find("\n```") else { continue };
+        let code = after_marker[..src_end].trim().to_owned();
+
+        // Extract result block (between the first "Result (" header and
+        // the "\n---\n" separator that precedes the User question).
+        let rest = &after_marker[src_end + "\n```".len()..];
+        let result_body = match rest.find("\n---\n") {
+            Some(end) => rest[..end].trim().to_owned(),
+            None      => rest.trim().to_owned(),
+        };
+
+        // Companion assistant reply, if any.
+        let summary = history.get(i + 1)
+            .filter(|m| m.role == Role::Assistant)
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+
+        pins.push(BundPin {
+            code:    trunc(&code),
+            result:  trunc(&result_body),
+            summary: trunc(&summary),
+        });
+    }
+
+    // Keep only the most recent N (chronological order preserved).
+    let drop = pins.len().saturating_sub(max_results);
+    Ok(pins.into_iter().skip(drop).collect())
+}
+
 /// Returns the metadata block for an existing session, or `None` when
 /// the id doesn't reference a chat-session document.  Used by the
 /// `v4/llm.chat` handler to surface provider/model info to clients

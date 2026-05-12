@@ -54,5 +54,12 @@
         default_model: "llama3.2"
       }
     }
+
+    // ── In-chat Bund snippet execution ── (see bds1.hjson)
+    chat: {
+      bund: {
+        enabled: true
+      }
+    }
   }
 }

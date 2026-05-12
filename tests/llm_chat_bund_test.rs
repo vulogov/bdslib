@@ -175,8 +175,10 @@ fn snippet_enabled_and_runs_splices_json_into_prompt() {
     let user_msg = last["messages"].as_array().unwrap()
         .iter().rev().find(|m| m["role"] == "user").unwrap()
         ["content"].as_str().unwrap().to_owned();
-    assert!(user_msg.contains("Bund snippet result"),
-        "prompt should announce the snippet result: {user_msg}");
+    assert!(user_msg.contains("Bund snippet executed:"),
+        "prompt should announce the snippet source: {user_msg}");
+    assert!(user_msg.contains("Result ("),
+        "prompt should include the result block header: {user_msg}");
     assert!(user_msg.contains("What's that result?"),
         "prompt should carry the operator's question: {user_msg}");
 }
@@ -246,13 +248,15 @@ fn empty_rag_with_duration_yields_suggest_bund_recommendations() {
     let _g = capture_lock();
     shared_state().requests.lock().clear();
 
-    // No snippet, but a duration is supplied → aggregationsearch
-    // will run.  In the smoke setup there's no data ingested, so
-    // both counts come back zero and the suggestion path should
-    // fire.
+    // No snippet, duration set → suggestion path fires when RAG
+    // returns 0/0.  We supply `context: ""` to short-circuit
+    // aggregation_search deterministically — otherwise chat-session
+    // documents leftover from sibling tests in this binary leak into
+    // the search corpus and skew document_count.
     let req = json_to_dynamic(json!({
         "message":  "explain the recent errors",
         "duration": "1h",
+        "context":  "",
     }));
     let v = llm_api::chat(req).expect("chat");
     let j = dynamic_to_json(v);
@@ -330,4 +334,53 @@ fn snippet_response_carries_no_history_pollution_when_errored() {
         .filter(|m| m["role"] == "user")
         .count();
     assert_eq!(user_turns, 1, "failed snippet must not pollute chat history");
+}
+
+#[test]
+fn followup_turn_pins_prior_snippet_result_into_prompt() {
+    // The bug this fixes: after a snippet ran in turn 1, the next
+    // turn's RAG dump used to bury the prior result.  Now the chat
+    // helper scans history for prior Bund-result blocks and prepends
+    // them to the next user message with an authoritative header so
+    // the model can answer "what did that snippet return?" follow-ups.
+    ensure_setup(true);
+    let _g = capture_lock();
+    shared_state().requests.lock().clear();
+
+    // Turn 1: snippet that pushes a known payload.
+    let v1 = llm_api::chat(json_to_dynamic(json!({
+        "message": "```bund\n42 \"The answer is {A}\" format .\n```",
+    }))).expect("turn 1");
+    let j1 = dynamic_to_json(v1);
+    let chat_id = j1["chat_id"].as_str().expect("chat_id").to_owned();
+    assert_eq!(j1["bund"]["ok"], json!(true));
+
+    // Turn 2: plain follow-up, no snippet, no duration.  Pin should
+    // still fire because the chat_id has a prior snippet in history.
+    let v2 = llm_api::chat(json_to_dynamic(json!({
+        "chat_id": chat_id,
+        "message": "What is the answer?",
+    }))).expect("turn 2");
+    let _ = dynamic_to_json(v2);
+
+    // Inspect the second outbound prompt — the last user message
+    // should carry the pin header AND the original snippet source.
+    let reqs = shared_state().requests.lock().clone();
+    let second = reqs.last().expect("turn-2 request captured");
+    let msgs = second["messages"].as_array().unwrap();
+    let last_user = msgs.iter().rev()
+        .find(|m| m["role"] == "user").unwrap()["content"].as_str().unwrap();
+
+    assert!(last_user.contains("Earlier in this conversation"),
+        "pin header should be present in turn-2 prompt: {last_user}");
+    assert!(last_user.contains("[snippet 1]"),
+        "first pin should be labelled: {last_user}");
+    assert!(last_user.contains("42 \"The answer is {A}\" format ."),
+        "snippet SOURCE must round-trip via the pin: {last_user}");
+    assert!(last_user.contains("What is the answer?"),
+        "follow-up question must still be present: {last_user}");
+    // Pin precedes the user question in the prompt body.
+    let pin_pos = last_user.find("Earlier in this conversation").unwrap();
+    let q_pos   = last_user.find("What is the answer?").unwrap();
+    assert!(pin_pos < q_pos, "pin must come before the follow-up question");
 }
