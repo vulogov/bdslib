@@ -1,0 +1,1009 @@
+# `bds.hjson` — Configuration Reference
+
+`bds.hjson` is the single configuration file consumed by every
+bdslib-based binary.  bdsnode reads it on startup via
+`--config <path>` (or the `BDS_CONFIG` env var); bdsweb reads the
+same file when its `--config` flag points at it; bdscli/bdscmd
+operate on a running bdsnode and don't read it directly.
+
+The file uses [Hjson](https://hjson.github.io/) — JSON with
+comments, unquoted keys, optional commas — and is parsed by
+`serde_hjson` into a flat key/value tree.  Unknown keys are
+silently ignored, so the same file can be shared across versions.
+
+This document is the canonical reference.  Topic-specific docs
+cross-reference it rather than duplicating tuning advice.
+
+---
+
+## Table of contents
+
+1. [How the file is loaded](#1-how-the-file-is-loaded)
+2. [Top-level: process + storage](#2-top-level-process--storage)
+   - 2.1 [OS resource limits](#21-os-resource-limits)
+   - 2.2 [Storage layout](#22-storage-layout)
+   - 2.3 [DuckDB connection pooling](#23-duckdb-connection-pooling)
+   - 2.4 [Embedding model](#24-embedding-model)
+   - 2.5 [Deduplication](#25-deduplication)
+   - 2.6 [Drain3 log-template mining](#26-drain3-log-template-mining)
+   - 2.7 [JSON record cache](#27-json-record-cache)
+3. [Ingest tuning](#3-ingest-tuning)
+4. [BUND VM runtime](#4-bund-vm-runtime)
+5. [Background tasks](#5-background-tasks)
+   - 5.1 [Cron-driven script scheduler](#51-cron-driven-script-scheduler)
+   - 5.2 [Periodic global sync](#52-periodic-global-sync)
+   - 5.3 [Result-queue sweeper](#53-result-queue-sweeper)
+   - 5.4 [BUND VM cleanup](#54-bund-vm-cleanup)
+6. [`cluster:` block](#6-cluster-block)
+   - 6.1 [Membership](#61-membership)
+   - 6.2 [Gossip cadence](#62-gossip-cadence)
+   - 6.3 [Replication](#63-replication)
+   - 6.4 [Hinted handoff + anti-entropy](#64-hinted-handoff--anti-entropy)
+   - 6.5 [Scheduler dedup](#65-scheduler-dedup)
+   - 6.6 [Authentication](#66-authentication)
+7. [`llm:` block](#7-llm-block)
+   - 7.1 [Provider registration](#71-provider-registration)
+   - 7.2 [`llm.cache`](#72-llmcache)
+   - 7.3 [`llm.dedup`](#73-llmdedup)
+   - 7.4 [`llm.runner`](#74-llmrunner)
+8. [bdsweb-specific keys](#8-bdsweb-specific-keys)
+9. [Legacy `v2/chat.ollama` keys](#9-legacy-v2chatollama-keys)
+10. [Tuning matrix](#10-tuning-matrix)
+11. [Required-vs-optional summary](#11-required-vs-optional-summary)
+12. [Per-binary key matrix](#12-per-binary-key-matrix)
+
+---
+
+## 1. How the file is loaded
+
+```
+bdsnode --config bds.hjson
+            │
+            ▼
+   fs::read_to_string
+            │
+            ▼
+   serde_hjson::from_str → serde_hjson::Value
+            │
+            ├── nofile_limit_from_config         → setrlimit
+            ├── n_workers_from_config            → BundWorkerPool::start
+            ├── ingest_channel_capacity_*        → ingest::init
+            ├── bdslib::init_db(config_path)     ← reads `dbpath`, `shard_duration`,
+            │                                       `pool_size`, `similarity_threshold`,
+            │                                       `drain_enabled`, `drain_load_duration`,
+            │                                       `jsoncache_*`, `r2d2_thread_pool_size`,
+            │                                       `max_open_shards`, `embedding_*`
+            │
+            ├── Cluster::init (when cluster.enabled = true)
+            │       ↑ reads the `cluster:` sub-object via from_hjson_str
+            │
+            ├── ProviderManager + cache::init + dedup::init_settings
+            │       ↑ reads the `llm:` sub-object via LlmConfig::load_from_hjson
+            │
+            ├── server::scheduler::Config::from_config
+            ├── server::sync::Config::from_config
+            ├── server::results_sweeper::Config::from_config
+            ├── server::bundcleanup::Config::from_config
+            └── server::llm_jobs::Config::from_config
+```
+
+Each component re-reads the file independently — there is no shared
+parsed-config struct.  Missing keys fall back to per-component
+defaults; unknown keys are silently ignored.  Unparseable hjson
+(syntax error) aborts startup with a `context("hjson parse error")`
+message.
+
+**Required keys for bdsnode** (anything else is optional):
+
+- `dbpath` (string) — storage root
+- `shard_duration` (humantime string) — time-bucket width
+- `cluster.shared_secret` + `cluster.bind_url` (only when
+  `cluster.enabled = true`)
+
+**bdsweb** reads only a small subset (the `cluster.*` auth fields +
+the `*_refresh_secs` knobs).  bdscli/bdscmd don't read the file.
+
+---
+
+## 2. Top-level: process + storage
+
+### 2.1 OS resource limits
+
+```hjson
+nofile_limit: 4096
+```
+
+| Field         | Type    | Default | Required |
+|---------------|---------|---------|----------|
+| `nofile_limit`| integer | 4096    | no       |
+
+Soft `RLIMIT_NOFILE` requested at startup via `rlimit::setrlimit`.
+bdsnode opens many DuckDB files and vecstore indexes per shard;
+the OS default (256 on macOS, 1024 on Linux) runs out within hours
+on real workloads.  Clamped to the process hard limit by the kernel.
+
+**Sizing rule of thumb:**
+`nofile_limit ≥ max_open_shards × ~12 + 100`
+
+The ~12 comes from each open shard holding open: 1 DuckDB file
+(`obs.db`) + multiple Tantivy index files + multiple tplstorage
+files (metadata.db, blobs.db, frequency.db).  The +100 covers
+the docstore + signals + scripts + users + llm stores + the
+TCP listener + reqwest pool.
+
+If `setrlimit` fails (you asked for more than the hard limit),
+bdsnode logs a warning and continues with whatever the OS granted.
+Check the boot log for the actual applied value.
+
+### 2.2 Storage layout
+
+```hjson
+dbpath:          "/var/lib/bdslib"
+shard_duration:  "1h"
+max_open_shards: 32
+```
+
+| Field             | Type             | Default | Required |
+|-------------------|------------------|---------|----------|
+| `dbpath`          | string           | —       | **yes**  |
+| `shard_duration`  | humantime string | —       | **yes**  |
+| `max_open_shards` | integer          | 16      | no       |
+
+- **`dbpath`** — root directory for all shards, docstore, signals,
+  scripts, users, and llm stores.  Created if missing.  Survives
+  process restarts; wiped only by `bdsnode --new`.
+
+- **`shard_duration`** — width of each time-partitioned shard.
+  Every document is routed to the shard whose `[start, end)`
+  interval contains its `timestamp` field.  Common values:
+
+  | Value      | Records per shard (rough) | When to pick                                |
+  |------------|---------------------------|---------------------------------------------|
+  | `"1h"`     | thousands                 | High-throughput telemetry, fast LRU rotation |
+  | `"6h"`     | tens of thousands         | Default for app logs                        |
+  | `"1day"`   | hundreds of thousands     | Production telemetry, long retention        |
+  | `"7days"`  | millions                  | Cold storage, archival                      |
+
+  **Lock-in warning.**  All existing shards under `dbpath` were
+  created with the original `shard_duration`.  Changing it produces
+  shards of the new width going forward, but **historical shards
+  retain their original boundaries** — queries may straddle
+  uneven shard widths.  Re-bucket by exporting + reingesting into
+  a fresh `dbpath`.
+
+- **`max_open_shards`** — LRU cap on simultaneously open shards.
+  Each open shard holds connections + memory-mapped index pages.
+  When the cap is reached, the least-recently-used shard is synced
+  to disk (CHECKPOINT + Tantivy commit + VecStore flush) and
+  closed before the new one is opened.
+
+  Raise this knob when:
+  - You see frequent "shard evicted" log lines during normal
+    operation (eviction churn slows queries).
+  - Your queries routinely span more shards than the cap.
+
+  Lower when:
+  - Memory pressure or file-descriptor count is high (each open
+    shard is ~12 FDs and ~tens of MB of mapped pages).
+
+  Relationship: `nofile_limit ≥ max_open_shards × 12 + 100`.
+
+### 2.3 DuckDB connection pooling
+
+```hjson
+pool_size:               4
+r2d2_thread_pool_size:   3
+```
+
+| Field                      | Type    | Default | Required |
+|----------------------------|---------|---------|----------|
+| `pool_size`                | integer | 4       | no       |
+| `r2d2_thread_pool_size`    | integer | 3       | no       |
+
+- **`pool_size`** — concurrent DuckDB connections **per shard**.
+  Each open shard holds its own pool, so total connections =
+  `pool_size × open_shards × N_stores` (where N_stores is the
+  number of DuckDB files in the shard).
+
+  Raise on high-concurrency ingest (lots of parallel `v2/add`
+  callers); lower to reduce memory.
+
+- **`r2d2_thread_pool_size`** — size of the process-wide r2d2
+  maintenance thread pool.  One pool shared across every r2d2-
+  backed connection pool in the process.  Almost never needs
+  tuning; bump only if you see r2d2 reaper lag under very high
+  connection churn (visible as slow `take_one` in profiles).
+
+### 2.4 Embedding model
+
+```hjson
+embedding_model:     "AllMiniLML6V2"
+embedding_cache_dir: "/var/lib/bdslib/models"
+```
+
+| Field                  | Type             | Default              | Required |
+|------------------------|------------------|----------------------|----------|
+| `embedding_model`      | string           | `"AllMiniLML6V2"`    | no       |
+| `embedding_cache_dir`  | string           | fastembed default    | no       |
+
+**fastembed** loads the named model variant; matches Rust's `Debug`
+form of `fastembed::EmbeddingModel`, case-insensitive.
+
+| Model                          | Dim  | Size       | Notes                                |
+|--------------------------------|-----:|-----------:|--------------------------------------|
+| `AllMiniLML6V2`                | 384  | ~22 MB     | Default — fast / small               |
+| `AllMiniLML6V2Q`               | 384  | ~6 MB      | Quantized AllMiniLM                  |
+| `BGESmallENV15`                | 384  | ~33 MB     | Higher retrieval quality             |
+| `BGEBaseENV15`                 | 768  | ~110 MB    | Larger model                         |
+| `BGELargeENV15`                | 1024 | ~340 MB    | Best quality, slowest                |
+| `MultilingualE5Small`          | 384  | —          | Multilingual                         |
+| `NomicEmbedTextV15`            | 768  | —          | Longer input context                 |
+| `JinaEmbeddingsV2BaseEN`       | 768  | —          | 8K context window                    |
+
+⚠ **Dimension lock-in.**  The HNSW vector index dimension is
+fixed at the dimension of whichever model produced the first
+vector insert under `dbpath`.  **Switching `embedding_model` on
+an existing dbpath breaks vector search.**  To switch:
+
+```bash
+bdsnode --new --config bds.hjson
+```
+
+The active model is reported in `v2/status.embedding_model` and
+on the bdsweb Dashboard so you can confirm what's loaded.
+
+- **`embedding_cache_dir`** — overrides fastembed's default
+  download cache (`~/.cache/huggingface/hub` or `$HF_HOME`).
+  Useful when you want the ~30–340 MB of model weights to live
+  next to the data so backups are self-contained, or when running
+  in a read-only `$HOME`.
+
+### 2.5 Deduplication
+
+```hjson
+similarity_threshold: 0.85
+```
+
+| Field                  | Type  | Default | Required |
+|------------------------|-------|---------|----------|
+| `similarity_threshold` | float | 0.85    | no       |
+
+Cosine-similarity cutoff for classifying an incoming document as a
+**secondary** (near-duplicate of an existing primary) vs a
+**primary** (new record).  Range `[0.0, 1.0]`:
+
+- `1.0` — only bit-exact duplicates collapse.
+- `0.85` — default; tolerates whitespace, ordering, minor field
+  variations.
+- `0.0` — never dedup; every record is a primary.
+
+The classification happens on every `v2/add`; the secondary is
+attached to the matching primary's UUID via the redb-backed
+dedup index in `ObservabilityStorage`.  See
+[`Documentation/OBSERVABILITYENGINE.md`](OBSERVABILITYENGINE.md).
+
+Higher → more primaries (less dedup, more storage, but no false
+joins).  Lower → more secondaries (aggressive dedup, but risks
+collapsing semantically-distinct records).
+
+### 2.6 Drain3 log-template mining
+
+```hjson
+drain_enabled:       true
+drain_load_duration: "24h"
+```
+
+| Field                  | Type             | Default | Required |
+|------------------------|------------------|---------|----------|
+| `drain_enabled`        | bool             | false   | no       |
+| `drain_load_duration`  | humantime string | `"24h"` | no       |
+
+When `drain_enabled = true`, every `v2/add` and `v2/add.batch`
+runs the [drain3](https://github.com/IBM/Drain3) prefix-tree log
+template miner over the record body, clustering similar log lines
+into templates stored in the per-shard tplstorage.  Templates are
+queryable via `v2/tpl.list`, `v2/tpl.search`, etc.
+
+`drain_load_duration` is how far back the parser looks at startup
+to rehydrate previously discovered templates — without this, the
+miner starts from scratch on every restart and may produce
+different template UUIDs for the same patterns.
+
+Disable on hot-ingest deployments that don't need template mining
+(measurable CPU cost per record).
+
+### 2.7 JSON record cache
+
+```hjson
+jsoncache_capacity: 10000
+jsoncache_ttl_secs: 300
+```
+
+| Field                 | Type    | Default | Required |
+|-----------------------|---------|---------|----------|
+| `jsoncache_capacity`  | integer | 10000   | no       |
+| `jsoncache_ttl_secs`  | integer | 300     | no       |
+
+Process-wide LRU cache of recent records, consulted before any
+DuckDB round-trip on FTS/vector hits.  `0` capacity disables it
+entirely.
+
+Reported in `v2/status` (`jsoncache_pct`, `jsoncache_len`,
+`jsoncache_capacity`) and on the bdsweb Dashboard.  TTL eviction
+runs lazily on access + via a background sweeper every 60 s.
+
+---
+
+## 3. Ingest tuning
+
+Three ingest paths, each with its own batch/timeout pair.  All
+share `ingest_channel_capacity` for back-pressure.
+
+```hjson
+// Channel back-pressure (all three paths)
+ingest_channel_capacity: 100000
+
+// v2/add — single-record + small-batch ingest
+pipe_batch_size:  500
+pipe_timeout_ms:  500
+
+// v2/add.file — newline-delimited JSON file ingest
+file_batch_size:  500
+file_timeout_ms:  5000
+
+// v2/add.file.syslog — RFC 3164 syslog ingest
+syslog_batch_size: 500
+syslog_timeout_ms: 5000
+```
+
+| Field                      | Type    | Default  | Required |
+|----------------------------|---------|----------|----------|
+| `ingest_channel_capacity`  | integer | 100000   | no       |
+| `pipe_batch_size`          | integer | 500      | no       |
+| `pipe_timeout_ms`          | integer | 500      | no       |
+| `file_batch_size`          | integer | 100      | no       |
+| `file_timeout_ms`          | integer | 5000     | no       |
+| `syslog_batch_size`        | integer | 100      | no       |
+| `syslog_timeout_ms`        | integer | 5000     | no       |
+
+**Common semantics** — each path's worker drains its tokio mpsc
+channel, accumulating into a batch until either:
+- the batch hits `*_batch_size` records → flush, OR
+- the channel is silent for `*_timeout_ms` → flush whatever is
+  buffered.
+
+Tuning:
+
+| Symptom                                | Action                                                      |
+|----------------------------------------|-------------------------------------------------------------|
+| `v2/add` returns `-32099 channel overloaded` | Producer is faster than the consumer.  Either:        |
+|                                        | • raise `ingest_channel_capacity` (more memory)             |
+|                                        | • raise `pool_size` (faster ingest)                         |
+|                                        | • have the client back off + retry                          |
+| High per-record ONNX embedding overhead | Raise `*_batch_size` (amortize across records)             |
+| Single-record latency visibly bad       | Lower `pipe_timeout_ms` (flush sooner)                     |
+| ONNX runtime memory growth              | Lower `*_batch_size` (smaller per-call working set)        |
+
+⚠ **`ingest_channel_capacity: 0`** is the legacy unbounded
+behaviour — the channel will grow until the kernel kills you with
+OOM.  Set it explicitly unless you have an upstream rate limiter.
+
+---
+
+## 4. BUND VM runtime
+
+```hjson
+n_workers:        4
+bund_ttl_secs:    300
+```
+
+| Field            | Type    | Default | Required |
+|------------------|---------|---------|----------|
+| `n_workers`      | integer | 4       | no       |
+| `bund_ttl_secs`  | integer | 300     | no       |
+
+- **`n_workers`** — threads in the process-wide `BundWorkerPool`.
+  Each worker runs an ephemeral BUND VM per job submitted via
+  `v2/eval.queued`.  Floor 1.  Raise for parallel script
+  execution throughput.
+
+- **`bund_ttl_secs`** — time-to-idle for stateful BUND VM
+  contexts (the long-lived ones backed by `v2/eval`'s `context`
+  field).  After this much inactivity the VM is dropped; the
+  next call rebuilds it from scratch.  Swept by the
+  `vm_cleanup_interval_secs` background task (§ 5.4).
+
+---
+
+## 5. Background tasks
+
+Each task is spawned as a separate tokio task in `bdsnode::main`
+and gets its own `Handle` so shutdown is clean.
+
+### 5.1 Cron-driven script scheduler
+
+```hjson
+scheduler_interval_secs: 60
+```
+
+| Field                       | Type    | Default | Required |
+|-----------------------------|---------|---------|----------|
+| `scheduler_interval_secs`   | integer | 60      | no       |
+
+Tick cadence for the BUND-script scheduler.  Once per tick it
+walks every script in the registry (`v2/scripts`), parses its
+metadata `schedule` field as a 5-field crontab via `croner`, and
+submits any script whose next occurrence falls within the current
+minute.
+
+| Value | Behaviour                                                     |
+|------:|----------------------------------------------------------------|
+| `0`   | Scheduler disabled — stored scripts never auto-fire           |
+| `60`  | Default — matches standard crontab "once per minute" semantics |
+| `< 60`| `* * * * *` cron will fire multiple times per minute           |
+
+Cluster-aware: in cluster mode, the per-node `scheduler_log` +
+`v2/scheduler.last_seen` peer fan-out dedups so each scheduled
+minute fires on exactly one node (see § 6.5).
+
+### 5.2 Periodic global sync
+
+```hjson
+sync_interval_secs: 60
+```
+
+| Field                  | Type    | Default | Required |
+|------------------------|---------|---------|----------|
+| `sync_interval_secs`   | integer | 60      | no       |
+
+How often `bdslib::sync_db()` runs — iterates every open shard
+and runs:
+- DuckDB `CHECKPOINT` (flush WAL)
+- Tantivy `commit` (publish FTS writes)
+- VecStore flush
+- tplstorage HNSW save
+
+Without this, sync only happens on LRU shard eviction and at
+graceful shutdown.  **An unclean exit (kill -9 / OOM / hardware
+fault) loses every write since the active shard's last natural
+sync.**
+
+| Value | Behaviour                                                  |
+|------:|-------------------------------------------------------------|
+| `0`   | Disabled — fast, but unclean exits lose hours of data       |
+| `60`  | Default — sub-second per tick on warm WALs                  |
+| Lower | More frequent sync, slight overhead, smaller exit-loss window |
+
+### 5.3 Result-queue sweeper
+
+```hjson
+results_ttl_secs:    600
+results_sweep_secs:   30
+```
+
+| Field                | Type    | Default | Required |
+|----------------------|---------|---------|----------|
+| `results_ttl_secs`   | integer | 600     | no       |
+| `results_sweep_secs` | integer | 30      | no       |
+
+Controls the per-id `ResultQueue` family exposed via
+`v2/results.{len,push,pull,empty}`.  These queues back
+`v2/eval.queued`'s async results and the LLM async runner's
+delivery channel.
+
+- **`results_ttl_secs`** — age (in seconds since queue creation)
+  above which a queue is evicted.  `0` keeps queues forever.
+- **`results_sweep_secs`** — interval between sweep passes.
+  Ignored when `results_ttl_secs = 0`.
+
+A long-running script that takes longer than `results_ttl_secs`
+to be claimed will have its result silently dropped.  Match the
+TTL to the longest expected poll latency for `v2/results.pull`.
+
+### 5.4 BUND VM cleanup
+
+```hjson
+vm_cleanup_interval_secs: 60
+```
+
+| Field                       | Type    | Default | Required |
+|-----------------------------|---------|---------|----------|
+| `vm_cleanup_interval_secs`  | integer | 60      | no       |
+
+Scan interval for the BUND VM idle sweeper.  On each tick,
+evicts every named VM context whose idle time exceeds
+`bund_ttl_secs` (§ 4).  Pair the two values — sweep interval
+should be ≤ the TTL so a stale VM doesn't linger past its
+deadline by more than one tick.
+
+---
+
+## 6. `cluster:` block
+
+```hjson
+cluster: {
+  enabled:                 true
+  shared_secret:           "at-least-16-chars-of-shared-secret"
+  bind_url:                "http://10.0.0.5:9000"
+  bootstrap:               "http://10.0.0.6:9000"
+
+  gossip_interval:         "5s"
+  suspect_timeout:         "30s"
+  dead_timeout:            "120s"
+  peer_rpc_timeout:        "2s"
+
+  full_mode_threshold:     3
+  replication_factor:      3
+  full_replication_stores: ["docs","signals","scripts","users","llm_cache"]
+
+  hint_replay_interval:    "10s"
+  hint_max_age:            "24h"
+  antientropy_interval:    "300s"
+  max_fingerprints_per_peer: 100000
+
+  floating_bootstrap:      true
+  bootstrap_retry_interval: "60s"
+
+  scheduler_dedup_window:  "300s"
+
+  session_ttl:                "8h"
+  auth_rate_limit_per_minute: 10
+}
+```
+
+The block is optional.  Absent or `enabled: false` → bdsnode runs
+**standalone**.  Architecture deep-dive: [`CLUSTER.md`](CLUSTER.md)
+and [`CLUSTER_DETAILS.md`](CLUSTER_DETAILS.md).
+
+### 6.1 Membership
+
+| Field                | Type             | Default | Required when enabled |
+|----------------------|------------------|---------|-----------------------|
+| `enabled`            | bool             | `false` | no                    |
+| `shared_secret`      | string           | —       | **yes** (≥ 16 chars)  |
+| `bind_url`           | string           | —       | **yes**               |
+| `bootstrap`          | string           | none    | no (bootstrap only)   |
+
+- **`enabled`** — master switch.  When `false`, all `v3/*` and
+  `v4/*` methods return `-32097 cluster mode disabled`.
+- **`shared_secret`** — HMAC-SHA256 key for `v3/cluster.*` gossip,
+  every `v3/*` admin RPC, every `v4/llm.*` call, and bdsweb's
+  session-cookie HMAC.  **Must be ≥ 16 chars** (config validation
+  refuses shorter values).  Rotation is destructive — every
+  existing peer table + session cookie becomes invalid.
+- **`bind_url`** — the URL **other peers** use to reach this node.
+  Must match `--host`/`--port` on the bdsnode CLI.  Wrong here =
+  silent gossip failures (peers think you're down).
+- **`bootstrap`** — URL of one known peer to hello on startup.
+  Omit on the first node (which IS the bootstrap target) or in
+  setups where you want strict isolation.  See `floating_bootstrap`
+  for the multi-target fallback.
+
+### 6.2 Gossip cadence
+
+```hjson
+gossip_interval:    "5s"
+suspect_timeout:    "30s"
+dead_timeout:       "120s"
+peer_rpc_timeout:   "2s"
+```
+
+| Field                | Type             | Default |
+|----------------------|------------------|---------|
+| `gossip_interval`    | humantime string | `"5s"`  |
+| `suspect_timeout`    | humantime string | `"30s"` |
+| `dead_timeout`       | humantime string | `"120s"`|
+| `peer_rpc_timeout`   | humantime string | `"2s"`  |
+
+- **`gossip_interval`** — how often this node pings **every**
+  Alive peer (parallel fan-out).  Lower = faster failure detection
+  + more network chatter.
+- **`suspect_timeout`** — peer is marked Suspect when its
+  `last_seen` ages past this value.  Must be `>= 2 × gossip_interval`
+  to avoid flapping during transient packet loss.
+- **`dead_timeout`** — Suspect → Dead transition.  Should be
+  `>= 3 × suspect_timeout`.
+- **`peer_rpc_timeout`** — per-call deadline for any v2/v3/v4
+  peer-to-peer RPC (gossip pings, replication writes, anti-entropy
+  pulls, fan-out reads).  Tight values fail fast; loose values
+  tolerate slow peers but tie up tokio tasks.
+
+**Relationship**: `peer_rpc_timeout < gossip_interval` is the
+right shape — each tick must complete its ping fan-out before the
+next one starts.
+
+### 6.3 Replication
+
+```hjson
+full_mode_threshold:     3
+replication_factor:      3
+full_replication_stores: ["docs","signals","scripts","users","llm_cache"]
+```
+
+| Field                       | Type           | Default                                                  |
+|-----------------------------|----------------|----------------------------------------------------------|
+| `full_mode_threshold`       | integer        | `3`                                                      |
+| `replication_factor`        | integer        | `3`                                                      |
+| `full_replication_stores`   | list of string | `["docs","signals","scripts","users","llm_cache"]`       |
+
+- **`full_mode_threshold`** — minimum Alive peer count (including
+  this node) to enter `full` mode.  Below this, the cluster is in
+  `partial` mode and the dashboard shows a banner.  Replication
+  proceeds in both modes; this is purely an operator signal.
+- **`replication_factor`** — used by **sharded** writes
+  (`v3/add`, `v3/add.batch`):  local commit + (`replication_factor − 1`)
+  random Alive peers.  Failures land in the hint queue.
+  Fully-replicated stores (the next field) **ignore this** — they
+  always write to every Alive peer.
+- **`full_replication_stores`** — list of store names anti-entropy
+  sweeps + that `v3/doc.*` / `v3/signal.emit` / `v3/script.*` /
+  `v3/user.*` / `v4/llm.*` coordinators replicate fully.  The
+  library default already includes all five canonical stores;
+  setups that override this list must include **everything they
+  want replicated**, or anti-entropy won't pull missing rows
+  for the omitted stores.
+
+  **Common pitfall**: test configs that override the list to
+  `["docs", "signals", "scripts"]` will silently drop
+  `users` + `llm_cache` from anti-entropy.
+
+### 6.4 Hinted handoff + anti-entropy
+
+```hjson
+hint_replay_interval:     "10s"
+hint_max_age:             "24h"
+antientropy_interval:     "300s"
+max_fingerprints_per_peer: 100000
+```
+
+| Field                       | Type             | Default  |
+|-----------------------------|------------------|----------|
+| `hint_replay_interval`      | humantime string | `"10s"`  |
+| `hint_max_age`              | humantime string | `"24h"`  |
+| `antientropy_interval`      | humantime string | `"300s"` |
+| `max_fingerprints_per_peer` | integer          | `100000` |
+
+- **`hint_replay_interval`** — how often the hint replay loop runs.
+  Each pass picks up queued hints (writes that failed to fan out
+  to a Dead/Suspect peer at the time) and retries them.
+- **`hint_max_age`** — hints older than this are dropped.
+  Defends against unbounded queue growth when a peer is gone
+  forever.  Anti-entropy backfills anything missed past the hint
+  window.
+- **`antientropy_interval`** — how often the AE pull loop runs
+  per peer.  Each pass walks every store name in
+  `full_replication_stores`, fetches the peer's `v2/<store>.list_ids`,
+  diffs against local, and pulls anything missing.
+- **`max_fingerprints_per_peer`** — cap on the `(uuid, fingerprint)`
+  pairs returned by `v2/fingerprints.recent` (the input source for
+  cluster-wide k-NN / anomaly / denoise analytics).  Cap exists so
+  a single peer with a huge active shard doesn't bloat the
+  fan-out body.
+
+### 6.5 Scheduler dedup
+
+```hjson
+scheduler_dedup_window: "300s"
+```
+
+| Field                    | Type             | Default  |
+|--------------------------|------------------|----------|
+| `scheduler_dedup_window` | humantime string | `"300s"` |
+
+Cross-cluster dedup window for the BUND-script scheduler.  When
+a node's local tick decides to fire a script, it fans
+`v2/scheduler.last_seen` to every Alive peer first; if **any**
+node (this one or any peer) executed the same script within
+`scheduler_dedup_window`, the fire is suppressed.
+
+**Relationship**: must be `≥ scheduler_interval_secs` (default 60s).
+Setting it lower would let two nodes both fire when their tick
+alignments differ by a second or two.  See
+[`CLUSTER_DETAILS.md`](CLUSTER_DETAILS.md) § 5.
+
+### 6.6 Authentication
+
+```hjson
+session_ttl:                "8h"
+auth_rate_limit_per_minute: 10
+```
+
+| Field                          | Type             | Default |
+|--------------------------------|------------------|---------|
+| `session_ttl`                  | humantime string | `"8h"`  |
+| `auth_rate_limit_per_minute`   | integer          | `10`    |
+
+- **`session_ttl`** — lifetime of HMAC-signed session tokens
+  issued by `v3/user.authenticate` and stored in bdsweb's
+  `bds_session` cookie.  No server-side revocation — token leaks
+  are mitigated by short TTL + password rotation.
+- **`auth_rate_limit_per_minute`** — per-username sliding-window
+  cap on `v3/user.authenticate` attempts.  `0` disables the
+  per-user limit (bdsweb still applies a per-IP limit via
+  `tower_governor` on `POST /login` based on this value).
+  Cooperates with the per-IP `/login` limiter — both must pass.
+
+---
+
+## 7. `llm:` block
+
+```hjson
+llm: {
+  default: "ollama"
+
+  providers: {
+    ollama: {
+      url:           "http://127.0.0.1:11434"
+      default_model: "llama3.2"
+    }
+    anthropic: {
+      base_url:      "https://api.anthropic.com"
+      api_key_env:   "ANTHROPIC_API_KEY"
+      default_model: "claude-sonnet-4-5"
+    }
+    openai: {
+      base_url:      "https://api.openai.com"
+      api_key_env:   "OPENAI_API_KEY"
+      default_model: "gpt-4o-mini"
+    }
+  }
+
+  cache: { enabled: true, ttl_secs: 86400 }
+  dedup: { enabled: true, window_secs: 300, wait_max_secs: 30 }
+  runner:{ enabled: true, poll_interval_secs: 1, max_concurrency: 2 }
+}
+```
+
+Architecture deep-dive: [`LLM.md`](LLM.md).  The block is
+optional; absent → no LLM providers registered and `v4/llm.*`
+returns `no providers registered`.
+
+### 7.1 Provider registration
+
+| Path                                      | Default                          | Required |
+|-------------------------------------------|----------------------------------|----------|
+| `llm.default`                             | first registered                 | no       |
+| `llm.providers.ollama.url`                | `"http://localhost:11434"`       | no       |
+| `llm.providers.ollama.default_model`      | `"llama3.2"`                     | no       |
+| `llm.providers.anthropic.base_url`        | `"https://api.anthropic.com"`    | no       |
+| `llm.providers.anthropic.api_key_env`     | `"ANTHROPIC_API_KEY"`            | no       |
+| `llm.providers.anthropic.default_model`   | `"claude-sonnet-4-5"`            | no       |
+| `llm.providers.openai.base_url`           | `"https://api.openai.com"`       | no       |
+| `llm.providers.openai.api_key_env`        | `"OPENAI_API_KEY"`               | no       |
+| `llm.providers.openai.default_model`      | `"gpt-4o-mini"`                  | no       |
+
+- **`api_key_env`** names the **environment variable** holding the
+  API key — never put the key itself in `bds.hjson`.  An unset env
+  var causes that provider to be logged-and-skipped at startup,
+  not a fatal error.
+- **`llm.default`** — provider name used when a v4/llm.* request
+  omits `provider`.  When unset, the first successfully registered
+  provider wins.  Misconfigured default (name doesn't match any
+  registered provider) silently falls back to the first
+  registered.
+
+### 7.2 `llm.cache`
+
+| Field                | Type    | Default | Required |
+|----------------------|---------|---------|----------|
+| `llm.cache.enabled`  | bool    | `true`  | no       |
+| `llm.cache.ttl_secs` | integer | `86400` | no       |
+
+Controls the replicated inference cache at
+`<dbpath>/llm/cache.duckdb`.
+
+- **`enabled: false`** — cache manager not registered; every
+  `v4/llm.{complete,analyze}` call goes straight to the provider
+  with `cache: "disabled"` in the response.
+- **`ttl_secs`** — rows expire `ttl_secs` after creation.  `0`
+  means never expires (rely on `v4/llm.cache.purge` for cleanup).
+
+Per-call opt-out via `cache: false` in the request body.
+`temperature > 0` automatically skips caching (`disabled:temperature`).
+
+### 7.3 `llm.dedup`
+
+| Field                     | Type    | Default | Required |
+|---------------------------|---------|---------|----------|
+| `llm.dedup.enabled`       | bool    | `true`  | no       |
+| `llm.dedup.window_secs`   | integer | `300`   | no       |
+| `llm.dedup.wait_max_secs` | integer | `30`    | no       |
+
+Controls the cluster-wide single-execution lease via
+`<dbpath>/network/inference_log.duckdb` + `v2/llm.last_executed`
+fan-out.
+
+- **`window_secs`** — how long a recent `done` / `failed` row
+  keeps short-circuiting fresh requests for the same `cache_key`.
+  Pair with `cache.ttl_secs` (a hit within this window means the
+  cache should have the answer too).
+- **`wait_max_secs`** — sync caller poll budget when a peer is
+  mid-flight on the same `cache_key`.  `0` = fail-fast (don't
+  wait, just run anyway).
+
+Standalone mode (no cluster) means `dedup` falls through to
+`disabled` regardless of this setting — there's no peer to dedup
+against.
+
+### 7.4 `llm.runner`
+
+| Field                            | Type    | Default | Required |
+|----------------------------------|---------|---------|----------|
+| `llm.runner.enabled`             | bool    | `true`  | no       |
+| `llm.runner.poll_interval_secs`  | integer | `1`     | no       |
+| `llm.runner.max_concurrency`     | integer | `2`     | no       |
+
+Controls the per-node background runner that drains the async
+job queue (`<dbpath>/llm/jobs.duckdb`).
+
+- **`enabled: false`** — `v4/llm.*_async` jobs sit in `pending`
+  forever (callers can still inspect / cancel them via
+  `v4/llm.jobs.*`).
+- **`max_concurrency`** — simultaneous in-flight inferences.
+  Bound the kind of model you're using: large local models on a
+  single GPU may need `1`.
+- **`poll_interval_secs`** — sleep between claim sweeps when
+  idle.  Lower = tighter latency from submit to start; higher =
+  fewer wakeups.
+
+---
+
+## 8. bdsweb-specific keys
+
+These are read **only by bdsweb**; bdsnode ignores them.
+
+```hjson
+dashboard_refresh_secs: 30
+cluster_refresh_secs:   10
+```
+
+| Field                       | Type    | Default | Floor |
+|-----------------------------|---------|---------|-------|
+| `dashboard_refresh_secs`    | integer | 30      | 1     |
+| `cluster_refresh_secs`      | integer | 10      | 1     |
+
+Each spawns its own background tokio task in `bdsweb::main` that
+polls bdsnode at the configured cadence and parks the snapshot in
+`state.{dashboard,cluster}_cache`.  The corresponding page
+(`/` and `/cluster`) renders from cache; a **Reload** button on
+each page forces a live fetch through `/<page>/refresh`.
+
+Tuning: lower for tighter UI responsiveness (cost: more RPC traffic
+to bdsnode); raise on RPC-saturated clusters where stale UI is
+acceptable.  See [`CLUSTER_DETAILS.md`](CLUSTER_DETAILS.md) § 10.1.
+
+---
+
+## 9. Legacy `v2/chat.ollama` keys
+
+Pre-dates the v4/llm.* surface.  Still consumed by the deprecated
+`v2/chat.ollama` RPC; **new deployments should configure the
+`llm:` block** (§ 7) and use `v4/llm.chat` instead.
+
+```hjson
+ollama_url:           "http://localhost:11434"
+ollama_model:         "llama3.2"
+ollama_system_prompt: "You are an expert SRE …"
+```
+
+| Field                  | Type   | Default                       | Required |
+|------------------------|--------|-------------------------------|----------|
+| `ollama_url`           | string | `"http://localhost:11434"`    | no       |
+| `ollama_model`         | string | `"llama3.2"`                  | no       |
+| `ollama_system_prompt` | string | built-in SRE-style preamble   | no       |
+
+⚠ The `ollama_*` keys are ignored by `v4/llm.chat` — that path
+reads exclusively from the `llm.providers.ollama.*` block.  Don't
+expect changing `ollama_model` to affect the bdsweb `/chat` page
+(which has been on `v4/llm.chat` since Phase 6.a).
+
+---
+
+## 10. Tuning matrix
+
+Quick lookup: pick a symptom, find the relevant knob.
+
+| Symptom                                              | Knob                          | Direction          |
+|------------------------------------------------------|-------------------------------|--------------------|
+| "too many open files" at runtime                      | `nofile_limit`                | raise              |
+| Frequent shard eviction churn in logs                 | `max_open_shards`             | raise              |
+| Queries spanning many shards are slow                 | `max_open_shards`             | raise              |
+| Memory pressure from open shards                      | `max_open_shards`             | lower              |
+| `v2/add` returns `-32099`                             | `ingest_channel_capacity`     | raise              |
+|                                                       | `pool_size`                   | raise              |
+| Single-record latency too high                        | `pipe_timeout_ms`             | lower              |
+| ONNX embedding CPU overhead per record                | `pipe_batch_size`             | raise              |
+| Unclean exit losing recent writes                     | `sync_interval_secs`          | lower (or default) |
+| Bund script in registry isn't firing                  | `scheduler_interval_secs`     | non-zero (60 OK)   |
+| Same script fires on multiple cluster nodes per tick  | `scheduler_dedup_window`      | raise              |
+| Peer flaps Alive ↔ Suspect during normal load         | `suspect_timeout`             | raise              |
+|                                                       | `gossip_interval`             | lower              |
+| Slow peer dragging out fan-outs                       | `peer_rpc_timeout`            | lower              |
+| AE backlog growing on rejoin                          | `antientropy_interval`        | lower              |
+| Hint queue growth unbounded                           | `hint_max_age`                | check (default 24h)|
+| RAG context not reaching Ollama                       | (auto-tuned `num_ctx`)        | see [LLM.md § 12](LLM.md#12--operational-gotchas) |
+| Identical LLM requests not hitting cache              | `llm.cache.enabled`           | confirm `true`     |
+|                                                       | `temperature`                 | use 0 / unset      |
+| Async LLM jobs sitting in pending                     | `llm.runner.enabled`          | confirm `true`     |
+| bdsweb pages feel stale                               | `dashboard_refresh_secs`      | lower              |
+|                                                       | `cluster_refresh_secs`        | lower              |
+| bdsweb RPC traffic saturating bdsnode                 | `dashboard_refresh_secs`      | raise              |
+|                                                       | `cluster_refresh_secs`        | raise              |
+
+---
+
+## 11. Required-vs-optional summary
+
+| Scope                  | Required keys                                                |
+|------------------------|--------------------------------------------------------------|
+| **bdsnode** (always)   | `dbpath`, `shard_duration`                                   |
+| **bdsnode** (cluster)  | `cluster.shared_secret` (≥ 16 chars), `cluster.bind_url`     |
+| **bdsweb**             | none — every knob has a default                              |
+| **bdscli / bdscmd**    | none — neither reads `bds.hjson` directly                    |
+
+Everything else is optional with a documented default.  A
+minimum-viable `bds.hjson` for a single-node ingest-only setup:
+
+```hjson
+{
+  dbpath:         "/var/lib/bdslib"
+  shard_duration: "1h"
+}
+```
+
+---
+
+## 12. Per-binary key matrix
+
+Which binary reads which key.  ✓ = directly, ◐ = via shared
+`init_db` / `Cluster::init`, ✗ = never.
+
+| Key                            | bdsnode | bdsweb | bdscli | bdscmd |
+|--------------------------------|:-:|:-:|:-:|:-:|
+| `nofile_limit`                 | ✓ | ✗ | ✗ | ✗ |
+| `dbpath`, `shard_duration`     | ◐ | ✗ | ◐ | ✗ |
+| `max_open_shards`              | ◐ | ✗ | ◐ | ✗ |
+| `pool_size`, `r2d2_thread_pool_size` | ◐ | ✗ | ◐ | ✗ |
+| `embedding_*`                  | ◐ | ✗ | ◐ | ✗ |
+| `similarity_threshold`         | ◐ | ✗ | ◐ | ✗ |
+| `drain_*`                      | ◐ | ✗ | ◐ | ✗ |
+| `jsoncache_*`                  | ◐ | ✗ | ◐ | ✗ |
+| `n_workers`, `bund_ttl_secs`   | ✓ | ✗ | ✗ | ✗ |
+| `ingest_channel_capacity`      | ✓ | ✗ | ✗ | ✗ |
+| `pipe_*` / `file_*` / `syslog_*` | ✓ | ✗ | ✗ | ✗ |
+| `scheduler_interval_secs`      | ✓ | ✗ | ✗ | ✗ |
+| `sync_interval_secs`           | ✓ | ✗ | ✗ | ✗ |
+| `results_ttl_secs`, `results_sweep_secs` | ✓ | ✗ | ✗ | ✗ |
+| `vm_cleanup_interval_secs`     | ✓ | ✗ | ✗ | ✗ |
+| `cluster.shared_secret`        | ◐ | ✓ | ✗ | ✗ |
+| `cluster.bind_url` etc.        | ◐ | ✗ | ✗ | ✗ |
+| `cluster.auth_rate_limit_per_minute` | ◐ | ✓ | ✗ | ✗ |
+| `llm.providers.*`              | ◐ | ✗ | ✗ | ✗ |
+| `llm.cache.*` / `llm.dedup.*`  | ◐ | ✗ | ✗ | ✗ |
+| `llm.runner.*`                 | ✓ | ✗ | ✗ | ✗ |
+| `dashboard_refresh_secs`       | ✗ | ✓ | ✗ | ✗ |
+| `cluster_refresh_secs`         | ✗ | ✓ | ✗ | ✗ |
+| `ollama_*` (legacy)            | ✓ | ✗ | ✗ | ✗ |
+
+bdscmd uses CLI flags (`--secret`) and environment variables
+(`BDSCMD_CLUSTER_SECRET`) instead of `bds.hjson`.  bdscli operates
+on a DuckDB shard directory directly without the server hjson —
+its only contact with `bds.hjson` is through subcommands that
+call `init_db` (which reuses the same loader).
+
+---
+
+## See also
+
+- [`CLUSTER.md`](CLUSTER.md) — cluster-mode architecture, on-disk
+  layout, RPC quick reference.
+- [`CLUSTER_DETAILS.md`](CLUSTER_DETAILS.md) — gossip protocol,
+  replication wire shapes, dedup mechanisms, auth.
+- [`LLM.md`](LLM.md) — provider abstraction, cache, dedup, async
+  jobs, full `v4/llm.*` reference.
+- [`BDSWEB.md`](BDSWEB.md) — bdsweb route catalog including the
+  refresh-cadence routes.
+- [`BDSCMD.md`](BDSCMD.md) — operator CLI; no hjson, but every
+  subcommand maps onto one of the methods documented here.
+- [`DATABASE.md`](DATABASE.md) — what each on-disk artefact
+  named in `dbpath` actually contains.

@@ -359,6 +359,7 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | Document | Description |
 |---|---|
 | [Documentation/README.md](Documentation/README.md) | Architecture, data flow, storage model, BUND overview, full doc index |
+| [Documentation/BDSCONFIG.md](Documentation/BDSCONFIG.md) | **`bds.hjson` reference** — every config key (top-level + `cluster:` + `llm:` + bdsweb knobs + legacy) with type / default / tuning / warnings / per-binary matrix |
 | [Documentation/BDSCLI.md](Documentation/BDSCLI.md) | `bdscli` local CLI — all subcommands |
 | [Documentation/BDSCMD.md](Documentation/BDSCMD.md) | `bdscmd` RPC client — all subcommands and quick reference |
 | [Documentation/BDSWEB.md](Documentation/BDSWEB.md) | `bdsweb` web interface — all pages, startup flags |

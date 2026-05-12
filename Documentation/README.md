@@ -179,6 +179,7 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 
 | Document | Description |
 |----------|-------------|
+| [BDSCONFIG.md](BDSCONFIG.md) | **`bds.hjson` reference** — every config key consumed by bdsnode / bdsweb / bdslib, with type, default, required/optional, tuning advice, warnings, cross-key relationships, and a per-binary matrix |
 | [DATABASE.md](DATABASE.md) | **Full storage architecture overview** — every store, what role it plays, on-disk layout, what gets written when, threading and pooling, operational notes |
 | [STORAGEENGINE.md](STORAGEENGINE.md) | `StorageEngine` — DuckDB core with R2D2 connection pool |
 | [SHARD.md](SHARD.md) | `Shard` — single time-partition: telemetry, FTS, vector |
