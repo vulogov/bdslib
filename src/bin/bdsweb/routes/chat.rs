@@ -253,13 +253,24 @@ pub async fn query(
             let n_telemetry = v["telemetry_count"].as_u64().unwrap_or(0);
             let n_docs      = v["document_count"].as_u64().unwrap_or(0);
 
-            let context_note = format!(
-                "{} telemetry event{} + {} document{} · last {} · provider={provider} model={model}{}",
-                n_telemetry, if n_telemetry == 1 { "" } else { "s" },
-                n_docs,      if n_docs      == 1 { "" } else { "s" },
-                form.duration,
-                cache_suffix(&cache),
-            );
+            // Hard-flag the empty-RAG case — without context the model
+            // is just answering the bare question and the operator
+            // typically can't tell from the response alone.
+            let context_note = if n_telemetry == 0 && n_docs == 0 {
+                format!(
+                    "⚠ NO RAG context loaded for last {} — model is answering without your data \
+                     · provider={provider} model={model}{}",
+                    form.duration, cache_suffix(&cache),
+                )
+            } else {
+                format!(
+                    "{} telemetry event{} + {} document{} · last {} · provider={provider} model={model}{}",
+                    n_telemetry, if n_telemetry == 1 { "" } else { "s" },
+                    n_docs,      if n_docs      == 1 { "" } else { "s" },
+                    form.duration,
+                    cache_suffix(&cache),
+                )
+            };
 
             let html = ChatMessage {
                 user_query:       form.query,

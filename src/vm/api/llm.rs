@@ -738,7 +738,10 @@ pub fn chat(req: Value) -> Result<Value, Error> {
 /// Resolve a RAG context string from `req`.  Priority:
 /// 1. `context` (verbatim) → no DB hit
 /// 2. `duration` + `query` (or `message` as fallback query) → run
-///    `db.aggregationsearch` and fingerprint the top hits
+///    the cluster-aware `vm::api::search::aggregation_search` (which
+///    fans out to v2/aggregationsearch on every Alive peer and merges
+///    via `cluster::merge::dedup_avg_score`).  Fingerprints the top
+///    hits and joins them into a prompt-ready context string.
 /// 3. neither → empty
 fn build_rag_context(req: &JsonValue) -> Result<(String, usize, usize), Error> {
     if let Some(c) = req.get("context").and_then(|v| v.as_str()) {
@@ -751,10 +754,14 @@ fn build_rag_context(req: &JsonValue) -> Result<(String, usize, usize), Error> {
     let query = req.get("query").and_then(|v| v.as_str())
         .or_else(|| req.get("message").and_then(|v| v.as_str()))
         .unwrap_or("");
-    let db = crate::globals::get_db()
-        .map_err(|e| err_msg(format!("vm::api::llm::chat: get_db: {e}")))?;
-    let agg = db.aggregationsearch(dur, query)
-        .map_err(|e| err_msg(format!("vm::api::llm::chat: aggregationsearch: {e}")))?;
+
+    // Cluster-aware path: standalone collapses to a local call, cluster
+    // mode fans out + merges across every Alive peer.  Operators who
+    // were debugging "RAG didn't see my data" on a multi-node setup
+    // were almost certainly hitting the old local-only path.
+    let v = crate::vm::api::search::aggregation_search(dur, query)
+        .map_err(|e| err_msg(format!("vm::api::llm::chat: aggregation_search: {e}")))?;
+    let agg = dynamic_to_json(v);
     let telemetry_hits: Vec<JsonValue> = agg.get("observability")
         .and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let doc_hits: Vec<JsonValue> = agg.get("documents")
@@ -771,7 +778,26 @@ fn build_rag_context(req: &JsonValue) -> Result<(String, usize, usize), Error> {
         let fp = json_fingerprint(item);
         if !fp.is_empty() { parts.push(format!("[document {}] {}", i + 1, fp)); }
     }
-    Ok((parts.join("\n"), n_tel, n_doc))
+    let summary = parts.join("\n");
+
+    // Surface empty-context cases loudly — the operator was probably
+    // expecting RAG to find something for this `duration` + `query`.
+    if summary.is_empty() {
+        log::warn!(
+            "[llm::chat] RAG returned NO rows for duration={dur:?} query={query:?} \
+             (telemetry={n_tel} docs={n_doc}) — the model will answer without \
+             context.  Check that `cluster.full_replication_stores` and the \
+             search index actually cover the queried window."
+        );
+    } else {
+        log::info!(
+            "[llm::chat] RAG loaded telemetry={n_tel} docs={n_doc} \
+             chars={chars} for duration={dur:?} query={query:?}",
+            chars = summary.len(),
+        );
+    }
+
+    Ok((summary, n_tel, n_doc))
 }
 
 /// `analyze` — build a RAG context from bdslib data and run a single
