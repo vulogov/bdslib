@@ -93,6 +93,7 @@ fn parse_options(req: &JsonValue) -> CompletionOpts {
                          .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
                          .unwrap_or_default(),
         seed:        opts.get("seed").and_then(|v| v.as_u64()),
+        num_ctx:     opts.get("num_ctx").and_then(|v| v.as_u64()).map(|n| n as u32),
     }
 }
 
@@ -644,7 +645,7 @@ pub fn chat(req: Value) -> Result<Value, Error> {
     let system_prompt = req_json.get("system_prompt").and_then(|v| v.as_str())
         .map(str::to_owned)
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_owned());
-    let options = parse_options(&req_json);
+    let mut options = parse_options(&req_json);
 
     // Build RAG context: either supplied verbatim, or assembled from a
     // db.aggregationsearch over the requested duration.  Empty when
@@ -658,6 +659,26 @@ pub fn chat(req: Value) -> Result<Value, Error> {
             "Relevant observability context (last {dur}):\n\n{rag_context}\n\n---\n\nUser question: {user_message}"
         )
     };
+
+    // Ollama's default num_ctx is 2048 tokens; non-trivial RAG blows
+    // past that and the runtime silently truncates from the start of
+    // the prompt, so the retrieved rows never reach the model.  Pick
+    // a generous context window based on the actual prompt size when
+    // the caller didn't override it.  4 chars/token is a conservative
+    // estimate; we round up to a power-of-two-ish bucket Ollama
+    // handles cleanly (8k / 16k / 32k / 64k).  Non-Ollama providers
+    // ignore num_ctx, so this is free on OpenAI / Anthropic.
+    if options.num_ctx.is_none() {
+        let approx_tokens = (enriched.len() + system_prompt.len()) / 4;
+        options.num_ctx = Some(match approx_tokens {
+            0..=4096       => 8192,
+            4097..=8192    => 16384,
+            8193..=16384   => 32768,
+            _              => 65536,
+        });
+    }
+    let prompt_chars = enriched.len();
+    let chosen_num_ctx = options.num_ctx;
 
     // Resolve the chat_id path with cookie-recovery semantics: if the
     // caller supplied a chat_id but the session no longer exists (a
@@ -718,19 +739,29 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         "is_new_session":  outcome.is_new_session,
         "telemetry_count": telemetry_count,
         "document_count":  document_count,
+        "prompt_chars":    prompt_chars,
+        "num_ctx":         chosen_num_ctx,
         "finish_reason":   outcome.finish_reason,
         "tokens_in":       outcome.tokens_in,
         "tokens_out":      outcome.tokens_out,
         "ms":              outcome.ms,
         "cache":           cache_label,
     });
+    log::info!(
+        "[llm::chat] sent prompt to provider={} model={} prompt_chars={} num_ctx={:?} \
+         (telemetry={telemetry_count} docs={document_count} tokens_in={:?} tokens_out={:?})",
+        outcome.provider, outcome.model, prompt_chars, chosen_num_ctx,
+        outcome.tokens_in, outcome.tokens_out,
+    );
     meta::set_llm(json!({
-        "provider":   outcome.provider,
-        "model":      outcome.model,
-        "ms":         outcome.ms,
-        "tokens_in":  outcome.tokens_in,
-        "tokens_out": outcome.tokens_out,
-        "cache":      cache_label,
+        "provider":     outcome.provider,
+        "model":        outcome.model,
+        "ms":           outcome.ms,
+        "tokens_in":    outcome.tokens_in,
+        "tokens_out":   outcome.tokens_out,
+        "prompt_chars": prompt_chars,
+        "num_ctx":      chosen_num_ctx,
+        "cache":        cache_label,
     }));
     Ok(json_to_dynamic(out))
 }
@@ -854,7 +885,20 @@ pub fn analyze(req: Value) -> Result<Value, Error> {
     let provider = resolve_provider(provider_name)?;
     let model = req_json.get("model").and_then(|v| v.as_str()).map(str::to_owned)
         .unwrap_or_else(|| provider.default_model().to_owned());
-    let options = parse_options(&req_json);
+    let mut options = parse_options(&req_json);
+
+    // Same auto-bump as chat — analyze can pack ContextSource rows
+    // that exceed Ollama's 2048-token default num_ctx.  See the chat
+    // helper comment for the bucketing rationale.
+    if options.num_ctx.is_none() {
+        let approx_tokens = (user_message.len() + system_prompt.len()) / 4;
+        options.num_ctx = Some(match approx_tokens {
+            0..=4096       => 8192,
+            4097..=8192    => 16384,
+            8193..=16384   => 32768,
+            _              => 65536,
+        });
+    }
 
     // Build canonical request before deciding cache disposition.  The
     // fingerprints are sorted so two callers building the same context

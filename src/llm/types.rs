@@ -46,6 +46,15 @@ pub struct CompletionOpts {
     #[serde(default)]
     pub stop:        Vec<String>,
     pub seed:        Option<u64>,
+    /// Provider-specific context-window size.
+    /// - **Ollama**: maps to `options.num_ctx`.  Ollama's *built-in*
+    ///   default is 2048 tokens — too small for non-trivial RAG, and
+    ///   the runtime silently truncates from the start of the prompt
+    ///   on overflow (your retrieved rows disappear and the model
+    ///   answers from general knowledge).
+    /// - **OpenAI / Anthropic**: ignored (the context window is fixed
+    ///   per model and managed server-side).
+    pub num_ctx:     Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

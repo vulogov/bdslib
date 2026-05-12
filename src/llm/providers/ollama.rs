@@ -47,6 +47,7 @@ impl Provider for OllamaProvider {
         if let Some(m) = req.options.max_tokens  { options.insert("num_predict".into(), json!(m)); }
         if let Some(p) = req.options.top_p       { options.insert("top_p".into(),       json!(p)); }
         if let Some(s) = req.options.seed        { options.insert("seed".into(),        json!(s)); }
+        if let Some(c) = req.options.num_ctx     { options.insert("num_ctx".into(),     json!(c)); }
         if !req.options.stop.is_empty()          { options.insert("stop".into(),        json!(req.options.stop)); }
 
         let messages: Vec<JsonValue> = req.messages.iter()

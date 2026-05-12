@@ -250,8 +250,10 @@ pub async fn query(
             let provider    = v["provider"].as_str().unwrap_or("?").to_owned();
             let model       = v["model"].as_str().unwrap_or("?").to_owned();
             let cache       = v["cache"].as_str().unwrap_or("").to_owned();
-            let n_telemetry = v["telemetry_count"].as_u64().unwrap_or(0);
-            let n_docs      = v["document_count"].as_u64().unwrap_or(0);
+            let n_telemetry  = v["telemetry_count"].as_u64().unwrap_or(0);
+            let n_docs       = v["document_count"].as_u64().unwrap_or(0);
+            let prompt_chars = v["prompt_chars"].as_u64().unwrap_or(0);
+            let num_ctx      = v["num_ctx"].as_u64();
 
             // Hard-flag the empty-RAG case — without context the model
             // is just answering the bare question and the operator
@@ -263,11 +265,14 @@ pub async fn query(
                     form.duration, cache_suffix(&cache),
                 )
             } else {
+                let ctx_part = num_ctx.map(|n| format!(" · num_ctx={n}")).unwrap_or_default();
                 format!(
-                    "{} telemetry event{} + {} document{} · last {} · provider={provider} model={model}{}",
+                    "{} telemetry event{} + {} document{} · last {} · prompt={}ch{} · provider={provider} model={model}{}",
                     n_telemetry, if n_telemetry == 1 { "" } else { "s" },
                     n_docs,      if n_docs      == 1 { "" } else { "s" },
                     form.duration,
+                    prompt_chars,
+                    ctx_part,
                     cache_suffix(&cache),
                 )
             };
