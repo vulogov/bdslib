@@ -239,6 +239,30 @@ async fn main() -> anyhow::Result<()> {
     log::info!("[llm] dedup: enabled={} window={}s wait_max={}s",
         llm_cfg.dedup.enabled, llm_cfg.dedup.window_secs, llm_cfg.dedup.wait_max_secs);
 
+    // Chat-snippet eval (llm.chat.bund.*) — DEFAULTS OFF.  Enabling
+    // grants chat users the same code-execution privileges as a
+    // stored scheduled BUND script.  See Documentation/LLM.md.
+    {
+        let b = &llm_cfg.chat.bund;
+        bdslib::llm::chat_bund::init_settings(bdslib::llm::chat_bund::ChatBundSettings {
+            enabled:           b.enabled,
+            timeout_secs:      b.timeout_secs,
+            max_result_chars:  b.max_result_chars,
+            oversize_strategy: bdslib::llm::chat_bund::OversizeStrategy::from_wire(&b.oversize_strategy),
+            slash_strictness:  bdslib::llm::snippet::SlashStrictness::from_wire(&b.slash_strictness),
+            fenced_only:       b.fenced_only,
+        });
+        if b.enabled {
+            log::warn!("[llm] chat.bund: ENABLED — chat users can execute arbitrary BUND \
+                        (timeout={}s, max_result_chars={}, strategy={}, slash={}, fenced_only={})",
+                       b.timeout_secs, b.max_result_chars,
+                       b.oversize_strategy, b.slash_strictness, b.fenced_only);
+        } else {
+            log::info!("[llm] chat.bund: disabled (default).  Detected snippets fall through \
+                        to the standard aggregation RAG path.");
+        }
+    }
+
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;

@@ -81,6 +81,48 @@ impl Default for DedupConfig {
     }
 }
 
+/// `llm.chat.bund.*` — controls Bund-snippet evaluation embedded
+/// inside chat messages.  See [`crate::llm::snippet`] for the detector
+/// + [`Documentation/LLM.md`] for the feature spec.
+///
+/// `enabled` defaults to **false** — this is a privilege grant
+/// (anyone with chat access can run arbitrary Bund), operators must
+/// opt in explicitly.
+///
+/// `timeout_secs` floor 1, ceiling 60.  `max_result_chars` is the
+/// JSON-encoded size cap before the oversize strategy fires.
+#[derive(Debug, Clone)]
+pub struct ChatBundConfig {
+    pub enabled:           bool,
+    pub timeout_secs:      u64,
+    pub max_result_chars:  usize,
+    /// One of `"fingerprint"` / `"truncate"` / `"drop"`.  See LLM.md.
+    pub oversize_strategy: String,
+    /// `"strict"` (default) or `"permissive"` — see `snippet::SlashStrictness`.
+    pub slash_strictness:  String,
+    pub fenced_only:       bool,
+}
+
+impl Default for ChatBundConfig {
+    fn default() -> Self {
+        Self {
+            enabled:           false,
+            timeout_secs:      10,
+            max_result_chars:  16_384,
+            oversize_strategy: "fingerprint".to_owned(),
+            slash_strictness:  "strict".to_owned(),
+            fenced_only:       false,
+        }
+    }
+}
+
+/// `llm.chat.*` parent block.  Currently only holds `bund` but kept
+/// as its own struct so future chat-specific knobs nest cleanly.
+#[derive(Debug, Clone, Default)]
+pub struct ChatConfig {
+    pub bund: ChatBundConfig,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
     pub default:   Option<String>,
@@ -89,6 +131,7 @@ pub struct LlmConfig {
     pub openai:    Option<OpenAIConfig>,
     pub cache:     CacheConfig,
     pub dedup:     DedupConfig,
+    pub chat:      ChatConfig,
 }
 
 impl LlmConfig {
@@ -173,7 +216,37 @@ impl LlmConfig {
             })
             .unwrap_or_default();
 
-        Self { default, ollama, anthropic, openai, cache, dedup }
+        let chat = llm.get("chat").and_then(|v| v.as_object())
+            .map(|c| {
+                let bund_d = ChatBundConfig::default();
+                let bund = c.get("bund").and_then(|v| v.as_object())
+                    .map(|b| ChatBundConfig {
+                        enabled:           b.get("enabled").and_then(|v| v.as_bool())
+                                              .unwrap_or(bund_d.enabled),
+                        // Clamp to [1, 60] seconds — runaway scripts
+                        // wait this long before the watchdog gives up.
+                        timeout_secs:      b.get("timeout_secs").and_then(|v| v.as_f64())
+                                              .map(|n| n as u64)
+                                              .unwrap_or(bund_d.timeout_secs)
+                                              .clamp(1, 60),
+                        max_result_chars:  b.get("max_result_chars").and_then(|v| v.as_f64())
+                                              .map(|n| n as usize)
+                                              .unwrap_or(bund_d.max_result_chars),
+                        oversize_strategy: b.get("oversize_strategy").and_then(|v| v.as_str())
+                                              .map(str::to_owned)
+                                              .unwrap_or(bund_d.oversize_strategy.clone()),
+                        slash_strictness:  b.get("slash_strictness").and_then(|v| v.as_str())
+                                              .map(str::to_owned)
+                                              .unwrap_or(bund_d.slash_strictness.clone()),
+                        fenced_only:       b.get("fenced_only").and_then(|v| v.as_bool())
+                                              .unwrap_or(bund_d.fenced_only),
+                    })
+                    .unwrap_or_default();
+                ChatConfig { bund }
+            })
+            .unwrap_or_default();
+
+        Self { default, ollama, anthropic, openai, cache, dedup, chat }
     }
 }
 

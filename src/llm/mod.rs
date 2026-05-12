@@ -9,11 +9,13 @@
 
 pub mod cache;
 pub mod chat;
+pub mod chat_bund;
 pub mod context;
 pub mod dedup;
 pub mod jobs;
 pub mod manager;
 pub mod providers;
+pub mod snippet;
 pub mod types;
 
 pub use manager::{LlmConfig, ProviderManager};

@@ -18,11 +18,13 @@
 use crate::common::jsonfingerprint::json_fingerprint;
 use crate::llm::cache::{self as cache, CacheInsert, CacheManager, CachedEntry};
 use crate::llm::chat as llm_chat;
+use crate::llm::chat_bund;
 use crate::llm::context::{self as llm_ctx, ContextSource, RagContext};
 use crate::llm::dedup::{self, InferenceLease, InferenceState};
 use crate::llm::jobs::{self, JobInsert, JobState, ListFilter as JobListFilter};
 use crate::llm::manager;
 use crate::llm::providers::Provider;
+use crate::llm::snippet;
 use crate::llm::types::{
     CompletionOpts, CompletionRequest, CompletionResponse, EmbedRequest,
     EmbedResponse, Message, Role,
@@ -647,6 +649,65 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_owned());
     let mut options = parse_options(&req_json);
 
+    // ── Bund snippet detection ────────────────────────────────────
+    // Pure parser, no eval yet.  Snippet detection happens first so a
+    // snippet-bearing message bypasses the RAG aggregationsearch
+    // entirely.  See Documentation/LLM.md § _Bund chat snippets_.
+    let bund_settings = chat_bund::settings();
+    let snippet = snippet::extract_bund_snippet(&user_message, snippet::DetectOpts {
+        fenced_only:      bund_settings.fenced_only,
+        slash_strictness: bund_settings.slash_strictness,
+    });
+    // Per-call override — request can force-disable a globally-enabled
+    // feature but NOT force-enable a globally-disabled one (that would
+    // be a privilege escalation).
+    let bund_enabled_call = req_json.get("bund_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let run_snippet = snippet.is_some() && bund_settings.enabled && bund_enabled_call;
+
+    if snippet.is_some() && !run_snippet {
+        log::info!(
+            "[llm::chat] bund snippet detected but skipped \
+             (chat.bund.enabled={}, per_call_override={}) — falling back to RAG \
+             with the literal message as the search query",
+            bund_settings.enabled, bund_enabled_call
+        );
+    }
+
+    // ── Bund snippet eval branch ──────────────────────────────────
+    if run_snippet {
+        let snip = snippet.as_ref().unwrap();
+        let timeout = std::time::Duration::from_secs(bund_settings.timeout_secs);
+        log::info!(
+            "[llm::chat] bund eval start (source={} code_chars={} timeout={}s)",
+            snip.source.as_str(), snip.code.len(), bund_settings.timeout_secs
+        );
+
+        match chat_bund::eval_snippet(snip.code.clone(), timeout) {
+            Ok(success) => {
+                return run_chat_with_bund_result(
+                    &req_json, &user_message,
+                    chat_id_str.as_deref(),
+                    provider_override.as_deref(),
+                    model_override.as_deref(),
+                    &system_prompt,
+                    options,
+                    snip,
+                    success,
+                    bund_settings,
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    "[llm::chat] bund eval failed ({}): {} — aborting LLM call",
+                    err.kind(), err.message()
+                );
+                return Ok(json_to_dynamic(early_return_bund_error(
+                    chat_id_str.as_deref(), snip, err, bund_settings,
+                )));
+            }
+        }
+    }
+
     // Build RAG context: either supplied verbatim, or assembled from a
     // db.aggregationsearch over the requested duration.  Empty when
     // neither is present.
@@ -659,6 +720,22 @@ pub fn chat(req: Value) -> Result<Value, Error> {
             "Relevant observability context (last {dur}):\n\n{rag_context}\n\n---\n\nUser question: {user_message}"
         )
     };
+
+    // ── Low-RAG suggestion ───────────────────────────────────────
+    // When the operator asked for a `duration`-windowed RAG but both
+    // counts came back zero, surface a `suggest_bund` block with
+    // canned snippets they could try instead.  Pure keyword
+    // heuristics; no LLM call required.
+    let suggest_bund_snippets: Vec<crate::llm::chat_bund::Suggestion> =
+        if telemetry_count == 0
+            && document_count == 0
+            && req_json.get("duration").is_some()
+            && !run_snippet
+        {
+            chat_bund::suggest_for_query(&user_message)
+        } else {
+            Vec::new()
+        };
 
     // Ollama's default num_ctx is 2048 tokens; non-trivial RAG blows
     // past that and the runtime silently truncates from the start of
@@ -731,7 +808,7 @@ pub fn chat(req: Value) -> Result<Value, Error> {
     // the absence explicit.
     let cache_label = "disabled:chat";
 
-    let out = json!({
+    let mut out = json!({
         "chat_id":         outcome.chat_id.to_string(),
         "response":        outcome.response,
         "provider":        outcome.provider,
@@ -747,6 +824,11 @@ pub fn chat(req: Value) -> Result<Value, Error> {
         "ms":              outcome.ms,
         "cache":           cache_label,
     });
+    if !suggest_bund_snippets.is_empty() {
+        out["suggest_bund"] = JsonValue::Array(
+            suggest_bund_snippets.iter().map(|s| s.to_json()).collect()
+        );
+    }
     log::info!(
         "[llm::chat] sent prompt to provider={} model={} prompt_chars={} num_ctx={:?} \
          (telemetry={telemetry_count} docs={document_count} tokens_in={:?} tokens_out={:?})",
@@ -773,6 +855,210 @@ pub fn chat(req: Value) -> Result<Value, Error> {
 ///    fans out to v2/aggregationsearch on every Alive peer and merges
 ///    via `cluster::merge::dedup_avg_score`).  Fingerprints the top
 ///    hits and joins them into a prompt-ready context string.
+// ─────────────────────────────────────────────────────────────────────
+// Bund snippet helpers — § _Bund chat snippets_ in LLM.md
+// ─────────────────────────────────────────────────────────────────────
+
+/// Snippet succeeded; splice JSON result into the prompt, call LLM,
+/// build response with full bund stats block.  Returns the response
+/// `Value` ready for `json_to_dynamic`.
+#[allow(clippy::too_many_arguments)]
+fn run_chat_with_bund_result(
+    req_json:           &JsonValue,
+    user_message:       &str,
+    chat_id_str:        Option<&str>,
+    provider_override:  Option<&str>,
+    model_override:     Option<&str>,
+    system_prompt:      &str,
+    mut options:        CompletionOpts,
+    snip:               &snippet::BundSnippet,
+    success:            chat_bund::BundEvalSuccess,
+    bund_settings:      &chat_bund::ChatBundSettings,
+) -> Result<Value, Error> {
+    // Format the workbench result for the prompt.
+    let formatted = match chat_bund::format_for_prompt(
+        &success.items,
+        bund_settings.max_result_chars,
+        bund_settings.oversize_strategy,
+    ) {
+        Ok(f) => f,
+        Err(msg) => {
+            // Drop strategy hit the size cap — bubble as a side-channel
+            // error, no LLM call.
+            return Ok(json_to_dynamic(early_return_bund_error(
+                chat_id_str, snip,
+                chat_bund::BundEvalError::Eval { msg, ms: success.ms },
+                bund_settings,
+            )));
+        }
+    };
+
+    // Assemble the user-message turn.  If the operator left no
+    // natural-language remainder, append a default instruction so
+    // the LLM has SOMETHING to do with the result.
+    let question = if snip.remainder.trim().is_empty() {
+        "Summarise these results for the operator.".to_owned()
+    } else {
+        snip.remainder.clone()
+    };
+    let enriched = if formatted.kind == "fingerprint" {
+        format!(
+            "Bund snippet result ({} items, {} ms, fingerprinted because the JSON \
+             encoding exceeded `llm.chat.bund.max_result_chars`):\n\n{}\n\n---\n\n\
+             User question: {}",
+            success.items.len(), success.ms, formatted.body, question,
+        )
+    } else {
+        format!(
+            "Bund snippet result ({} items, {} ms):\n\n```json\n{}\n```\n\n---\n\n\
+             User question: {}",
+            success.items.len(), success.ms, formatted.body, question,
+        )
+    };
+
+    // Auto-pick num_ctx based on assembled prompt size (same as the
+    // RAG-path logic below).
+    if options.num_ctx.is_none() {
+        let approx = (enriched.len() + system_prompt.len()) / 4;
+        options.num_ctx = Some(match approx {
+            0..=4096       => 8192,
+            4097..=8192    => 16384,
+            8193..=16384   => 32768,
+            _              => 65536,
+        });
+    }
+    let prompt_chars   = enriched.len();
+    let chosen_num_ctx = options.num_ctx;
+
+    // chat_id resolution — same auto-recovery as the RAG path.
+    let resume_id = match chat_id_str {
+        Some(id_str) => {
+            let chat_id = Uuid::parse_str(id_str).map_err(|e|
+                err_msg(format!("vm::api::llm::chat: invalid chat_id {id_str:?}: {e}")))?;
+            match llm_chat::session_metadata(chat_id) {
+                Ok(Some(_)) => Some(chat_id),
+                _           => None,
+            }
+        }
+        None => None,
+    };
+
+    let outcome = match resume_id {
+        Some(chat_id) => llm_chat::turn(chat_id, &enriched, provider_override,
+                                        model_override, options)
+            .map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?,
+        None => llm_chat::open_and_turn(provider_override, model_override,
+                                        system_prompt, &enriched, options)
+            .map_err(|e| err_msg(format!("vm::api::llm::chat: {e}")))?,
+    };
+
+    let cache_label = "disabled:chat";
+    let bund_block = bund_stats_ok(snip, &success, &formatted, bund_settings);
+
+    let _ = user_message;  // kept in signature for future audit logging
+    let _ = req_json;
+
+    let out = json!({
+        "chat_id":         outcome.chat_id.to_string(),
+        "response":        outcome.response,
+        "provider":        outcome.provider,
+        "model":           outcome.model,
+        "is_new_session":  outcome.is_new_session,
+        // The aggregationsearch path didn't run — these are 0 to make
+        // it obvious in the response that the prompt context came
+        // from the bund eval instead.
+        "telemetry_count": 0,
+        "document_count":  0,
+        "prompt_chars":    prompt_chars,
+        "num_ctx":         chosen_num_ctx,
+        "finish_reason":   outcome.finish_reason,
+        "tokens_in":       outcome.tokens_in,
+        "tokens_out":      outcome.tokens_out,
+        "ms":              outcome.ms,
+        "cache":           cache_label,
+        "bund":            bund_block,
+    });
+    meta::set_llm(json!({
+        "provider":     outcome.provider,
+        "model":        outcome.model,
+        "ms":           outcome.ms,
+        "tokens_in":    outcome.tokens_in,
+        "tokens_out":   outcome.tokens_out,
+        "prompt_chars": prompt_chars,
+        "num_ctx":      chosen_num_ctx,
+        "cache":        cache_label,
+        "bund": {
+            "ok":     true,
+            "ms":     success.ms,
+            "source": snip.source.as_str(),
+            "n_items": success.items.len(),
+            "result_kind":  formatted.kind,
+            "result_chars": formatted.chars,
+            "result_truncated": formatted.truncated,
+        },
+    }));
+    Ok(json_to_dynamic(out))
+}
+
+/// Build the `bund` stats block emitted on a successful eval.
+fn bund_stats_ok(
+    snip:          &snippet::BundSnippet,
+    success:       &chat_bund::BundEvalSuccess,
+    formatted:     &chat_bund::FormattedResult,
+    bund_settings: &chat_bund::ChatBundSettings,
+) -> JsonValue {
+    json!({
+        "ok":                true,
+        "ms":                success.ms,
+        "source":            snip.source.as_str(),
+        "code_chars":        snip.code.len(),
+        "timeout_secs":      bund_settings.timeout_secs,
+        "n_items":           success.items.len(),
+        "result_kind":       formatted.kind,
+        "result_chars":      formatted.chars,
+        "result_truncated":  formatted.truncated,
+        "cluster_meta":      success.cluster_meta.clone(),
+    })
+}
+
+/// Build the early-return response for a failed snippet eval.
+/// No LLM call happens; no chat history is touched.
+fn early_return_bund_error(
+    chat_id_str:   Option<&str>,
+    snip:          &snippet::BundSnippet,
+    err:           chat_bund::BundEvalError,
+    bund_settings: &chat_bund::ChatBundSettings,
+) -> JsonValue {
+    let bund_block = json!({
+        "ok":            false,
+        "ms":            err.ms(),
+        "source":        snip.source.as_str(),
+        "code_chars":    snip.code.len(),
+        "timeout_secs":  bund_settings.timeout_secs,
+        "error": {
+            "kind":    err.kind(),
+            "message": err.message(),
+        },
+    });
+    meta::set_llm(json!({
+        "bund": bund_block.clone(),
+        "cache": "disabled:chat",
+    }));
+    // No new chat_id minted — return the operator-supplied one if
+    // any, or null.  Frontend can preserve the existing cookie.
+    let chat_id_value = chat_id_str.map(JsonValue::from).unwrap_or(JsonValue::Null);
+    json!({
+        "chat_id":         chat_id_value,
+        "response":        "",
+        "is_new_session":  false,
+        "telemetry_count": 0,
+        "document_count":  0,
+        "ms":              err.ms(),
+        "cache":           "disabled:chat",
+        "bund":            bund_block,
+    })
+}
+
 /// 3. neither → empty
 fn build_rag_context(req: &JsonValue) -> Result<(String, usize, usize), Error> {
     if let Some(c) = req.get("context").and_then(|v| v.as_str()) {
