@@ -39,6 +39,12 @@
     antientropy_interval:    "60s"
     peer_rpc_timeout:        "2s"
 
+    // Scheduler dedup: suppress this node's fire when any peer (or
+    // this node) executed the same script within the window.  Library
+    // default is 5 min; tighter for the test cluster so cron patterns
+    // like `* * * * *` can fire once per minute on a different node.
+    scheduler_dedup_window:  "60s"
+
     // Full mode at 3 alive peers — exercises the full→partial transition
     // when one node goes down.
     full_mode_threshold:     3

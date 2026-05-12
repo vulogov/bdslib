@@ -32,6 +32,9 @@
     antientropy_interval:    "60s"
     peer_rpc_timeout:        "2s"
 
+    // Scheduler dedup window — see bds1.hjson for rationale.
+    scheduler_dedup_window:  "60s"
+
     full_mode_threshold:     3
     replication_factor:      3
 
