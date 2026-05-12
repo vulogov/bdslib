@@ -1,3 +1,4 @@
+pub mod admin_llm;
 pub mod admin_users;
 pub mod anomaly_recent;
 pub mod bund;

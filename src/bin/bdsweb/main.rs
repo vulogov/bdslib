@@ -222,6 +222,10 @@ async fn main() {
         .route("/admin/users/disable/{id}", post(routes::admin_users::disable))
         .route("/admin/users/enable/{id}",  post(routes::admin_users::enable))
 
+        // ── Administration → LLM ─────────────────────────────────────
+        .route("/admin/llm",       get(routes::admin_llm::page_with_banners))
+        .route("/admin/llm/purge", post(routes::admin_llm::purge))
+
         // Gate every other route behind the session-cookie middleware.
         // Open paths (/login, /logout, /version) are checked inside the
         // middleware so we don't have to remove their layers here.

@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block nav_admin_llm %}active{% endblock %}
+{% block content %}
+
+<header class="mb-6 flex items-baseline justify-between">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">LLM</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Read-only over <code class="text-slate-300">v4/llm.{providers.list, cache.stats, jobs.list}</code>.
+      Cache purge fans out via <code class="text-slate-300">v4/llm.cache.purge</code> with HMAC-signed admin auth.
+    </p>
+  </div>
+</header>
+
+{% if needs_secret %}
+<div class="mb-4 rounded border border-amber-800 bg-amber-950 px-3 py-2 text-xs text-amber-300">
+  <code>cluster.shared_secret</code> is unset.  v4/llm.* RPCs require HMAC — none of the
+  data on this page will load until you configure a shared secret in <code>bds.hjson</code>.
+</div>
+{% endif %}
+
+{% if has_error %}
+<div class="mb-4 rounded border border-red-800 bg-red-950 px-3 py-2 text-xs text-red-300">
+  {{ error_msg }}
+</div>
+{% endif %}
+
+{% if has_notice %}
+<div class="mb-4 rounded border border-emerald-800 bg-emerald-950 px-3 py-2 text-xs text-emerald-300">
+  {{ notice }}
+</div>
+{% endif %}
+
+<!-- Providers ─────────────────────────────────────────────────────────── -->
+<section class="card rounded-lg overflow-hidden mb-6" style="border:1px solid #1e2535;">
+  <div class="px-4 py-2.5 flex items-baseline justify-between"
+       style="border-bottom:1px solid #1e2535; background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200">Providers</h2>
+    <span class="text-xs text-slate-500">
+      {% if providers.is_empty() %}
+        none registered
+      {% else %}
+        default: <code class="text-slate-300">{{ default_provider }}</code>
+      {% endif %}
+    </span>
+  </div>
+
+  {% if !providers.is_empty() %}
+  <table style="width:100%">
+    <thead>
+      <tr>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Provider</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Default model</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Chat</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Embed</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Default</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in providers %}
+      <tr style="border-top:1px solid #1e2535;">
+        <td class="px-3 py-2 text-sm text-white font-mono">{{ p.id }}</td>
+        <td class="px-3 py-2 text-sm text-slate-300 font-mono">{{ p.default_model }}</td>
+        <td class="px-3 py-2 text-xs">
+          {% if p.chat %}<span class="text-emerald-400">yes</span>{% else %}<span class="text-slate-500">no</span>{% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs">
+          {% if p.embed %}<span class="text-emerald-400">yes</span>{% else %}<span class="text-slate-500">no</span>{% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs">
+          {% if p.id == default_provider %}<span class="text-emerald-400">★</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="px-4 py-6 text-center text-xs text-slate-500">
+    No providers registered.  Add an <code>llm.providers.*</code> block to <code>bds.hjson</code>
+    and restart bdsnode.
+  </div>
+  {% endif %}
+</section>
+
+<!-- Cache ─────────────────────────────────────────────────────────────── -->
+<section class="card rounded-lg overflow-hidden mb-6" style="border:1px solid #1e2535;">
+  <div class="px-4 py-2.5 flex items-baseline justify-between"
+       style="border-bottom:1px solid #1e2535; background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200">Inference cache</h2>
+    <span class="text-xs text-slate-500">
+      {% if cache.enabled %}
+        enabled · ttl <code class="text-slate-300">{{ cache.ttl_secs }}s</code>
+      {% else %}
+        <span class="text-amber-400">disabled</span>
+      {% endif %}
+    </span>
+  </div>
+  {% if cache.has_error() %}
+  <div class="px-4 py-3 text-xs text-red-300">{{ cache.error }}</div>
+  {% else %}
+  <div class="px-4 py-3 grid grid-cols-3 gap-4 text-xs text-slate-300">
+    <div>
+      <div class="text-slate-500 mb-0.5">Rows</div>
+      <div class="text-lg text-white font-mono">{{ cache.rows }}</div>
+    </div>
+    <div>
+      <div class="text-slate-500 mb-0.5">Total hits</div>
+      <div class="text-lg text-white font-mono">{{ cache.total_hits }}</div>
+    </div>
+    <div>
+      <div class="text-slate-500 mb-0.5">Response bytes</div>
+      <div class="text-lg text-white font-mono">{{ cache.bytes_rough_human() }}</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Purge form -->
+  <form method="post" action="/admin/llm/purge"
+        class="px-4 py-3 flex flex-wrap items-end gap-3"
+        style="border-top:1px solid #1e2535;">
+    <div class="flex-1 min-w-[8rem]">
+      <label class="block text-xs text-slate-400 mb-1">Provider (optional)</label>
+      <input type="text" name="provider" placeholder="ollama / anthropic / …"
+             class="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200" />
+    </div>
+    <div class="flex-1 min-w-[8rem]">
+      <label class="block text-xs text-slate-400 mb-1">Kind (optional)</label>
+      <input type="text" name="kind" placeholder="complete / analyze:rca / …"
+             class="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200" />
+    </div>
+    <div class="shrink-0 w-44">
+      <label class="block text-xs text-slate-400 mb-1">Older than (seconds)</label>
+      <input type="number" name="older_than_secs" min="0" placeholder="0 = no age filter"
+             class="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200" />
+    </div>
+    <button type="submit"
+            onclick="return confirm('Purge cache rows matching these filters? Empty filter set means purge EVERYTHING.');"
+            class="bg-red-600 hover:bg-red-500 text-white text-xs rounded px-3 py-1.5 font-medium">
+      Purge cache
+    </button>
+  </form>
+</section>
+
+<!-- Jobs ──────────────────────────────────────────────────────────────── -->
+<section class="card rounded-lg overflow-hidden" style="border:1px solid #1e2535;">
+  <div class="px-4 py-2.5 flex items-baseline justify-between"
+       style="border-bottom:1px solid #1e2535; background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200">Recent async jobs</h2>
+    <span class="text-xs text-slate-500">
+      {% if jobs.is_empty() %}
+        no jobs yet
+      {% else %}
+        {{ jobs.len() }} most recent
+      {% endif %}
+    </span>
+  </div>
+
+  {% if !jobs.is_empty() %}
+  <table style="width:100%">
+    <thead>
+      <tr>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Job</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Kind</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">State</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Submitted</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Finished</th>
+        <th class="text-left text-xs text-slate-400 px-3 py-2">Error</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr style="border-top:1px solid #1e2535;">
+        <td class="px-3 py-2 text-xs font-mono text-slate-400" title="{{ j.job_id }}">{{ j.job_id|truncate(8) }}…</td>
+        <td class="px-3 py-2 text-xs text-slate-300 font-mono">{{ j.kind }}</td>
+        <td class="px-3 py-2 text-xs {{ j.state_class }}">{{ j.state }}</td>
+        <td class="px-3 py-2 text-xs text-slate-400">{{ j.submitted_at }}</td>
+        <td class="px-3 py-2 text-xs text-slate-400">{{ j.finished_at }}</td>
+        <td class="px-3 py-2 text-xs text-red-300" style="max-width:24rem">{{ j.error }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+{% endblock %}
