@@ -1,2 +1,3 @@
 - If I still see generic answers, num_ctx and prompt_chars in
   the new chat header will tell you whether the context fit or whether you need to override options.num_ctx higher.
+- For Cluster Web UI, why default to 10s instead of Dashboard's 30s — peer-state transitions (gossip Alive ↔ Suspect ↔ Dead) and fan-out failures (hint backlog jumping, AE pull counts) are precisely the kind of thing operators want to see in near-real-time. Bump it higher if bdsnode is RPC-saturated.

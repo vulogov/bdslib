@@ -616,6 +616,48 @@ renders a collapsible "via Cluster · N/M peers" badge above the
 script result.  See [`Phase 6 commit`](../#) and
 [`examples/cluster/`](../examples/cluster/).
 
+### 10.1 `/cluster` page refresh — `cluster_refresh_secs`
+
+The `/cluster` operator page mirrors the Dashboard refresh
+architecture rather than calling `v2/cluster.peers` on every page
+load.  Two bdsweb-side knobs in `bds.hjson`:
+
+```hjson
+dashboard_refresh_secs: 30   // /dashboard background poller cadence
+cluster_refresh_secs:   10   // /cluster background poller cadence
+```
+
+| Knob                      | Default | Floor | Drives                                                                    |
+|---------------------------|---------|-------|---------------------------------------------------------------------------|
+| `dashboard_refresh_secs`  | 30 s    | 1 s   | Background poller for `v2/{status,count,timeline,shards}` + HTMX trigger  |
+| `cluster_refresh_secs`    | 10 s    | 1 s   | Background poller for `v2/cluster.peers` + HTMX trigger on `/cluster`     |
+
+Each knob spawns a dedicated tokio task in `bdsweb::main` next to
+the existing ones; the resulting snapshot is parked in
+`state.{dashboard,cluster}_cache` and served by `/<page>/data`.  A
+**Reload** button on each page targets `/<page>/refresh` for a
+force-fetch + cache write — useful when an operator just made a
+config change and doesn't want to wait for the next tick.
+
+Why default the Cluster page tighter (10 s) than the Dashboard
+(30 s):
+
+- Cluster peer-state transitions (Alive → Suspect → Dead) are the
+  exact signal operators are watching for during a network blip or
+  rolling restart.
+- The Phase 5 replication health row (hint backlog, last AE tick
+  age, pulled / tombstones / pruned counts) is operationally more
+  time-sensitive than shard counts.
+- `v2/cluster.peers` is a cheap in-memory read of the peer table —
+  the cost of a tighter cadence is negligible compared to the
+  Dashboard's four parallel RPCs (`status` + `count` + `timeline`
+  + `shards`).
+
+Raise either value if your bdsnode is CPU-saturated and the
+operator can tolerate slightly staler UIs.  Lower them (down to
+1 s) on a quiet cluster to maximise responsiveness — the bdsweb
+side does this for free since the page reads from cache.
+
 ---
 
 ## 11. Authentication — `v3/user.*` + sessions
