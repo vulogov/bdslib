@@ -29,7 +29,8 @@ struct Args {
     #[arg(short, long, env = "BDSNODE_URL", default_value = "http://127.0.0.1:9000")]
     node: String,
 
-    /// Path to bds.hjson config file (reads ollama_model for the Chat UI)
+    /// Path to bds.hjson config file (reads dashboard refresh + cluster
+    /// shared secret for auth middleware).
     #[arg(short, long, env = "BDS_CONFIG")]
     config: Option<String>,
 
@@ -39,7 +40,6 @@ struct Args {
 }
 
 struct WebConfig {
-    ollama_model:           String,
     dashboard_refresh_secs: u64,
     /// Cluster shared secret read from `cluster.shared_secret` in
     /// `bds.hjson`.  Empty when the config file is missing, the
@@ -54,7 +54,6 @@ struct WebConfig {
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
     let defaults = WebConfig {
-        ollama_model: "llama3.2".to_owned(),
         dashboard_refresh_secs: 30,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
@@ -91,10 +90,6 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         .map(|n| n as u32)
         .unwrap_or(defaults.auth_rate_limit_per_minute);
     WebConfig {
-        ollama_model: obj.get("ollama_model")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&defaults.ollama_model)
-            .to_owned(),
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
             .and_then(|v| v.as_f64())
             .map(|n| n as u64)
@@ -123,7 +118,7 @@ async fn main() {
     } else {
         log::info!("bdsweb auth enabled — shared_secret loaded ({} bytes)", cfg.shared_secret.len());
     }
-    let state = AppState::new(args.node.clone(), cfg.ollama_model, cfg.dashboard_refresh_secs,
+    let state = AppState::new(args.node.clone(), cfg.dashboard_refresh_secs,
                               cfg.shared_secret);
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.

@@ -37,8 +37,6 @@ impl Default for ClusterModeCache {
 pub struct AppState {
     pub node_url:     Arc<String>,
     pub http:         reqwest::Client,
-    /// Ollama model name read from bds.hjson (for display in the Chat UI).
-    pub ollama_model: Arc<String>,
     /// Background-poll interval for the cached Dashboard snapshot, in seconds.
     pub dashboard_refresh_secs: u64,
     /// Most-recent Dashboard snapshot collected by the background task.
@@ -64,7 +62,6 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         node_url: String,
-        ollama_model: String,
         dashboard_refresh_secs: u64,
         shared_secret: String,
     ) -> Self {
@@ -75,7 +72,6 @@ impl AppState {
         Self {
             node_url:      Arc::new(node_url),
             http,
-            ollama_model:  Arc::new(ollama_model),
             dashboard_refresh_secs,
             dashboard_cache: Arc::new(RwLock::new(None)),
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
