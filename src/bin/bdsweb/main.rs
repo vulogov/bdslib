@@ -3,6 +3,7 @@ mod auth;
 mod client;
 mod error;
 mod error_pretty;
+mod markdown;
 mod routes;
 mod state;
 
@@ -55,6 +56,8 @@ struct WebConfig {
     /// `cluster.auth_rate_limit_per_minute` — Phase 6 rate limit
     /// applied per-IP to `POST /login`.  `0` disables the limit.
     auth_rate_limit_per_minute: u32,
+    /// Operator-tunable knobs for Telemetry → Logs → "Analyze this!".
+    logs_analyze:           state::LogsAnalyzeConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -63,6 +66,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         cluster_refresh_secs:   10,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
+        logs_analyze: state::LogsAnalyzeConfig::default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -95,6 +99,38 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         .and_then(|c| c.get("auth_rate_limit_per_minute").and_then(|v| v.as_f64()))
         .map(|n| n as u32)
         .unwrap_or(defaults.auth_rate_limit_per_minute);
+
+    // `web.analyze.logs.*` — every key is optional; the struct's
+    // Default impl supplies the fallback values, so a missing block
+    // (or any missing key inside it) keeps the current behaviour.
+    //
+    // The block lives under `web.analyze.<target>` so more "Analyze
+    // this!" buttons can be added later (`web.analyze.metrics`,
+    // `web.analyze.rca`, etc.) without re-shuffling the schema.
+    let logs_analyze = {
+        let d = state::LogsAnalyzeConfig::default();
+        let block = obj.get("web")
+            .and_then(|v| v.as_object())
+            .and_then(|w| w.get("analyze"))
+            .and_then(|v| v.as_object())
+            .and_then(|a| a.get("logs"))
+            .and_then(|v| v.as_object());
+        match block {
+            Some(b) => state::LogsAnalyzeConfig {
+                timeout_secs: b.get("timeout_secs")
+                    .and_then(|v| v.as_f64()).map(|n| n as u64)
+                    .unwrap_or(d.timeout_secs).max(30),
+                max_rows:     b.get("max_rows")
+                    .and_then(|v| v.as_f64()).map(|n| n as usize)
+                    .unwrap_or(d.max_rows).clamp(1, 500),
+                prompt_template: b.get("prompt_template")
+                    .and_then(|v| v.as_str()).map(str::to_owned)
+                    .unwrap_or(d.prompt_template),
+            },
+            None => d,
+        }
+    };
+
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
             .and_then(|v| v.as_f64())
@@ -108,6 +144,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             .max(1),
         shared_secret,
         auth_rate_limit_per_minute,
+        logs_analyze,
     }
 }
 
@@ -129,11 +166,18 @@ async fn main() {
     } else {
         log::info!("bdsweb auth enabled — shared_secret loaded ({} bytes)", cfg.shared_secret.len());
     }
+    log::info!(
+        "web.analyze.logs: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.logs_analyze.timeout_secs,
+        cfg.logs_analyze.max_rows,
+        cfg.logs_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
         cfg.cluster_refresh_secs,
         cfg.shared_secret,
+        cfg.logs_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -201,6 +245,7 @@ async fn main() {
         .route("/logs/results",      get(routes::logs::results))
         .route("/logs/keys",         get(routes::logs::keys))
         .route("/logs/topics",       get(routes::logs::topics))
+        .route("/logs/analyze",      get(routes::logs::analyze))
         .route("/docs",           get(routes::docs::page))
         .route("/docs/results",   get(routes::docs::results))
         .route("/search",         get(routes::search::page))

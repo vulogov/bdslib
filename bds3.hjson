@@ -44,11 +44,19 @@
 
   // ── LLM (v4/llm.* surface) — see bds1.hjson for the rationale.
   llm: {
-    default: "ollama"
+    default: "deepseek"
     providers: {
       ollama: {
         url:           "http://127.0.0.1:11434"
         default_model: "llama3.2"
+      }
+
+      // DeepSeek — see bds1.hjson for the key-resolution rationale.
+      deepseek: {
+        base_url:      "https://api.deepseek.com"
+        api_key_env:   "DEEPSEEK_API_KEY"
+        // api_key:    "sk-…"
+        default_model: "deepseek-chat"
       }
     }
 

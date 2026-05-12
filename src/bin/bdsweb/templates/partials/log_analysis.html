@@ -1,0 +1,40 @@
+{% if !error.is_empty() %}
+<div class="card rounded-lg p-4 mb-3 text-sm" style="border-color:#7f1d1d;background:#1f1115">
+  <div class="text-red-300 font-medium mb-1">Analysis unavailable</div>
+  <div class="text-slate-300">{{ error }}</div>
+</div>
+{% endif %}
+
+{% if !response.is_empty() %}
+
+<!-- Metadata strip -->
+<div class="flex flex-wrap items-center gap-2 mb-3 text-xs text-slate-500">
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ n_rows }} log row{% if n_rows != 1 %}s{% endif %}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    last {{ duration }}
+  </span>
+  <span class="px-2 py-0.5 rounded font-mono" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ provider }} / {{ model }}
+  </span>
+  <span class="px-2 py-0.5 rounded" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06)">
+    {{ ms }}ms
+  </span>
+  {% if cache == "hit" %}
+  <span class="px-2 py-0.5 rounded text-emerald-300" style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2)" title="Served from the inference cache — same query + rows already analyzed">
+    cache hit
+  </span>
+  {% endif %}
+</div>
+
+<!-- Query echo (so the panel makes sense after panning around) -->
+<div class="text-xs text-slate-500 mb-3">
+  Query: <code class="text-blue-300 bg-slate-800 px-1.5 py-0.5 rounded">{{ q }}</code>
+</div>
+
+<!-- The analysis -->
+<div class="card rounded-lg p-4 text-sm text-slate-200 md"
+     style="word-break:break-word;line-height:1.55">{{ response_html|safe }}</div>
+
+{% endif %}

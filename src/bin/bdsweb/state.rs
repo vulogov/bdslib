@@ -43,6 +43,58 @@ impl Default for ClusterModeCache {
     }
 }
 
+/// Runtime settings for the Telemetry → Logs → "Analyze this!" button.
+/// All three fields are sourced from the `web.analyze.logs.*` block of
+/// `bds.hjson`; missing keys fall through to compiled-in defaults so
+/// operators who don't care about this feature don't have to edit
+/// anything.  The block lives under `web.analyze.<target>` so future
+/// "Analyze this!" buttons (metrics, rca, …) can slot in without
+/// re-shuffling the schema.
+#[derive(Clone, Debug)]
+pub struct LogsAnalyzeConfig {
+    /// Per-request timeout for the round-trip bdsweb → bdsnode → Ollama.
+    /// Default 600 s.  CPU-bound local Ollama on llama3.2 with 50 rows
+    /// + auto-bumped num_ctx takes 60–180 s on first call; cached hits
+    /// return in <50 ms.  Floor 30 s.
+    pub timeout_secs:    u64,
+    /// How many search hits to feed into the LLM.  Default 50.
+    /// Floor 1, ceiling 500 (anything more usually overflows the model
+    /// context window and produces a mush of unrelated logs).
+    pub max_rows:        usize,
+    /// The user-facing prompt template prepended to the rows before
+    /// sending to `v4/llm.analyze`.  Operators can rewrite this to
+    /// change the analysis style (e.g. "focus on auth failures",
+    /// "respond in Russian", etc.).  Default = `DEFAULT_PROMPT`.
+    pub prompt_template: String,
+}
+
+/// Compile-time fallback prompt used when `web.logs.analyze.prompt_template`
+/// is absent from `bds.hjson`.  Kept here (rather than in `routes::logs`)
+/// so the defaults are co-located with the type.
+pub const DEFAULT_LOGS_ANALYZE_PROMPT: &str =
+    "You are reviewing a slice of operational log records that an SRE \
+     just searched for.  Produce a concise analysis covering:\n\
+     1. The dominant theme of these records (what is the system doing right now?).\n\
+     2. Any recurring failure / error / warning patterns — group similar events.\n\
+     3. Anomalies or outliers that look unusual against the rest of the set.\n\
+     4. The most likely root cause if any failures are present, with evidence.\n\
+     5. One concrete next investigative step the operator should take.\n\
+     \n\
+     Quote specific log keys, timestamps, and message snippets verbatim \
+     when you cite evidence — the operator wants to be able to grep for \
+     them.  Be terse; bullet points are fine.  If the data is too sparse \
+     to support a conclusion, say so plainly rather than speculating.";
+
+impl Default for LogsAnalyzeConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_LOGS_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub node_url:     Arc<String>,
@@ -71,6 +123,9 @@ pub struct AppState {
     /// operator can hit `/admin/users` to create the first user.
     /// The cache is refreshed on every miss past its TTL.
     pub bootstrap_cache: Arc<RwLock<crate::auth::BootstrapCache>>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Telemetry → Logs page.
+    pub logs_analyze:    Arc<LogsAnalyzeConfig>,
 }
 
 impl AppState {
@@ -79,6 +134,7 @@ impl AppState {
         dashboard_refresh_secs: u64,
         cluster_refresh_secs:   u64,
         shared_secret: String,
+        logs_analyze: LogsAnalyzeConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -94,6 +150,7 @@ impl AppState {
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             shared_secret:   Arc::new(shared_secret),
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),
+            logs_analyze:    Arc::new(logs_analyze),
         }
     }
 }

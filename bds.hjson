@@ -194,6 +194,53 @@
   //   qwen2.5:14b    — excellent instruction following, larger context
   ollama_model: "llama3.2"
 
+  // ── v4/llm.* providers ───────────────────────────────────────────────────────
+  //
+  // The `llm:` block configures the modern v4/llm.* surface used by
+  // bdsweb (Chat, Analyze this!, …) and bdscmd.  Each upstream provider
+  // is independently optional; bdsnode logs and skips any that fail
+  // their precondition (missing API key etc.) so the rest still come
+  // up clean.
+  //
+  // See Documentation/BDSCONFIG.md § 7 for the full reference.
+  //
+  // llm: {
+  //   default: "ollama"
+  //   providers: {
+  //     ollama: {
+  //       url:           "http://127.0.0.1:11434"
+  //       default_model: "llama3.2"
+  //     }
+  //
+  //     // Anthropic — env-key only.  Skipped at startup if the env
+  //     // var is unset.
+  //     anthropic: {
+  //       base_url:      "https://api.anthropic.com"
+  //       api_key_env:   "ANTHROPIC_API_KEY"
+  //       default_model: "claude-sonnet-4-5"
+  //     }
+  //
+  //     // OpenAI — env-key only.
+  //     openai: {
+  //       base_url:      "https://api.openai.com"
+  //       api_key_env:   "OPENAI_API_KEY"
+  //       default_model: "gpt-4o-mini"
+  //     }
+  //
+  //     // DeepSeek — chat-only (no embeddings).  Key resolution
+  //     // order: env var named by `api_key_env` (preferred) → the
+  //     // plaintext `api_key` field below.  Either source is fine;
+  //     // when both are set the env var wins so deployments can ship
+  //     // a fallback in the config and override at runtime.
+  //     deepseek: {
+  //       base_url:      "https://api.deepseek.com"
+  //       api_key_env:   "DEEPSEEK_API_KEY"
+  //       // api_key:    "sk-…"             // optional hjson fallback
+  //       default_model: "deepseek-chat"    // or "deepseek-reasoner"
+  //     }
+  //   }
+  // }
+
   // ── Result queues (v2/results.*) ────────────────────────────────────────────
 
   // Time-to-live for per-id result queues exposed via the v2/results.* RPC
@@ -258,6 +305,42 @@
   // "Reload" button bypasses it and forces a live fetch.
   // Default: 30
   dashboard_refresh_secs: 30
+
+  // ── bdsweb "Analyze this!" buttons ───────────────────────────────────────────
+  //
+  // The various analysis pages have "Analyze this!" buttons that ship
+  // the current result set to v4/llm.analyze and render the LLM's
+  // verdict in a floating side-pane.  Per-target sub-blocks live under
+  // `web.analyze.<target>` — additional targets (metrics, rca, …) slot
+  // in alongside `logs` without re-shuffling the schema.
+  //
+  // All keys are optional; missing values fall back to compiled-in
+  // defaults.  See Documentation/BDSCONFIG.md § 8.1 for the full
+  // reference.
+  //
+  // web: {
+  //   analyze: {
+  //     logs: {
+  //       // Per-request timeout for bdsweb → bdsnode on this one call.
+  //       // CPU-bound local Ollama on llama3.2 + 50 rows typically
+  //       // needs 60–180s for the first invocation; cached repeats are
+  //       // sub-50ms.  Floor 30s; default 600s.
+  //       timeout_secs: 600
+  //
+  //       // How many search hits feed into the prompt.  Clamped to
+  //       // 1..500.  Default 50.
+  //       max_rows: 50
+  //
+  //       // Operator-supplied prompt template.  Rewrite to change
+  //       // analysis style, audience, language, or output format.
+  //       prompt_template:
+  //         '''
+  //         You are reviewing a slice of operational log records …
+  //         '''
+  //     }
+  //     // Future: web.analyze.metrics, web.analyze.rca, …
+  //   }
+  // }
 
   // System prompt injected at the start of every chat session.
   // Tailor this to your observability domain.

@@ -149,6 +149,21 @@ pub async fn mode_badge_for_page(state: &AppState, has_v3: bool) -> ModeBadge {
 }
 
 pub async fn rpc(state: &AppState, method: &str, params: Value) -> Result<Value, AppError> {
+    rpc_with_timeout(state, method, params, None).await
+}
+
+/// `rpc` variant that lets the caller override the per-request
+/// timeout.  Pass `None` to use the global client timeout (set in
+/// `AppState::new`, currently 120 s).  Pass `Some(d)` for endpoints
+/// that legitimately run longer — e.g. `v4/llm.analyze` with a fat
+/// prompt against a local CPU-bound Ollama, which routinely needs
+/// 60–300 s for 50+ rows.
+pub async fn rpc_with_timeout(
+    state:   &AppState,
+    method:  &str,
+    params:  Value,
+    timeout: Option<std::time::Duration>,
+) -> Result<Value, AppError> {
     let payload = json!({
         "jsonrpc": "2.0",
         "method":  method,
@@ -157,12 +172,14 @@ pub async fn rpc(state: &AppState, method: &str, params: Value) -> Result<Value,
     });
 
     let body = serde_json::to_string(&payload)?;
-    let resp  = state.http
+    let mut req = state.http
         .post(state.node_url.as_str())
         .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .await?;
+        .body(body);
+    if let Some(d) = timeout {
+        req = req.timeout(d);
+    }
+    let resp = req.send().await?;
 
     let text: String = resp.text().await?;
     let envelope: Value = serde_json::from_str(&text)?;

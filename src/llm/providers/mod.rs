@@ -5,6 +5,7 @@
 //! never construct provider objects directly outside this module.
 
 pub mod anthropic;
+pub mod deepseek;
 pub mod ollama;
 pub mod openai;
 
@@ -32,5 +33,6 @@ pub trait Provider: Send + Sync {
 }
 
 pub use anthropic::AnthropicProvider;
+pub use deepseek::DeepSeekProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAIProvider;

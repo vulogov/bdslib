@@ -115,6 +115,14 @@ urlencoding = "2"
 time = "0.3"
 # Phase 0 — LLM provider layer (v4/* foundation)
 async-trait = "0.1"
+# bdsweb-only: server-side markdown → HTML rendering for LLM chat /
+# analyze panes.  CommonMark + tables; raw HTML disabled (sanitised
+# input doesn't pass through to the page).
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# Sanitise the HTML pulldown-cmark emits before interpolating into a
+# template — pulldown does NOT escape raw `<script>` etc. by default,
+# so we run its output through ammonia's allowlist.
+ammonia = "4"
 
 [dev-dependencies]
 tempfile = "3.8"

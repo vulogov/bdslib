@@ -22,6 +22,6 @@
 {% else if !response.is_empty() %}
 <div class="chat-msg">
   <div class="bubble-label label-assistant">Assistant</div>
-  <div class="bubble-assistant">{{ response }}</div>
+  <div class="bubble-assistant md">{{ response_html|safe }}</div>
 </div>
 {% endif %}

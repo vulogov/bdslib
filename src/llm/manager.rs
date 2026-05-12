@@ -14,7 +14,7 @@
 
 use crate::common::error::{err_msg, Result};
 use crate::llm::providers::{
-    AnthropicProvider, OllamaProvider, OpenAIProvider, Provider,
+    AnthropicProvider, DeepSeekProvider, OllamaProvider, OpenAIProvider, Provider,
 };
 use serde_hjson::Value as HjsonValue;
 use std::collections::BTreeMap;
@@ -28,6 +28,9 @@ const DEFAULT_ANTHROPIC_KEY_ENV:    &str = "ANTHROPIC_API_KEY";
 const DEFAULT_OPENAI_URL:           &str = "https://api.openai.com";
 const DEFAULT_OPENAI_MODEL:         &str = "gpt-4o-mini";
 const DEFAULT_OPENAI_KEY_ENV:       &str = "OPENAI_API_KEY";
+const DEFAULT_DEEPSEEK_URL:         &str = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_MODEL:       &str = "deepseek-chat";
+const DEFAULT_DEEPSEEK_KEY_ENV:     &str = "DEEPSEEK_API_KEY";
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig    { pub url: String,      pub default_model: String }
@@ -37,6 +40,19 @@ pub struct AnthropicConfig { pub base_url: String, pub api_key_env: String, pub 
 
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig    { pub base_url: String, pub api_key_env: String, pub default_model: String }
+
+/// DeepSeek (`llm.providers.deepseek.*`).  Unlike [`AnthropicConfig`]
+/// and [`OpenAIConfig`], DeepSeek allows the key to be supplied either
+/// via the env var named by `api_key_env` (preferred) **or** via the
+/// `api_key` field directly in hjson.  The env var takes precedence
+/// when both are present.  `api_key` is `String::new()` when absent.
+#[derive(Debug, Clone)]
+pub struct DeepSeekConfig {
+    pub base_url:      String,
+    pub api_key_env:   String,
+    pub api_key:       String,
+    pub default_model: String,
+}
 
 /// Cache sub-block (`llm.cache.*` in bds.hjson).
 ///
@@ -129,6 +145,7 @@ pub struct LlmConfig {
     pub ollama:    Option<OllamaConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub openai:    Option<OpenAIConfig>,
+    pub deepseek:  Option<DeepSeekConfig>,
     pub cache:     CacheConfig,
     pub dedup:     DedupConfig,
     pub chat:      ChatConfig,
@@ -193,6 +210,19 @@ impl LlmConfig {
                                   .unwrap_or(DEFAULT_OPENAI_MODEL).to_owned(),
             });
 
+        let deepseek = providers
+            .and_then(|p| p.get("deepseek").and_then(|v| v.as_object()))
+            .map(|o| DeepSeekConfig {
+                base_url:      o.get("base_url").and_then(|v| v.as_str())
+                                  .unwrap_or(DEFAULT_DEEPSEEK_URL).to_owned(),
+                api_key_env:   o.get("api_key_env").and_then(|v| v.as_str())
+                                  .unwrap_or(DEFAULT_DEEPSEEK_KEY_ENV).to_owned(),
+                api_key:       o.get("api_key").and_then(|v| v.as_str())
+                                  .unwrap_or("").to_owned(),
+                default_model: o.get("default_model").and_then(|v| v.as_str())
+                                  .unwrap_or(DEFAULT_DEEPSEEK_MODEL).to_owned(),
+            });
+
         let cache = llm.get("cache").and_then(|v| v.as_object())
             .map(|c| CacheConfig {
                 enabled:  c.get("enabled").and_then(|v| v.as_bool())
@@ -246,7 +276,7 @@ impl LlmConfig {
             })
             .unwrap_or_default();
 
-        Self { default, ollama, anthropic, openai, cache, dedup, chat }
+        Self { default, ollama, anthropic, openai, deepseek, cache, dedup, chat }
     }
 }
 
@@ -341,6 +371,34 @@ impl ProviderManager {
                     Err(e) => log::warn!("[llm] skip openai: {e}"),
                 },
                 _ => log::warn!("[llm] skip openai: env ${} unset", o.api_key_env),
+            }
+        }
+
+        // DeepSeek differs from anthropic/openai in that the key can
+        // come from the env var (preferred) OR from a plaintext
+        // `api_key` field directly in bds.hjson.  The env var wins
+        // when both are present.  We log the source so operators can
+        // tell at a glance whether the deployment is leaking the key
+        // through the config file.
+        if let Some(d) = cfg.deepseek {
+            let (key, source) = match std::env::var(&d.api_key_env) {
+                Ok(k) if !k.is_empty() => (k, format!("${}", d.api_key_env)),
+                _ if !d.api_key.is_empty() => (d.api_key.clone(),
+                    "bds.hjson:llm.providers.deepseek.api_key".to_owned()),
+                _ => (String::new(), String::new()),
+            };
+            if key.is_empty() {
+                log::warn!("[llm] skip deepseek: env ${} unset and no `api_key` field \
+                            in bds.hjson llm.providers.deepseek", d.api_key_env);
+            } else {
+                match DeepSeekProvider::new(&d.base_url, &key, &d.default_model) {
+                    Ok(p) => {
+                        log::info!("[llm] registered provider 'deepseek' model={} (key from {})",
+                            d.default_model, source);
+                        mgr.insert("deepseek", Arc::new(p));
+                    }
+                    Err(e) => log::warn!("[llm] skip deepseek: {e}"),
+                }
             }
         }
 

@@ -117,7 +117,14 @@ const INIT_QUERY: &str = "A new analysis session has just started and telemetry 
 #[template(path = "partials/chat_message.html")]
 struct ChatMessage {
     user_query:       String,
+    /// Pre-rendered HTML for the assistant bubble.  LLM output is
+    /// usually Markdown (headers, lists, **bold**, fenced code), so we
+    /// render server-side via `markdown::render` and the template
+    /// interpolates with askama's `|safe` filter.  `response` (the raw
+    /// text) is kept for the empty-check and so user queries can be
+    /// shown verbatim.
     response:         String,
+    response_html:    String,
     error_msg:        String,
     has_error:        bool,
     has_context_note: bool,
@@ -197,6 +204,7 @@ pub async fn new_session(
 
             let html = ChatMessage {
                 user_query:       String::new(),
+                response_html:    crate::markdown::render(&response),
                 response,
                 error_msg:        String::new(),
                 has_error:        false,
@@ -227,6 +235,7 @@ pub async fn query(
             Html(ChatMessage {
                 user_query:       form.query,
                 response:         String::new(),
+                response_html:    String::new(),
                 error_msg:        String::new(),
                 has_error:        false,
                 has_context_note: false,
@@ -279,6 +288,7 @@ pub async fn query(
 
             let html = ChatMessage {
                 user_query:       form.query,
+                response_html:    crate::markdown::render(&response),
                 response,
                 error_msg:        String::new(),
                 has_error:        false,
@@ -353,6 +363,7 @@ fn render_error(_duration: &str, msg: String) -> Result<Response, AppError> {
     let html = ChatMessage {
         user_query:       String::new(),
         response:         String::new(),
+        response_html:    String::new(),
         error_msg:        msg,
         has_error:        true,
         has_context_note: false,
@@ -365,6 +376,7 @@ fn render_error_with_query(query: String, msg: String) -> Result<Response, AppEr
     let html = ChatMessage {
         user_query:       query,
         response:         String::new(),
+        response_html:    String::new(),
         error_msg:        msg,
         has_error:        true,
         has_context_note: false,

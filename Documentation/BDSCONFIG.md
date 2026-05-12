@@ -48,6 +48,7 @@ cross-reference it rather than duplicating tuning advice.
    - 7.3 [`llm.dedup`](#73-llmdedup)
    - 7.4 [`llm.runner`](#74-llmrunner)
 8. [bdsweb-specific keys](#8-bdsweb-specific-keys)
+   - 8.1 [`web.analyze.*` — "Analyze this!" buttons](#81-webanalyze--analyze-this-buttons)
 9. [Legacy `v2/chat.ollama` keys](#9-legacy-v2chatollama-keys)
 10. [Tuning matrix](#10-tuning-matrix)
 11. [Required-vs-optional summary](#11-required-vs-optional-summary)
@@ -816,6 +817,12 @@ llm: {
       api_key_env:   "OPENAI_API_KEY"
       default_model: "gpt-4o-mini"
     }
+    deepseek: {
+      base_url:      "https://api.deepseek.com"
+      api_key_env:   "DEEPSEEK_API_KEY"
+      // api_key:    "sk-…"            // optional hjson fallback
+      default_model: "deepseek-chat"
+    }
   }
 
   cache: { enabled: true, ttl_secs: 86400 }
@@ -841,11 +848,36 @@ returns `no providers registered`.
 | `llm.providers.openai.base_url`           | `"https://api.openai.com"`       | no       |
 | `llm.providers.openai.api_key_env`        | `"OPENAI_API_KEY"`               | no       |
 | `llm.providers.openai.default_model`      | `"gpt-4o-mini"`                  | no       |
+| `llm.providers.deepseek.base_url`         | `"https://api.deepseek.com"`     | no       |
+| `llm.providers.deepseek.api_key_env`      | `"DEEPSEEK_API_KEY"`             | no       |
+| `llm.providers.deepseek.api_key`          | `""` (no fallback)               | no       |
+| `llm.providers.deepseek.default_model`    | `"deepseek-chat"`                | no       |
 
 - **`api_key_env`** names the **environment variable** holding the
-  API key — never put the key itself in `bds.hjson`.  An unset env
-  var causes that provider to be logged-and-skipped at startup,
-  not a fatal error.
+  API key.  For `anthropic` / `openai` this is the *only* source —
+  an unset env var causes that provider to be logged-and-skipped at
+  startup, not a fatal error.  Never put the key itself in
+  `bds.hjson` for those two.
+- **DeepSeek** is the exception: the key is resolved as **env var
+  first, then hjson `api_key` fallback**.  If `$DEEPSEEK_API_KEY`
+  is set and non-empty it wins; otherwise bdsnode reads the
+  plaintext `api_key` field.  Both unset → skip the provider.  This
+  asymmetry exists so deployments that can't easily set env vars
+  (e.g. systemd units behind operator-only access) can still ship
+  the key in hjson, while operators who prefer the env-only model
+  just leave `api_key` out and behaviour matches the other
+  providers.  The chosen source is logged at startup:
+  `[llm] registered provider 'deepseek' model=… (key from $DEEPSEEK_API_KEY)`
+  or
+  `(key from bds.hjson:llm.providers.deepseek.api_key)`.
+- **DeepSeek capabilities**: chat completions only — no embeddings.
+  Models: `deepseek-chat` (default) or `deepseek-reasoner` (chain
+  of thought).  Wire format is OpenAI-compatible.
+- **`llm.default`** — provider name used when a v4/llm.* request
+  omits `provider`.  When unset, the first successfully registered
+  provider wins.  Misconfigured default (name doesn't match any
+  registered provider) silently falls back to the first
+  registered.
 - **`llm.default`** — provider name used when a v4/llm.* request
   omits `provider`.  When unset, the first successfully registered
   provider wins.  Misconfigured default (name doesn't match any
@@ -941,6 +973,72 @@ each page forces a live fetch through `/<page>/refresh`.
 Tuning: lower for tighter UI responsiveness (cost: more RPC traffic
 to bdsnode); raise on RPC-saturated clusters where stale UI is
 acceptable.  See [`CLUSTER_DETAILS.md`](CLUSTER_DETAILS.md) § 10.1.
+
+### 8.1 `web.analyze.*` — "Analyze this!" buttons
+
+bdsweb's analysis pages each have an **Analyze this!** button that
+hands the current result set to the default LLM via `v4/llm.analyze`
+and renders the verdict in a floating side-pane.  Each target gets
+its own sub-block under `web.analyze.<target>` so future targets
+(metrics, rca, …) slot in alongside `logs` without re-shuffling the
+schema.
+
+#### `web.analyze.logs` (Telemetry → Logs page)
+
+Three knobs:
+
+```hjson
+web: {
+  analyze: {
+    logs: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing a slice of operational log records …
+        '''
+    }
+    // Future: web.analyze.metrics, web.analyze.rca, …
+  }
+}
+```
+
+| Field             | Type    | Default                              | Floor / Range |
+|-------------------|---------|--------------------------------------|---------------|
+| `timeout_secs`    | integer | 600                                  | floor 30      |
+| `max_rows`        | integer | 50                                   | 1 – 500       |
+| `prompt_template` | string  | built-in 5-step SRE analysis prompt  | —             |
+
+- **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
+  on the analyze call only.  Default 600 s.  CPU-bound local Ollama
+  on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
+  needs 60–180 s for the first call; cached repeats return in <50 ms.
+  Raise on slower hardware or larger prompts; lower to fail fast on
+  wedged providers.
+
+- **`max_rows`** — how many search hits bdsweb fetches and forwards
+  to the LLM.  Default 50.  Clamped to `[1, 500]` because anything
+  more usually overflows the model's context window and produces a
+  mush of unrelated logs.
+
+- **`prompt_template`** — operator-supplied instruction text prepended
+  to the rows when calling `v4/llm.analyze`.  Use hjson triple-quoted
+  multi-line strings (`'''…'''`) for readability.  The default is the
+  built-in "5-step SRE analysis" prompt; rewrite it to change the
+  analysis style — narrower focus ("only mention auth failures"),
+  audience ("explain like I'm a junior on-call"), language ("respond
+  in Russian"), or output format ("return strict JSON with keys
+  `theme`, `errors`, `next_step`").
+
+Missing block or missing keys fall back to the built-in defaults;
+operators who don't care about this feature don't need to edit
+anything.
+
+Active settings are logged at bdsweb startup:
+
+```
+[INFO] web.analyze.logs: timeout=600s, max_rows=50, prompt_chars=621
+```
 
 ---
 

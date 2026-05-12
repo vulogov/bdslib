@@ -17,7 +17,7 @@
 use bdslib::cluster::hmac_auth;
 use serde_json::{json, Map, Value};
 
-use crate::{client::rpc, error::AppError, state::AppState};
+use crate::{client::rpc_with_timeout, error::AppError, state::AppState};
 
 /// Sign + send a v3/* admin RPC.  `params` is the inner params object
 /// (without `_hmac`).  Returns the parsed `result` field of the JSON-RPC
@@ -28,6 +28,18 @@ use crate::{client::rpc, error::AppError, state::AppState};
 /// bootstrap path (where applicable).  Callers should treat the
 /// returned error from a closed bootstrap window as "auth required".
 pub async fn signed_rpc(state: &AppState, method: &str, params: Value) -> Result<Value, AppError> {
+    signed_rpc_with_timeout(state, method, params, None).await
+}
+
+/// Like [`signed_rpc`] but with an explicit per-request timeout.  Pass
+/// `Some(duration)` for v4/llm.* calls that legitimately exceed the
+/// 120s default — e.g. analyzing 50 rows on a CPU-bound local Ollama.
+pub async fn signed_rpc_with_timeout(
+    state:   &AppState,
+    method:  &str,
+    params:  Value,
+    timeout: Option<std::time::Duration>,
+) -> Result<Value, AppError> {
     let obj = match params {
         Value::Object(m) => m,
         Value::Null      => Map::new(),
@@ -48,7 +60,7 @@ pub async fn signed_rpc(state: &AppState, method: &str, params: Value) -> Result
         Value::Object(obj)
     };
 
-    rpc(state, method, signed).await
+    rpc_with_timeout(state, method, signed, timeout).await
 }
 
 fn short_type(v: &Value) -> &'static str {

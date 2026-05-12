@@ -70,11 +70,23 @@
   // instance, so `bdscmd llm ...` works against any node without
   // needing an external API key.
   llm: {
-    default: "ollama"
+    default: "deepseek"
     providers: {
       ollama: {
         url:           "http://127.0.0.1:11434"
         default_model: "llama3.2"
+      }
+
+      // DeepSeek — chat-only (no embeddings).  Key resolution order:
+      // $DEEPSEEK_API_KEY (preferred) → `api_key` field below.
+      // Uncomment the `api_key` line if you want the cluster to use a
+      // DeepSeek key without setting an env var; the env var still
+      // wins when both are present.
+      deepseek: {
+        base_url:      "https://api.deepseek.com"
+        api_key_env:   "DEEPSEEK_API_KEY"
+        // api_key:    "sk-…"
+        default_model: "deepseek-chat"
       }
     }
 
@@ -91,4 +103,19 @@
       }
     }
   }
+
+  // ── bdsweb "Analyze this!" buttons (under web.analyze.<target>) ──
+  // Per-target sub-blocks; more targets (metrics, rca, …) will slot in
+  // here.  All keys are optional; defaults live in bdsweb code.
+  // web: {
+  //   analyze: {
+  //     logs: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing a slice of operational log records …
+  //       '''
+  //     }
+  //   }
+  // }
 }

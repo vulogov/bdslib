@@ -64,6 +64,57 @@
   font-size: 0.8125rem; vertical-align: top;
 }
 #sec-body tr:hover td { background: #1a2030; }
+
+/* ── "Analyze this!" floating pane (left side, mirror of #results-panel) ── */
+#analysis-panel {
+  position: fixed;
+  top: 57px;
+  left: 0;
+  bottom: 0;
+  width: min(640px, 100vw);
+  background: #0e1520;
+  border-right: 1px solid #1e2535;
+  box-shadow: 6px 0 32px rgba(0,0,0,0.5);
+  z-index: 55;     /* above #results-panel so it can layer on top */
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease-in-out;
+  overflow: hidden;
+}
+#analysis-panel.open { transform: translateX(0); }
+
+#analysis-spinner {
+  display: none;
+  font-size: 0.75rem;
+  color: #60a5fa;
+}
+/* htmx attaches `.htmx-request` directly to the element pointed at
+ * by `hx-indicator`, so the selector matches the indicator itself,
+ * not a parent. */
+#analysis-spinner.htmx-request,
+.htmx-request#analysis-spinner { display: inline; }
+
+.btn-analyze {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #c7d2fe;
+  background: linear-gradient(180deg, #2937a2 0%, #1f2774 100%);
+  border: 1px solid #3b46c9;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.btn-analyze:hover { filter: brightness(1.15); }
+.btn-analyze:disabled {
+  filter: grayscale(0.6);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 </style>
 {% endblock %}
 
@@ -153,12 +204,35 @@
 <div id="results-panel">
 
   <!-- Panel header -->
-  <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+  <div class="flex items-center justify-between px-4 py-2.5 shrink-0 gap-3"
        style="border-bottom:1px solid #1e2535; background:#0e1520;">
     <span class="text-xs text-slate-500 uppercase tracking-wide">Results</span>
-    <button onclick="closePanel()"
-            class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
-            title="Close">✕</button>
+    <div class="flex items-center gap-2">
+      <!-- "Analyze this!" — GETs current query+duration to /logs/analyze
+           and slides #analysis-panel open with the LLM verdict.  One-shot;
+           no chat session involved.  type="button" so a stray <form>
+           wrapper can't accidentally submit-and-reload the page. -->
+      <button id="analyze-btn"
+              type="button"
+              class="btn-analyze"
+              hx-get="/logs/analyze"
+              hx-include="#q-input,[name=duration]"
+              hx-target="#analysis-body"
+              hx-swap="innerHTML"
+              hx-indicator="#analysis-spinner"
+              hx-disabled-elt="this"
+              onclick="onAnalyzeClick()"
+              title="One-shot LLM analysis of the current result set (Explain to me — not chat)">
+        <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true">
+          <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+        </svg>
+        Analyze this!
+      </button>
+      <span id="analysis-spinner">Analyzing…</span>
+      <button onclick="closePanel()"
+              class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
+              title="Close">✕</button>
+    </div>
   </div>
 
   <!-- Panel body — HTMX target -->
@@ -195,6 +269,41 @@
   </div><!-- /#sec-panel -->
 
 </div><!-- /#results-panel -->
+
+<!-- ── Floating "Analyze this!" pane ────────────────────────────────────── -->
+<!-- data-* carries the default LLM identity so onAnalyzeClick() can
+     name the actual upstream in the wait message ("Asking deepseek
+     (deepseek-chat) to explain…").  Both attributes may be empty
+     when bdsnode has no providers registered or HMAC isn't
+     configured — the JS degrades to a generic "the LLM" string. -->
+<div id="analysis-panel"
+     data-analyze-provider="{{ analyze_provider }}"
+     data-analyze-model="{{ analyze_model }}">
+  <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+       style="border-bottom:1px solid #1e2535;background:#0a0f18;">
+    <div class="flex items-center gap-2 min-w-0">
+      <svg viewBox="0 0 16 16" width="14" height="14" class="text-blue-400 shrink-0" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      <span class="text-xs text-slate-300 uppercase tracking-wide">LLM analysis</span>
+      <span class="text-xs text-slate-600">· one-shot, not chat</span>
+    </div>
+    <button onclick="closeAnalysisPanel()"
+            class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
+            title="Close">✕</button>
+  </div>
+  <div id="analysis-body" class="flex-1 overflow-y-auto p-4">
+    <div class="text-center text-slate-500 text-sm py-8">
+      Click <span class="text-slate-300">"Analyze this!"</span> in the results header to ask
+      {% if !analyze_provider.is_empty() %}
+        <span class="font-mono text-slate-300">{{ analyze_provider }}{% if !analyze_model.is_empty() %} ({{ analyze_model }}){% endif %}</span>
+      {% else %}
+        the default LLM
+      {% endif %}
+      to explain the current set of log records.
+    </div>
+  </div>
+</div>
 
 <script>
 function escHtml(s) {
@@ -258,16 +367,118 @@ document.body.addEventListener('htmx:afterSwap', function(e) {
   }
 });
 
+// Sync the search-input value to whatever query produced the visible
+// results.  The key/topic chips fire hx-get to /logs/results?q=<kw>
+// WITHOUT typing into #q-input, so without this hook the input is
+// empty and the "Analyze this!" button (which reads from #q-input via
+// hx-include) sees no query at all.  Listening on afterRequest gives
+// us the source URL with the q= parameter regardless of whether the
+// trigger was the form, a chip, or the hx-trigger=load auto-fetch.
+document.body.addEventListener('htmx:afterRequest', function(e) {
+  if (!e.detail || !e.detail.successful) return;
+  var cfg = e.detail.requestConfig;
+  if (!cfg || !cfg.path) return;
+  if (cfg.path.indexOf('/logs/results') !== 0) return;
+  try {
+    var url = new URL(cfg.path, window.location.origin);
+    var q = url.searchParams.get('q');
+    if (q !== null) {
+      var input = document.getElementById('q-input');
+      if (input) input.value = q;
+    }
+  } catch (_) { /* ignore malformed URL */ }
+});
+
 function closePanel() {
   closeSecs();
   document.getElementById('results-panel').classList.remove('open');
 }
 
-// Esc closes sec-panel first, then the main panel
+// "Analyze this!" floating pane controls — independent of the
+// results-panel slide animation.  Opening it doesn't close results;
+// closing results doesn't close it.  Both are dismissed by Esc in the
+// keydown handler below in order: sec-panel → analysis-panel →
+// results-panel (most-recently-opened pops first).
+function openAnalysisPanel() {
+  document.getElementById('analysis-panel').classList.add('open');
+}
+function closeAnalysisPanel() {
+  document.getElementById('analysis-panel').classList.remove('open');
+}
+
+// Button onclick — fires alongside the htmx GET to /logs/analyze.
+// We use this to (a) open the pane immediately so the user sees the
+// transition land and (b) replace the static placeholder body with
+// a visible "Analyzing…" state.  Without this, the placeholder stays
+// put for the full 10–60s the inference can take and the operator
+// concludes the button did nothing.
+//
+// The wait message names the actual upstream provider — Ollama,
+// DeepSeek, Anthropic, OpenAI — by reading `data-analyze-provider`
+// / `data-analyze-model` off the panel root; both attributes are
+// populated server-side from `v4/llm.providers.list` (see
+// `routes::logs::fetch_analyze_provider`).  Falls back to a
+// provider-agnostic phrasing when the data isn't available.
+function onAnalyzeClick() {
+  var q = (document.getElementById('q-input') || {}).value || '';
+  if (!q.trim()) {
+    // Match the server-side empty-query branch so the message lands
+    // before /logs/analyze rejects the call.
+    document.getElementById('analysis-body').innerHTML =
+      '<div class="card rounded-lg p-4 text-sm" style="border-color:#7f1d1d;background:#1f1115">' +
+        '<div class="text-red-300 font-medium mb-1">Analysis unavailable</div>' +
+        '<div class="text-slate-300">Run a search first — there are no logs to analyze yet.</div>' +
+      '</div>';
+    openAnalysisPanel();
+    return;
+  }
+
+  var pane     = document.getElementById('analysis-panel');
+  var provider = (pane && pane.dataset.analyzeProvider) || '';
+  var model    = (pane && pane.dataset.analyzeModel)    || '';
+  var providerLabel;
+  if (provider && model) {
+    providerLabel = provider + ' (' + model + ')';
+  } else if (provider) {
+    providerLabel = provider;
+  } else {
+    providerLabel = 'the default LLM';
+  }
+  // Local vs remote tells the operator what "takes a while" looks
+  // like — Ollama on localhost is slow because it's CPU-bound; a
+  // hosted API like deepseek/openai/anthropic returns in seconds.
+  var localProviders = { 'ollama': true };
+  var perfHint = localProviders[provider]
+    ? 'Local inference on a CPU is the slow path — expect 10–60s for ~50 rows. Cached repeats return instantly.'
+    : 'Hosted providers usually return in a few seconds. Cached repeats return instantly.';
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  document.getElementById('analysis-body').innerHTML =
+    '<div class="card rounded-lg p-5 text-sm text-slate-300 flex items-center gap-3">' +
+      '<div style="width:14px;height:14px;border:2px solid #2937a2;border-top-color:#c7d2fe;' +
+            'border-radius:50%;animation:spin 0.9s linear infinite"></div>' +
+      '<div>' +
+        'Asking <span class="font-mono text-slate-200">' + esc(providerLabel) +
+        '</span> to explain these log records…' +
+        '<div class="text-xs text-slate-500 mt-1">' + esc(perfHint) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+  openAnalysisPanel();
+}
+
+// Esc closes the most-recently-opened layer:
+//   sec-panel (overlay) → analysis-panel → results-panel.
 document.addEventListener('keydown', function(e) {
   if (e.key !== 'Escape') return;
   if (document.getElementById('sec-panel').classList.contains('open')) {
     closeSecs();
+  } else if (document.getElementById('analysis-panel').classList.contains('open')) {
+    closeAnalysisPanel();
   } else {
     closePanel();
   }
