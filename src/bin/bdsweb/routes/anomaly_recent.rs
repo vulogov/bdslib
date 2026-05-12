@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
-use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{admin::signed_rpc, admin::signed_rpc_with_timeout, client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
 
@@ -37,6 +37,36 @@ struct AnomalyPage {
     anomaly_threshold: f32,
     max_anomalies:     usize,
     mode_badge:        ModeBadge,
+    /// Default LLM provider id, surfaced on `data-` for the
+    /// wait-message JS.  Empty when bdsnode reports no providers.
+    analyze_provider:  String,
+    /// Default model name.  Empty when unavailable.
+    analyze_model:     String,
+}
+
+/// Fetch the default v4/llm provider + model so the wait-message JS
+/// can name the actual upstream.  All failure modes collapse to
+/// `("", "")` — the page falls back to generic phrasing.
+async fn fetch_analyze_provider(state: &AppState) -> (String, String) {
+    if state.shared_secret.is_empty() {
+        return (String::new(), String::new());
+    }
+    let resp = match signed_rpc(state, "v4/llm.providers.list", json!({})).await {
+        Ok(v)  => v,
+        Err(e) => {
+            log::warn!("[anomaly_recent] v4/llm.providers.list failed: {e}");
+            return (String::new(), String::new());
+        }
+    };
+    let default_id = resp.get("default").and_then(|v| v.as_str()).unwrap_or("");
+    if default_id.is_empty() { return (String::new(), String::new()); }
+    let model = resp.get("providers").and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p|
+            p.get("id").and_then(|x| x.as_str()) == Some(default_id)))
+        .and_then(|p| p.get("default_model").and_then(|x| x.as_str()))
+        .unwrap_or("")
+        .to_owned();
+    (default_id.to_owned(), model)
 }
 
 pub async fn page(
@@ -44,6 +74,7 @@ pub async fn page(
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
     let mode_badge = mode_badge_for_page(&state, true).await;
+    let (analyze_provider, analyze_model) = fetch_analyze_provider(&state).await;
     Ok(Html(AnomalyPage {
         duration:          p.duration,
         n:                 p.n,
@@ -51,6 +82,8 @@ pub async fn page(
         anomaly_threshold: p.anomaly_threshold,
         max_anomalies:     p.max_anomalies,
         mode_badge,
+        analyze_provider,
+        analyze_model,
     }.render()?))
 }
 
@@ -133,4 +166,181 @@ pub async fn results(
         anomalies,
         mode_badge,
     }.render()?))
+}
+
+// ── HTMX: "Analyze this!" — explain the nature of the anomalies ──────────────
+//
+// Re-runs `v?/anomaly.recent` with the same params so the LLM sees
+// exactly what the operator does, then ships one stats row +
+// per-anomaly rows to `v4/llm.analyze`.  Stats row carries the
+// population context (n_logs, n_unique_ngrams, threshold, mean
+// rarity) and is always included; anomaly rows are capped by
+// `cfg.max_rows` so a runaway lookback can't blow the prompt
+// budget.
+
+#[derive(Template)]
+#[template(path = "partials/anomaly_recent_analysis.html")]
+struct AnomalyAnalysis {
+    response:          String,
+    response_html:     String,
+    provider:          String,
+    model:             String,
+    ms:                u64,
+    /// Per-corpus counts ACTUALLY fed to the LLM after the
+    /// `max_rows` budget split.  May be less than the matched
+    /// count when the anomaly set is larger than the budget.
+    n_anomalies_fed:   usize,
+    /// What `v?/anomaly.recent` reported before the budget cut.
+    matched_anomalies: usize,
+    n_logs:            u64,
+    mean_rarity:       f64,
+    anomaly_threshold: f64,
+    duration:          String,
+    /// `"miss"`, `"hit"`, or `""`.
+    cache:             String,
+    /// Empty when the LLM ran cleanly; banner message otherwise.
+    error:             String,
+}
+
+pub async fn analyze(
+    State(state): State<AppState>,
+    Query(p): Query<Params>,
+) -> Result<Html<String>, AppError> {
+    let cfg = state.anomaly_recent_analyze.clone();
+
+    // Re-run the same RPC the inline `results` handler used so the
+    // analysis matches what the operator is looking at.  Failures
+    // render in the panel rather than 500-ing.
+    let resp = match rpc_versioned(&state, "v2/anomaly.recent", "v3/anomaly.recent", json!({
+        "session":           SESSION,
+        "duration":          p.duration.clone(),
+        "n":                 p.n,
+        "min_word_len":      p.min_word_len,
+        "anomaly_threshold": p.anomaly_threshold,
+        "max_anomalies":     p.max_anomalies,
+    })).await {
+        Ok(v)  => v,
+        Err(e) => return Ok(Html(AnomalyAnalysis {
+            response:          String::new(),
+            response_html:     String::new(),
+            provider: String::new(),
+            model:    String::new(),
+            ms:                0,
+            n_anomalies_fed:   0,
+            matched_anomalies: 0,
+            n_logs:            0,
+            mean_rarity:       0.0,
+            anomaly_threshold: p.anomaly_threshold as f64,
+            duration:          p.duration.clone(),
+            cache:    String::new(),
+            error:    format!("Could not fetch anomaly results for analysis: {e}"),
+        }.render()?)),
+    };
+
+    let n_logs           = resp.get("n_logs").and_then(JsonValue::as_u64).unwrap_or(0);
+    let n_unique_ngrams  = resp.get("n_unique_ngrams").and_then(JsonValue::as_u64).unwrap_or(0);
+    let n_eff            = resp.get("n").and_then(JsonValue::as_u64).unwrap_or(p.n as u64);
+    let mean_rarity      = resp.get("mean_rarity").and_then(JsonValue::as_f64).unwrap_or(0.0);
+    let threshold_used   = resp.get("anomaly_threshold").and_then(JsonValue::as_f64)
+        .unwrap_or(p.anomaly_threshold as f64);
+
+    let anomalies_raw: Vec<JsonValue> = resp.get("anomalies")
+        .and_then(JsonValue::as_array).cloned().unwrap_or_default();
+    let matched_anomalies = anomalies_raw.len();
+
+    if matched_anomalies == 0 {
+        return Ok(Html(AnomalyAnalysis {
+            response:          String::new(),
+            response_html:     String::new(),
+            provider: String::new(),
+            model:    String::new(),
+            ms:                0,
+            n_anomalies_fed:   0,
+            matched_anomalies: 0,
+            n_logs,
+            mean_rarity,
+            anomaly_threshold: threshold_used,
+            duration:          p.duration.clone(),
+            cache:    String::new(),
+            error:    format!(
+                "No anomalies above threshold {:.2} in the last {} (scanned {} record{}, \
+                 mean rarity {:.3}) — try lowering the threshold or widening the duration.",
+                threshold_used, p.duration, n_logs, if n_logs == 1 { "" } else { "s" },
+                mean_rarity
+            ),
+        }.render()?));
+    }
+
+    // Build the supplied payload.  Stats row first so the model
+    // anchors its analysis on the population context, then one row
+    // per anomaly (capped at cfg.max_rows so a long-tail run can't
+    // blow the prompt).  Stats row is tagged so its synthetic-row
+    // nature is clear inside the prompt.
+    let n_anomalies_fed = matched_anomalies.min(cfg.max_rows);
+    let mut rows: Vec<JsonValue> = Vec::with_capacity(n_anomalies_fed + 1);
+    rows.push(json!({
+        "_kind":             "anomaly_window_stats",
+        "n_logs":            n_logs,
+        "n_unique_ngrams":   n_unique_ngrams,
+        "n_grams":           n_eff,
+        "anomaly_threshold": threshold_used,
+        "mean_rarity":       mean_rarity,
+        "duration":          p.duration,
+        "n_anomalies_total": matched_anomalies,
+        "n_anomalies_fed":   n_anomalies_fed,
+    }));
+    for a in anomalies_raw.iter().take(n_anomalies_fed) {
+        let mut obj = a.clone();
+        if let Some(m) = obj.as_object_mut() {
+            m.insert("_kind".into(), json!("anomaly"));
+        }
+        rows.push(obj);
+    }
+
+    let analyze_resp = signed_rpc_with_timeout(
+        &state,
+        "v4/llm.analyze",
+        json!({
+            "kind":            "supplied",
+            "rows":            rows,
+            // No `query` field — this page is detection-driven, not
+            // query-driven; the RAG context IS the anomaly set.
+            "prompt_template": cfg.prompt_template,
+        }),
+        Some(std::time::Duration::from_secs(cfg.timeout_secs)),
+    ).await;
+
+    match analyze_resp {
+        Ok(v) => {
+            let response = v.get("response").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+            let provider = v.get("provider").and_then(|x| x.as_str()).unwrap_or("?").to_owned();
+            let model    = v.get("model").and_then(|x| x.as_str()).unwrap_or("?").to_owned();
+            let ms       = v.get("ms").and_then(|x| x.as_u64()).unwrap_or(0);
+            let cache    = v.get("cache").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+            Ok(Html(AnomalyAnalysis {
+                response_html: crate::markdown::render(&response),
+                response,
+                provider, model, ms,
+                n_anomalies_fed, matched_anomalies,
+                n_logs, mean_rarity,
+                anomaly_threshold: threshold_used,
+                duration: p.duration,
+                cache,
+                error:    String::new(),
+            }.render()?))
+        }
+        Err(e) => Ok(Html(AnomalyAnalysis {
+            response:          String::new(),
+            response_html:     String::new(),
+            provider: String::new(),
+            model:    String::new(),
+            ms:       0,
+            n_anomalies_fed, matched_anomalies,
+            n_logs, mean_rarity,
+            anomaly_threshold: threshold_used,
+            duration: p.duration,
+            cache:    String::new(),
+            error:    format!("v4/llm.analyze failed: {e}"),
+        }.render()?)),
+    }
 }

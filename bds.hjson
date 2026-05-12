@@ -428,6 +428,54 @@
   //         '''
   //     }
   //
+  //     // ── Analysis → Primary LSA Summary (per-concept story) ──
+  //     // LSA decomposes the term-document matrix into N latent
+  //     // concept dimensions; the summary picks one sentence per
+  //     // concept, so each sentence is a different topical thread.
+  //     // The LLM is asked to interpret each thread AND look for
+  //     // cross-concept correlation (the unique value LSA adds
+  //     // over TextRank).  Prompt also tells the model to flag
+  //     // noise dimensions honestly.
+  //     primary_lsa_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing an LSA (Latent Semantic Analysis) summary …
+  //         '''
+  //     }
+  //
+  //     // ── Analysis → Primary LSA Query Summary (query + per-concept) ──
+  //     // Combines query-driven semantics (answer the operator) with
+  //     // LSA multi-concept structure (per-thread breakdown).  Each
+  //     // summary sentence is one latent concept INSIDE the query
+  //     // scope; the LLM uses that structure to answer the question
+  //     // and flag off-topic concepts honestly.
+  //     primary_lsa_query_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing a query-driven LSA (Latent Semantic Analysis) summary …
+  //         '''
+  //     }
+  //
+  //     // ── Analysis → Detect Anomalies (rarity-based detector output) ──
+  //     // Row-list target: one stats row + N anomaly rows.  The LLM
+  //     // is asked to OUTLINE THE NATURE of the anomalies — explain
+  //     // why each is rare, cluster them by source/time/n-gram
+  //     // family, rank by operational impact (not raw rarity), flag
+  //     // false positives.  max_rows caps the anomaly rows; the
+  //     // stats row is always included on top of that.
+  //     anomaly_recent: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing the output of a rarity-based anomaly detector …
+  //         '''
+  //     }
+  //
   //     // Future: web.analyze.rca, web.analyze.signals, …
   //   }
   // }

@@ -152,6 +152,238 @@ pub const DEFAULT_AGG_SEARCH_ANALYZE_PROMPT: &str =
      citing evidence.  Be terse; bullet points are fine.  If one corpus is empty or \
      dominated by noise, say so explicitly rather than padding the answer.";
 
+/// Default prompt for `web.analyze.primary_lsa_summary` — output of
+/// `v?/summary_lsa_for_recent`, an LSA (Latent Semantic Analysis)
+/// summary of text-bearing primary telemetry records.  Unlike
+/// TextRank (which picks central sentences via PageRank similarity),
+/// LSA decomposes the term-document matrix into `n_concepts` latent
+/// dimensions via SVD and picks one sentence per concept.  The
+/// summary is therefore **deliberately diverse** — each sentence
+/// represents a different topical thread, not the same thread
+/// rephrased.
+///
+/// The model's job is to interpret each thread *and* the
+/// relationships between them — including cross-concept
+/// correlation when two concepts together imply one underlying
+/// condition (e.g. "auth thread + database thread spike together
+/// → identity-service hitting its DB").
+///
+/// Supplied payload: one row tagged `_kind=primary_lsa_summary`
+/// carrying the summary, the LSA / TextRank knobs the operator
+/// picked (`n_concepts`, `max_sentences`, `min_word_len`) so the
+/// model can calibrate confidence.
+pub const DEFAULT_PRIMARY_LSA_SUMMARY_ANALYZE_PROMPT: &str =
+    "You are reviewing an LSA (Latent Semantic Analysis) summary of recent text-bearing \
+     primary telemetry records.  LSA decomposes the term-document matrix into N latent \
+     *concepts* via SVD and picks one sentence per concept dimension; the summary is \
+     therefore deliberately diverse — each sentence represents a different topical \
+     thread the system is touching on right now, not the same thread rephrased.  Your \
+     job is to **interpret each thread** and tell the operator what story the system \
+     is collectively telling.\n\
+     \n\
+     Produce a concise analysis covering:\n\
+     1. **Headline** — one sentence answering \"what is the system doing across these \
+     concepts right now?\"  Anchor it with verbatim phrasing from the summary.\n\
+     2. **Per-concept breakdown** — for each summary sentence, identify which topical \
+     thread it represents (auth, networking, storage, scheduling, errors, lifecycle, …) \
+     and what condition it points to.  Quote each sentence verbatim once.\n\
+     3. **Signals of trouble** — concepts that look failure-flavoured (`error`, `fail`, \
+     `timeout`, `panic`, `unauthorized`, non-2xx HTTP, OOM, certificate, …).  Spell out \
+     what the condition implies.\n\
+     4. **Healthy threads** — concepts that read as routine operations / heartbeats / \
+     periodic status that the operator can mentally tune out.\n\
+     5. **Cross-concept correlation** — when two or more concepts together suggest one \
+     underlying condition (e.g. an auth thread AND a database thread point at the same \
+     incident).  This step is the value of LSA over TextRank — don't skip it.\n\
+     6. **Most likely incident or condition** the concept mix points to, if any, \
+     citing evidence from the relevant threads.\n\
+     7. One concrete **next investigative step** — usually a tighter vector search for \
+     verbatim phrasing from one of the trouble-flavoured concepts.\n\
+     \n\
+     Quote summary sentences verbatim when citing evidence so the operator can grep / \
+     drill down.  Bullet points are fine; be terse.  If a concept dimension turned up \
+     a sentence that doesn't actually mean anything (LSA can over-decompose sparse \
+     corpora into noisy dimensions), say so honestly — sometimes the right answer is \
+     \"concept #3 is noise, ignore it\".";
+
+/// Default prompt for `web.analyze.denoise_recent` — output of
+/// `v?/denoise.recent`, the n-gram commonness denoiser.  The
+/// detector splits the window into TWO correlated corpora:
+/// - `kept` records (commonness < threshold) — the signal.
+/// - `removed` records (commonness ≥ threshold) — the noise floor
+///   (heartbeats, polling, templated status, retry chatter).
+///
+/// The LLM's job has two parts: (a) tell the story the kept set
+/// collectively describes, and (b) sanity-check the filter by
+/// characterising what got removed.  Both halves matter — kept
+/// alone misses the false-positive question; removed alone misses
+/// the signal.
+///
+/// Supplied payload: one `_kind=denoise_window_stats` row carrying
+/// population stats (n_logs, n_unique_ngrams, threshold, n_kept,
+/// n_removed), plus rows tagged `_kind=denoise_kept` and
+/// `_kind=denoise_removed`.  `max_rows` caps the **total** kept +
+/// removed row count (half reserved for kept so the signal can't
+/// be crowded out by a large noise floor); the stats row is always
+/// included on top of that.
+pub const DEFAULT_DENOISE_ANALYZE_PROMPT: &str =
+    "You are reviewing the output of an n-gram commonness denoiser over recent primary \
+     telemetry records.  The detector splits the window into two correlated corpora:\n\
+     - `_kind=denoise_kept` records have low commonness — they're the *signal*: \
+     distinctive lines that don't look like routine boilerplate.\n\
+     - `_kind=denoise_removed` records have high commonness — they're the *noise floor*: \
+     recurring templated chatter (heartbeats, polling, periodic status, retry storms, …) \
+     that the filter judged operationally uninteresting.\n\
+     \n\
+     The leading `_kind=denoise_window_stats` row carries the population context \
+     (records scanned, unique n-grams, threshold, kept vs removed counts).  Your job has \
+     **two parts**: tell the operator the story the KEPT records collectively describe, \
+     AND sanity-check the filter by characterising what got REMOVED.  Both halves \
+     matter — analysing kept alone misses the false-positive question, analysing \
+     removed alone misses the signal.\n\
+     \n\
+     Produce a concise analysis covering:\n\
+     1. **Population context** — using the stats row, characterise the split: is the \
+     noise floor doing the heavy lifting (most records removed) or is the corpus already \
+     mostly signal?  If the kept fraction is unusually high or low compared to a normal \
+     window, call that out — it's information in its own right.\n\
+     2. **The signal** — what story do the KEPT records collectively tell?  Themes, \
+     failure indicators, anomalies inside the kept set.  Quote specific `[idx]` and \
+     verbatim text snippets as evidence.\n\
+     3. **The noise floor** — characterise what got REMOVED.  Is it plausible boilerplate \
+     (heartbeats, scheduled jobs, periodic metric writes) the operator can mentally \
+     skip?  Or does any of it look like real signal the filter mistakenly threw away?\n\
+     4. **Filter quality check** — flag potential **false positives** (real-signal lines \
+     hiding in REMOVED) and **false negatives** (clear boilerplate that survived in KEPT).  \
+     These guide threshold tuning — if you see two or three of either kind, suggest \
+     raising or lowering the threshold accordingly.\n\
+     5. **Most likely incident or condition** based ONLY on the kept set.  Cite specific \
+     `[idx]` references as evidence.\n\
+     6. One concrete **next investigative step** — usually a vector search for a verbatim \
+     phrase from the kept set, a per-key drill-down on a clustering signal source, or a \
+     threshold adjustment based on the filter-quality check.\n\
+     \n\
+     Quote record text verbatim when citing evidence.  Bullet points are fine; be terse.  \
+     If the kept set is sparse and the removed set is dominated by uniform boilerplate \
+     (i.e. nothing interesting happened in this window), say so plainly rather than \
+     forcing a narrative.";
+
+/// Default prompt for `web.analyze.anomaly_recent` — output of
+/// `v?/anomaly.recent`, the rarity-ranked anomaly detector.  Each
+/// anomaly row carries `rarity` (higher = more anomalous), the
+/// record `text`, the `novel_ngrams` that drove the rarity score,
+/// and the original `idx`.  Stats accompany the rows: `n_logs`
+/// scanned, `n_unique_ngrams`, the `anomaly_threshold` chosen, and
+/// `mean_rarity` across the whole window.
+///
+/// The model's job is to **outline the nature** of the anomalies —
+/// not just enumerate them.  Each row already has its rarity score
+/// and the n-grams that justified it; what the operator needs is an
+/// explanation of WHY the system thought each record was anomalous,
+/// whether the anomalies cluster (same key/source/timestamp band →
+/// coordinated incident), and which are false positives (rare in
+/// the rarity-metric sense but operationally meaningless).
+///
+/// Supplied payload: one `_kind=anomaly_window_stats` row carrying
+/// the population stats (n_logs, n_unique_ngrams, threshold, mean
+/// rarity), followed by N `_kind=anomaly` rows.  `max_rows` caps
+/// the anomaly rows; stats row always gets through.
+pub const DEFAULT_ANOMALY_ANALYZE_PROMPT: &str =
+    "You are reviewing the output of a rarity-based anomaly detector run over recent \
+     primary telemetry records.  The payload carries one `_kind=anomaly_window_stats` \
+     row with the population stats (records scanned, unique n-grams, threshold, mean \
+     rarity) and N `_kind=anomaly` rows.  Each anomaly row already has its `rarity` \
+     score (higher = more anomalous) and the `novel_ngrams` that drove the score — \
+     n-grams that didn't appear elsewhere in the window, which is what made the \
+     record stand out.\n\
+     \n\
+     Your job is to **outline the nature** of these anomalies — explain *why* each \
+     one is anomalous, look for patterns across the set, and tell the operator the \
+     story.  Do NOT just list the anomalies back; the operator can already see them \
+     on the page.  Produce a concise analysis covering:\n\
+     1. **Population context** — using the stats row, characterise the corpus: was the \
+     window dense or sparse?  Is the mean rarity low (most records look normal) or \
+     elevated (the whole window is unusual)?  This frames everything else.\n\
+     2. **Themes across anomalies** — group the rows by what makes them rare.  Common \
+     groupings: same key/source, same error class, same time band, same novel n-gram \
+     family (e.g. all mentioning an unfamiliar hostname or service).  Quote example \
+     anomalies verbatim by `[idx]` and `rarity`.\n\
+     3. **Severity ranking** — top 1–3 anomalies the operator should look at first.  \
+     Be opinionated: rarity score is only one input; combine it with the operational \
+     weight of the content (an OOM kill at rarity 0.71 matters more than a one-off \
+     debug message at rarity 0.95).\n\
+     4. **False-positive candidates** — anomalies that are technically rare (e.g. a \
+     scheduled-job artefact, a startup-only banner, a fresh service first-emission) \
+     but operationally meaningless.  Flag them so the operator can tune them out.\n\
+     5. **Most likely incident or condition** — what story do the meaningful \
+     anomalies collectively point to?  Cite specific `[idx]` references as evidence.\n\
+     6. One concrete **next investigative step** — usually a vector search for one of \
+     the verbatim anomalous strings, a per-key drill-down on a clustering anomaly \
+     source, or lowering the threshold to surface near-misses.\n\
+     \n\
+     Quote anomaly text verbatim when citing evidence.  Bullet points are fine; be \
+     terse.  If the anomaly set is dominated by noise (boilerplate variance, single \
+     orphaned records) and there's no real incident signal, say so plainly rather \
+     than forcing a narrative.";
+
+/// Default prompt for `web.analyze.primary_lsa_query_summary` —
+/// output of `v?/summary_lsa_for_query`, the **query-driven** LSA
+/// summary of primary telemetry text bodies.  Combines two traits:
+///
+/// - Query-driven, like `primary_query_summary` — the operator
+///   asked a specific question and only records matching it were
+///   summarised, so the LLM has to *answer the question*, not tell
+///   a general story.
+/// - LSA-decomposed, like `primary_lsa_summary` — the summary
+///   picks one sentence per latent concept, so each sentence is a
+///   different thread inside the query scope.
+///
+/// The prompt blends both: structure the answer around the LSA
+/// concept dimensions (per-thread breakdown), but anchor every step
+/// back to the operator's question.  Concept dimensions that don't
+/// actually speak to the question should be flagged honestly as
+/// off-topic LSA artefacts — pretending they're signal is worse
+/// than ignoring them.
+///
+/// Supplied payload: one row tagged `_kind=primary_lsa_query_summary`
+/// carrying query, summary, `n_concepts`, and the TextRank knobs.
+pub const DEFAULT_PRIMARY_LSA_QUERY_SUMMARY_ANALYZE_PROMPT: &str =
+    "You are reviewing a query-driven LSA (Latent Semantic Analysis) summary of recent \
+     text-bearing primary telemetry records.  Two things distinguish this input from \
+     the other summary views:\n\
+     - The operator already asked a specific question (carried in the row's `query` \
+     field) — only records matching that question via vector search were summarised.\n\
+     - LSA decomposed the resulting text into N latent *concepts* via SVD and picked \
+     one sentence per concept dimension.  Each summary sentence is therefore a \
+     different topical thread *inside the operator's question*.\n\
+     \n\
+     Your job is to **answer the operator's question** using the per-concept structure \
+     of the summary as evidence — not to tell a general story, and not to summarise \
+     the summary.  Produce a concise analysis covering:\n\
+     1. **Direct answer** — one or two sentences that take a position on the operator's \
+     question, anchored with verbatim phrasing pulled from the summary.\n\
+     2. **Per-concept breakdown** — for each summary sentence, name the topical thread \
+     it represents and how it relates to the operator's question.  Quote each sentence \
+     verbatim once.  If a concept is clearly off-topic (LSA over-decomposing or vector \
+     search drifting), flag it as such — don't force it to fit.\n\
+     3. **Signals of trouble within the query scope** — concepts that look failure- \
+     flavoured (`error`, `fail`, `timeout`, `panic`, `unauthorized`, non-2xx HTTP, OOM, \
+     certificate, …).  Quote verbatim and explain the condition.\n\
+     4. **Cross-concept correlation** — when two or more concepts together imply one \
+     underlying condition that answers the question.  This is the unique value LSA \
+     adds over TextRank for query-driven analysis; don't skip it.\n\
+     5. **Caveats** — if the retrieved records or the LSA decomposition don't actually \
+     speak to the question, say so plainly.  Operators waste time chasing weak \
+     semantic matches; flag them honestly rather than forcing an answer out of \
+     unrelated text.\n\
+     6. One concrete **next investigative step** — usually a tighter vector search \
+     for a verbatim phrase from one of the on-topic concepts, a per-key drill-down, \
+     or a runbook lookup tied to a trouble signal.\n\
+     \n\
+     Quote summary sentences verbatim when citing evidence so the operator can grep / \
+     drill down.  Bullet points are fine; be terse.  If the summary truly doesn't \
+     answer the question, that is a valid answer — say so plainly rather than padding.";
+
 /// Default prompt for `web.analyze.primary_query_summary` — output
 /// of `v?/summary_for_query`, a TextRank-PageRank extract of the
 /// text bodies from primary telemetry records that **matched a
@@ -408,6 +640,54 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_PRIMARY_QUERY_SUMMARY_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.primary_lsa_summary`.  Same
+    /// single-row payload shape as the other summary targets; the
+    /// default prompt is LSA-aware (per-concept breakdown,
+    /// cross-concept correlation).
+    pub fn primary_lsa_summary_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_PRIMARY_LSA_SUMMARY_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+
+    /// Default settings for `web.analyze.primary_lsa_query_summary`.
+    /// Combines query-driven semantics (answer the operator) with
+    /// LSA multi-concept structure (per-thread breakdown).
+    pub fn primary_lsa_query_summary_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_PRIMARY_LSA_QUERY_SUMMARY_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+
+    /// Default settings for `web.analyze.anomaly_recent`.  Row-list
+    /// target; `max_rows` caps the anomaly rows handed to the model
+    /// (the one stats row is always included on top of that, so the
+    /// LLM never loses population context).
+    pub fn anomaly_recent_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_ANOMALY_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+
+    /// Default settings for `web.analyze.denoise_recent`.  Two-corpus
+    /// target: `max_rows` caps the **total** kept + removed row count
+    /// fed to the LLM (with half reserved for kept so a noisy window
+    /// can't drown out the signal), plus one always-included stats
+    /// row on top.
+    pub fn denoise_recent_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_DENOISE_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -462,6 +742,20 @@ pub struct AppState {
     /// the Analysis → Primary Query Summary page
     /// (`web.analyze.primary_query_summary.*`).
     pub primary_query_summary_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Primary LSA Summary page
+    /// (`web.analyze.primary_lsa_summary.*`).
+    pub primary_lsa_summary_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Primary LSA Query Summary page
+    /// (`web.analyze.primary_lsa_query_summary.*`).
+    pub primary_lsa_query_summary_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Detect Anomalies page (`web.analyze.anomaly_recent.*`).
+    pub anomaly_recent_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Denoise page (`web.analyze.denoise_recent.*`).
+    pub denoise_recent_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -470,13 +764,17 @@ impl AppState {
         dashboard_refresh_secs: u64,
         cluster_refresh_secs:   u64,
         shared_secret: String,
-        logs_analyze:                  AnalyzeTargetConfig,
-        metrics_analyze:               AnalyzeTargetConfig,
-        templates_analyze:             AnalyzeTargetConfig,
-        agg_search_analyze:            AnalyzeTargetConfig,
-        templates_summary_analyze:     AnalyzeTargetConfig,
-        primary_summary_analyze:       AnalyzeTargetConfig,
-        primary_query_summary_analyze: AnalyzeTargetConfig,
+        logs_analyze:                      AnalyzeTargetConfig,
+        metrics_analyze:                   AnalyzeTargetConfig,
+        templates_analyze:                 AnalyzeTargetConfig,
+        agg_search_analyze:                AnalyzeTargetConfig,
+        templates_summary_analyze:         AnalyzeTargetConfig,
+        primary_summary_analyze:           AnalyzeTargetConfig,
+        primary_query_summary_analyze:     AnalyzeTargetConfig,
+        primary_lsa_summary_analyze:       AnalyzeTargetConfig,
+        primary_lsa_query_summary_analyze: AnalyzeTargetConfig,
+        anomaly_recent_analyze:            AnalyzeTargetConfig,
+        denoise_recent_analyze:            AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -492,13 +790,17 @@ impl AppState {
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             shared_secret:   Arc::new(shared_secret),
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),
-            logs_analyze:                  Arc::new(logs_analyze),
-            metrics_analyze:               Arc::new(metrics_analyze),
-            templates_analyze:             Arc::new(templates_analyze),
-            agg_search_analyze:            Arc::new(agg_search_analyze),
-            templates_summary_analyze:     Arc::new(templates_summary_analyze),
-            primary_summary_analyze:       Arc::new(primary_summary_analyze),
-            primary_query_summary_analyze: Arc::new(primary_query_summary_analyze),
+            logs_analyze:                      Arc::new(logs_analyze),
+            metrics_analyze:                   Arc::new(metrics_analyze),
+            templates_analyze:                 Arc::new(templates_analyze),
+            agg_search_analyze:                Arc::new(agg_search_analyze),
+            templates_summary_analyze:         Arc::new(templates_summary_analyze),
+            primary_summary_analyze:           Arc::new(primary_summary_analyze),
+            primary_query_summary_analyze:     Arc::new(primary_query_summary_analyze),
+            primary_lsa_summary_analyze:       Arc::new(primary_lsa_summary_analyze),
+            primary_lsa_query_summary_analyze: Arc::new(primary_lsa_query_summary_analyze),
+            anomaly_recent_analyze:            Arc::new(anomaly_recent_analyze),
+            denoise_recent_analyze:            Arc::new(denoise_recent_analyze),
         }
     }
 }

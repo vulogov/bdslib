@@ -159,6 +159,27 @@
   //         You are reviewing a TextRank-PageRank summary that distills …
   //       '''
   //     }
+  //     primary_lsa_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing an LSA (Latent Semantic Analysis) summary …
+  //       '''
+  //     }
+  //     primary_lsa_query_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing a query-driven LSA (Latent Semantic Analysis) summary …
+  //       '''
+  //     }
+  //     anomaly_recent: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing the output of a rarity-based anomaly detector …
+  //       '''
+  //     }
   //   }
   // }
 }

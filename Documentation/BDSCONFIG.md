@@ -1124,6 +1124,68 @@ web: {
 
 Default prompt — 5-step *answer-the-question* frame.  This page is unique in being query-driven: the operator already asked a specific question (semantic vector search), the records summarised are those matching the question, and the LLM's job is to **answer the operator** using the summary as evidence — not to tell a general story.  Steps: direct answer with verbatim anchoring, supporting evidence (2–4 quoted sentences), signals of trouble within the query scope, **caveats** for thin / off-topic summaries (so operators stop chasing weak retrieval matches), next investigative step.  The supplied payload is always exactly one `_kind=primary_query_summary` row carrying the query, the summary, and the TextRank knobs; the query is also passed to `v4/llm.analyze` separately so the inference cache key is query-aware.  The prompt explicitly tells the model to *refuse to force an answer* when the summary doesn't actually speak to the question — important for keeping operators out of dead ends.
 
+#### `web.analyze.primary_lsa_summary` (Analysis → Primary LSA Summary page)
+
+```hjson
+web: {
+  analyze: {
+    primary_lsa_summary: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing an LSA (Latent Semantic Analysis) summary …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 7-step *per-concept* frame.  Unlike TextRank (which picks central sentences via PageRank similarity), LSA decomposes the term-document matrix into `n_concepts` latent dimensions via SVD and picks one sentence per concept — so the summary is **deliberately diverse**, each sentence representing a different topical thread.  The prompt mirrors that structure: headline across all concepts, per-concept breakdown identifying which thread each sentence represents, trouble signals, healthy threads, **cross-concept correlation** (the unique value LSA adds over TextRank — when two concepts together imply one underlying condition), most-likely incident, next step.  The supplied payload is exactly one `_kind=primary_lsa_summary` row carrying the summary, the operator's `n_concepts` choice, and the TextRank knobs.  The prompt also tells the model to *flag noise dimensions* honestly — LSA can over-decompose sparse corpora into meaningless concepts, and pretending each one is signal is worse than ignoring the bad ones.
+
+#### `web.analyze.primary_lsa_query_summary` (Analysis → Primary LSA Query Summary page)
+
+```hjson
+web: {
+  analyze: {
+    primary_lsa_query_summary: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing a query-driven LSA (Latent Semantic Analysis) summary …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *answer-the-question, per-concept* frame.  This target combines the two traits that distinguish each of its siblings:
+
+- **Query-driven**, like `primary_query_summary` — the operator already asked a question via vector search and the records summarised are those matching it.  The LLM must *answer the operator*, not tell a general story.
+- **LSA-decomposed**, like `primary_lsa_summary` — the summary has `n_concepts` sentences, each representing a different topical thread inside the query scope.
+
+The prompt blends both: direct answer anchored verbatim, per-concept breakdown tying each thread back to the question (with explicit instructions to flag off-topic concepts honestly), trouble signals within the query scope, **cross-concept correlation** (the LSA value-add for query-driven analysis), caveats for weak retrieval / over-decomposed LSA, next step.  The supplied payload is exactly one `_kind=primary_lsa_query_summary` row carrying query, summary, `n_concepts`, and the TextRank knobs; the query is also passed to `v4/llm.analyze` separately so the inference cache key is query-aware.  Critical guardrail: *"If the summary truly doesn't answer the question, that is a valid answer — say so plainly rather than padding."*
+
+#### `web.analyze.anomaly_recent` (Analysis → Detect anomalies page)
+
+```hjson
+web: {
+  analyze: {
+    anomaly_recent: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing the output of a rarity-based anomaly detector …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *outline-the-nature* frame designed for `v?/anomaly.recent` output.  Unlike the summary targets which receive a single derived blob, this one receives a row list: one synthetic `_kind=anomaly_window_stats` row carrying the population context (`n_logs`, `n_unique_ngrams`, threshold, mean rarity), plus N `_kind=anomaly` rows each with `idx`, `rarity`, the record `text`, and the `novel_ngrams` that drove the rarity score.  The prompt asks the model to **explain** the anomalies, not list them: population framing, themes across anomalies (clustering by key/source/time/n-gram family), severity ranking weighted by operational impact rather than raw rarity, **false-positive candidates** so the operator can tune them out, most-likely incident, next step.  `max_rows` caps the anomaly rows fed to the LLM; the stats row is always included on top of that so the model never loses population context.  Critical guardrail: *"If the anomaly set is dominated by noise … say so plainly rather than forcing a narrative."*
+
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
   on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
@@ -1150,13 +1212,16 @@ edit anything.
 Active settings are logged at bdsweb startup:
 
 ```
-[INFO] web.analyze.logs:                  timeout=600s, max_rows=50, prompt_chars=621
-[INFO] web.analyze.metrics:               timeout=600s, max_rows=50, prompt_chars=863
-[INFO] web.analyze.templates:             timeout=600s, max_rows=50, prompt_chars=1110
-[INFO] web.analyze.agg_search:            timeout=600s, max_rows=50, prompt_chars=1457
-[INFO] web.analyze.templates_summary:     timeout=600s, max_rows=50, prompt_chars=1620
-[INFO] web.analyze.primary_summary:       timeout=600s, max_rows=50, prompt_chars=1495
-[INFO] web.analyze.primary_query_summary: timeout=600s, max_rows=50, prompt_chars=1502
+[INFO] web.analyze.logs:                      timeout=600s, max_rows=50, prompt_chars=621
+[INFO] web.analyze.metrics:                   timeout=600s, max_rows=50, prompt_chars=863
+[INFO] web.analyze.templates:                 timeout=600s, max_rows=50, prompt_chars=1110
+[INFO] web.analyze.agg_search:                timeout=600s, max_rows=50, prompt_chars=1457
+[INFO] web.analyze.templates_summary:         timeout=600s, max_rows=50, prompt_chars=1620
+[INFO] web.analyze.primary_summary:           timeout=600s, max_rows=50, prompt_chars=1495
+[INFO] web.analyze.primary_query_summary:     timeout=600s, max_rows=50, prompt_chars=1502
+[INFO] web.analyze.primary_lsa_summary:       timeout=600s, max_rows=50, prompt_chars=1758
+[INFO] web.analyze.primary_lsa_query_summary: timeout=600s, max_rows=50, prompt_chars=2042
+[INFO] web.analyze.anomaly_recent:            timeout=600s, max_rows=50, prompt_chars=2470
 ```
 
 ---

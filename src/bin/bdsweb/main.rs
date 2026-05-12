@@ -70,6 +70,14 @@ struct WebConfig {
     primary_summary_analyze:   state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Analysis → Primary Query Summary → "Analyze this!".
     primary_query_summary_analyze: state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Primary LSA Summary → "Analyze this!".
+    primary_lsa_summary_analyze:   state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Primary LSA Query Summary → "Analyze this!".
+    primary_lsa_query_summary_analyze: state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Detect Anomalies → "Analyze this!".
+    anomaly_recent_analyze:            state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Denoise → "Analyze this!".
+    denoise_recent_analyze:            state::AnalyzeTargetConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -78,13 +86,17 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         cluster_refresh_secs:   10,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
-        logs_analyze:                  state::AnalyzeTargetConfig::logs_default(),
-        metrics_analyze:               state::AnalyzeTargetConfig::metrics_default(),
-        templates_analyze:             state::AnalyzeTargetConfig::templates_default(),
-        agg_search_analyze:            state::AnalyzeTargetConfig::agg_search_default(),
-        templates_summary_analyze:     state::AnalyzeTargetConfig::templates_summary_default(),
-        primary_summary_analyze:       state::AnalyzeTargetConfig::primary_summary_default(),
-        primary_query_summary_analyze: state::AnalyzeTargetConfig::primary_query_summary_default(),
+        logs_analyze:                      state::AnalyzeTargetConfig::logs_default(),
+        metrics_analyze:                   state::AnalyzeTargetConfig::metrics_default(),
+        templates_analyze:                 state::AnalyzeTargetConfig::templates_default(),
+        agg_search_analyze:                state::AnalyzeTargetConfig::agg_search_default(),
+        templates_summary_analyze:         state::AnalyzeTargetConfig::templates_summary_default(),
+        primary_summary_analyze:           state::AnalyzeTargetConfig::primary_summary_default(),
+        primary_query_summary_analyze:     state::AnalyzeTargetConfig::primary_query_summary_default(),
+        primary_lsa_summary_analyze:       state::AnalyzeTargetConfig::primary_lsa_summary_default(),
+        primary_lsa_query_summary_analyze: state::AnalyzeTargetConfig::primary_lsa_query_summary_default(),
+        anomaly_recent_analyze:            state::AnalyzeTargetConfig::anomaly_recent_default(),
+        denoise_recent_analyze:            state::AnalyzeTargetConfig::denoise_recent_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -145,13 +157,17 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             None => d,
         }
     };
-    let logs_analyze                  = parse_target("logs",                  state::AnalyzeTargetConfig::logs_default());
-    let metrics_analyze               = parse_target("metrics",               state::AnalyzeTargetConfig::metrics_default());
-    let templates_analyze             = parse_target("templates",             state::AnalyzeTargetConfig::templates_default());
-    let agg_search_analyze            = parse_target("agg_search",            state::AnalyzeTargetConfig::agg_search_default());
-    let templates_summary_analyze     = parse_target("templates_summary",     state::AnalyzeTargetConfig::templates_summary_default());
-    let primary_summary_analyze       = parse_target("primary_summary",       state::AnalyzeTargetConfig::primary_summary_default());
-    let primary_query_summary_analyze = parse_target("primary_query_summary", state::AnalyzeTargetConfig::primary_query_summary_default());
+    let logs_analyze                      = parse_target("logs",                      state::AnalyzeTargetConfig::logs_default());
+    let metrics_analyze                   = parse_target("metrics",                   state::AnalyzeTargetConfig::metrics_default());
+    let templates_analyze                 = parse_target("templates",                 state::AnalyzeTargetConfig::templates_default());
+    let agg_search_analyze                = parse_target("agg_search",                state::AnalyzeTargetConfig::agg_search_default());
+    let templates_summary_analyze         = parse_target("templates_summary",         state::AnalyzeTargetConfig::templates_summary_default());
+    let primary_summary_analyze           = parse_target("primary_summary",           state::AnalyzeTargetConfig::primary_summary_default());
+    let primary_query_summary_analyze     = parse_target("primary_query_summary",     state::AnalyzeTargetConfig::primary_query_summary_default());
+    let primary_lsa_summary_analyze       = parse_target("primary_lsa_summary",       state::AnalyzeTargetConfig::primary_lsa_summary_default());
+    let primary_lsa_query_summary_analyze = parse_target("primary_lsa_query_summary", state::AnalyzeTargetConfig::primary_lsa_query_summary_default());
+    let anomaly_recent_analyze            = parse_target("anomaly_recent",            state::AnalyzeTargetConfig::anomaly_recent_default());
+    let denoise_recent_analyze            = parse_target("denoise_recent",            state::AnalyzeTargetConfig::denoise_recent_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -173,6 +189,9 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         templates_summary_analyze,
         primary_summary_analyze,
         primary_query_summary_analyze,
+        primary_lsa_summary_analyze,
+        primary_lsa_query_summary_analyze,
+        anomaly_recent_analyze,
     }
 }
 
@@ -236,6 +255,24 @@ async fn main() {
         cfg.primary_query_summary_analyze.max_rows,
         cfg.primary_query_summary_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.primary_lsa_summary: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.primary_lsa_summary_analyze.timeout_secs,
+        cfg.primary_lsa_summary_analyze.max_rows,
+        cfg.primary_lsa_summary_analyze.prompt_template.len(),
+    );
+    log::info!(
+        "web.analyze.primary_lsa_query_summary: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.primary_lsa_query_summary_analyze.timeout_secs,
+        cfg.primary_lsa_query_summary_analyze.max_rows,
+        cfg.primary_lsa_query_summary_analyze.prompt_template.len(),
+    );
+    log::info!(
+        "web.analyze.anomaly_recent: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.anomaly_recent_analyze.timeout_secs,
+        cfg.anomaly_recent_analyze.max_rows,
+        cfg.anomaly_recent_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -248,6 +285,9 @@ async fn main() {
         cfg.templates_summary_analyze,
         cfg.primary_summary_analyze,
         cfg.primary_query_summary_analyze,
+        cfg.primary_lsa_summary_analyze,
+        cfg.primary_lsa_query_summary_analyze,
+        cfg.anomaly_recent_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -344,10 +384,13 @@ async fn main() {
         .route("/primary_query_summary/analyze", get(routes::primary_query_summary::analyze))
         .route("/primary_lsa_summary",         get(routes::primary_lsa_summary::page))
         .route("/primary_lsa_summary/results", get(routes::primary_lsa_summary::results))
+        .route("/primary_lsa_summary/analyze", get(routes::primary_lsa_summary::analyze))
         .route("/primary_lsa_query_summary",         get(routes::primary_lsa_query_summary::page))
         .route("/primary_lsa_query_summary/results", get(routes::primary_lsa_query_summary::results))
+        .route("/primary_lsa_query_summary/analyze", get(routes::primary_lsa_query_summary::analyze))
         .route("/anomaly_recent",         get(routes::anomaly_recent::page))
         .route("/anomaly_recent/results", get(routes::anomaly_recent::results))
+        .route("/anomaly_recent/analyze", get(routes::anomaly_recent::analyze))
         .route("/denoise_recent",         get(routes::denoise_recent::page))
         .route("/denoise_recent/results", get(routes::denoise_recent::results))
         .route("/knn",                    get(routes::knn::page))
