@@ -80,6 +80,10 @@ struct WebConfig {
     denoise_recent_analyze:            state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Analysis → k-NN → "Analyze this!".
     knn_analyze:                       state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for RCA → Telemetry RCA → "Analyze this!".
+    rca_analyze:                       state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for RCA → Templates RCA → "Analyze this!".
+    rca_templates_analyze:             state::AnalyzeTargetConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -100,6 +104,8 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         anomaly_recent_analyze:            state::AnalyzeTargetConfig::anomaly_recent_default(),
         denoise_recent_analyze:            state::AnalyzeTargetConfig::denoise_recent_default(),
         knn_analyze:                       state::AnalyzeTargetConfig::knn_default(),
+        rca_analyze:                       state::AnalyzeTargetConfig::rca_default(),
+        rca_templates_analyze:             state::AnalyzeTargetConfig::rca_templates_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -172,6 +178,8 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     let anomaly_recent_analyze            = parse_target("anomaly_recent",            state::AnalyzeTargetConfig::anomaly_recent_default());
     let denoise_recent_analyze            = parse_target("denoise_recent",            state::AnalyzeTargetConfig::denoise_recent_default());
     let knn_analyze                       = parse_target("knn",                       state::AnalyzeTargetConfig::knn_default());
+    let rca_analyze                       = parse_target("rca",                       state::AnalyzeTargetConfig::rca_default());
+    let rca_templates_analyze             = parse_target("rca_templates",             state::AnalyzeTargetConfig::rca_templates_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -198,6 +206,8 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         anomaly_recent_analyze,
         denoise_recent_analyze,
         knn_analyze,
+        rca_analyze,
+        rca_templates_analyze,
     }
 }
 
@@ -291,6 +301,18 @@ async fn main() {
         cfg.knn_analyze.max_rows,
         cfg.knn_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.rca: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.rca_analyze.timeout_secs,
+        cfg.rca_analyze.max_rows,
+        cfg.rca_analyze.prompt_template.len(),
+    );
+    log::info!(
+        "web.analyze.rca_templates: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.rca_templates_analyze.timeout_secs,
+        cfg.rca_templates_analyze.max_rows,
+        cfg.rca_templates_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -308,6 +330,8 @@ async fn main() {
         cfg.anomaly_recent_analyze,
         cfg.denoise_recent_analyze,
         cfg.knn_analyze,
+        cfg.rca_analyze,
+        cfg.rca_templates_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -388,8 +412,10 @@ async fn main() {
         .route("/signals/results",  get(routes::signals::results))
         .route("/rca",              get(routes::rca::page))
         .route("/rca/results",    get(routes::rca::results))
+        .route("/rca/analyze",    get(routes::rca::analyze))
         .route("/rca/templates",         get(routes::rca_templates::page))
         .route("/rca/templates/results", get(routes::rca_templates::results))
+        .route("/rca/templates/analyze", get(routes::rca_templates::analyze))
         .route("/templates",         get(routes::templates::page))
         .route("/templates/results", get(routes::templates::results))
         .route("/templates/analyze", get(routes::templates::analyze))

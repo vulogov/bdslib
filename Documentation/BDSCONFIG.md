@@ -1224,6 +1224,44 @@ web: {
 
 Default prompt — 7-step *interpret-the-clustering-structure* frame for `v?/knn` output.  k-NN returns two complementary outputs: **clusters** (groups of records bound by vector similarity, each with a `representative` and a `members` list) and **anomalies** (records whose `max_similarity` to any cluster fell below the threshold — singletons that didn't fit anywhere).  The prompt asks the model to interpret each cluster's operational meaning rather than re-listing them, rank by relevance (a 3-member error cluster usually matters more than a 200-member heartbeat cluster), call out failure clusters separately from routine ones, and assess anomalies as either novel-worth-investigating or just noisy edge cases.  The supplied payload carries one `_kind=knn_window_stats` row + N `_kind=knn_cluster` rows (each with its representative and a clipped members list — 5 verbatim members per cluster, so one 200-member cluster can't crowd out the others) + M `_kind=knn_anomaly` rows.  `max_rows` caps clusters + anomalies combined with a **60/40 split in favour of clusters** (each cluster row carries denser info per row); slack from either side redistributes.
 
+#### `web.analyze.rca` (RCA → Telemetry RCA page)
+
+```hjson
+web: {
+  analyze: {
+    rca: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing the output of a co-occurrence + Jaccard-based RCA …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 7-step *in-depth-RCA-insight* frame for `v?/rca` output.  The most analytically demanding target — the operator wants reasoning about cause-effect ordering, not a summary.  The detector returns ranked probable causes (each with `jaccard` co-occurrence strength and `avg_lead_secs` — **positive lead = key fired BEFORE the failure (precursor); negative = AFTER (consequence)**) plus key clusters (with `cohesion` scores).  The prompt walks the model through: failure identification, **precursor analysis** (positive-lead causes weighted by Jaccard + lead time, with explicit calibration rules like "high Jaccard + short positive lead = strong trigger"), **consequence analysis** (negative-lead causes — useful for blast-radius assessment), cluster interpretation (high-cohesion clusters including the failure_key are the most informative), the **causal story** with verbatim key + Jaccard + lead-time citations, a **confidence assessment** with concrete examples (high/medium/low), and **validation steps** the operator can run to confirm or refute the hypothesis.  Supplied payload: one `_kind=rca_window_stats` row + N `_kind=rca_cause` rows (each enriched with a synthetic `is_precursor` boolean derived from the lead sign so the model doesn't have to do sign comparison inline) + M `_kind=rca_cluster` rows.  60/40 split favouring causes (they directly answer the "what caused it?" question); stats row always passes through.  Critical guardrail: *"If the evidence doesn't support any clear hypothesis … say so plainly and recommend widening the duration or lowering min_support — RCA failure is itself useful information."*
+
+#### `web.analyze.rca_templates` (RCA → Templates RCA page)
+
+```hjson
+web: {
+  analyze: {
+    rca_templates: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing the output of a co-occurrence + Jaccard-based root-cause analysis run over drain3-mined log templates …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 7-step *in-depth-template-level-RCA-insight* frame for `v?/rca.templates` output.  Same Jaccard + lead-time machinery as `web.analyze.rca`, but the unit of evidence is a **drain3-mined log template** (a recurring pattern with `<*>` placeholders) instead of a telemetry key.  Prompt is structurally parallel to the Telemetry RCA prompt (failure identification → precursor analysis → consequence analysis → cluster interpretation → causal story → confidence assessment → validation steps) but with template-specific phrasing throughout: every "key" becomes "template", every quoted citation must preserve `<*>` wildcards so the operator can paste them straight back into the Templates search box.  Supplied payload uses the original `v?/rca.templates` field names (`failure_body`, `body`) rather than renaming them to telemetry-RCA's `failure_key`/`key` shape — keeps the prompt vocabulary aligned with the data the LLM is actually seeing.  Payload contains one `_kind=rca_templates_window_stats` row + N `_kind=rca_templates_cause` rows (each enriched with `rank` and a synthetic `is_precursor` boolean from the lead sign) + M `_kind=rca_templates_cluster` rows.  60/40 split favouring causes; stats row always passes through.
+
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
   on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
@@ -1262,6 +1300,8 @@ Active settings are logged at bdsweb startup:
 [INFO] web.analyze.anomaly_recent:            timeout=600s, max_rows=50, prompt_chars=2470
 [INFO] web.analyze.denoise_recent:            timeout=600s, max_rows=50, prompt_chars=3110
 [INFO] web.analyze.knn:                       timeout=600s, max_rows=50, prompt_chars=2870
+[INFO] web.analyze.rca:                       timeout=600s, max_rows=50, prompt_chars=4290
+[INFO] web.analyze.rca_templates:             timeout=600s, max_rows=50, prompt_chars=4530
 ```
 
 ---

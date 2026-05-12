@@ -511,7 +511,40 @@
   //         '''
   //     }
   //
-  //     // Future: web.analyze.rca, web.analyze.signals, …
+  //     // ── RCA → Telemetry RCA (in-depth root-cause reasoning) ──
+  //     // Most analytically demanding target.  The LLM walks
+  //     // through precursors (positive lead time, likely triggers),
+  //     // consequences (negative lead time, likely effects), key
+  //     // clusters, the causal story, a confidence assessment, and
+  //     // validation steps.  max_rows caps causes + clusters
+  //     // combined with a 60/40 split favouring causes; stats row
+  //     // always passes through.
+  //     rca: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing the output of a co-occurrence + Jaccard-based RCA …
+  //         '''
+  //     }
+  //
+  //     // ── RCA → Templates RCA (template-level RCA over drain3) ──
+  //     // Same Jaccard + lead-time machinery as `rca`, but the unit
+  //     // of evidence is a drain3 log template (a pattern with
+  //     // `<*>` placeholders) rather than a telemetry key.  Prompt
+  //     // is tuned for template-level reasoning and instructs the
+  //     // model to preserve `<*>` wildcards in citations.  Same
+  //     // 60/40 split.
+  //     rca_templates: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing the output of a co-occurrence + Jaccard-based root-cause analysis run over drain3-mined log templates …
+  //         '''
+  //     }
+  //
+  //     // Future: web.analyze.signals, …
   //   }
   // }
 

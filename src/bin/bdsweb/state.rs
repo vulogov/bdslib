@@ -206,6 +206,172 @@ pub const DEFAULT_PRIMARY_LSA_SUMMARY_ANALYZE_PROMPT: &str =
      corpora into noisy dimensions), say so honestly — sometimes the right answer is \
      \"concept #3 is noise, ignore it\".";
 
+/// Default prompt for `web.analyze.rca_templates` — output of
+/// `v?/rca.templates`, the **template-level** root-cause analyser.
+/// Same Jaccard + lead-time machinery as `web.analyze.rca`, but
+/// the unit of evidence is a drain3-mined log template (a recurring
+/// pattern with `<*>` placeholders where variable parts go) rather
+/// than a telemetry key.
+///
+/// The conceptual difference matters for the prompt: each cause
+/// is a *log-line pattern*, not a metric name.  When the prompt
+/// asks the model to quote evidence verbatim, it must preserve
+/// `<*>` placeholders so the operator can grep / drill down.
+/// Otherwise the analytical frame (precursors / consequences /
+/// clusters / causal story / confidence / validation) is
+/// structurally identical to `web.analyze.rca`.
+///
+/// Supplied payload: one `_kind=rca_templates_window_stats` row +
+/// N `_kind=rca_templates_cause` rows (each with a synthetic
+/// `is_precursor` flag derived from lead sign) + M
+/// `_kind=rca_templates_cluster` rows.  60/40 split favouring
+/// causes; stats row always passes through.
+pub const DEFAULT_RCA_TEMPLATES_ANALYZE_PROMPT: &str =
+    "You are reviewing the output of a co-occurrence + Jaccard-based root-cause analysis \
+     run over **drain3-mined log templates** (not raw log lines, not telemetry keys).  \
+     Each template is a recurring log-line pattern in which variable parts (IDs, \
+     timestamps, paths, numbers) are replaced by `<*>` placeholders.  The detector \
+     ranks templates by how often they co-occur with a FAILURE TEMPLATE (`jaccard`) \
+     and reports the average lead time in seconds (`avg_lead_secs`).  **Sign \
+     convention:** positive `avg_lead_secs` means the template fired BEFORE the \
+     failure (a likely PRECURSOR / trigger pattern), negative means AFTER (a likely \
+     CONSEQUENCE / effect pattern).  The detector also reports template CLUSTERS — \
+     groups of templates that move together within bucket-sized time windows, with a \
+     `cohesion` score.\n\
+     \n\
+     The leading `_kind=rca_templates_window_stats` row identifies the failure \
+     template being analysed and the window context.  Your job is to produce an \
+     **in-depth template-level RCA insight** — reason about cause-effect ordering \
+     using *pattern co-occurrence* as the unit of evidence.  Template-level RCA is \
+     structurally informative: when an entire log-line PATTERN of activity \
+     precedes a failure PATTERN, that's stronger evidence than a single coincidence \
+     of raw lines.\n\
+     \n\
+     Produce a structured analysis covering:\n\
+     1. **Failure identification** — quote the failure template `body` verbatim \
+     (preserving `<*>` wildcards) and characterise what operational behaviour it \
+     represents.  If the failure_body is empty in the stats row, the detector \
+     auto-picked the worst-correlated template — note this and identify which \
+     template was chosen.\n\
+     2. **Precursor analysis** — examine causes with **positive** `avg_lead_secs`.  \
+     Walk through them by both lead time AND Jaccard strength.  A common pattern: \
+     `auth.<*>.failed` appearing 90 seconds before `service.<*>.crash` is a credible \
+     trigger chain.  Quote template bodies verbatim including their wildcards.\n\
+     3. **Consequence analysis** — examine causes with **negative** `avg_lead_secs`.  \
+     These templates fired AFTER the failure.  When the same downstream template \
+     recurs as a consequence across many distinct failures, that's a recovery-path \
+     or alert-fanout pattern worth identifying explicitly.\n\
+     4. **Cluster interpretation** — template clusters often map to subsystems (the \
+     templates emitted by one component tend to co-occur).  For each cluster, name \
+     its likely subsystem and explain why those member templates belong together.  \
+     Clusters with high cohesion (≥ 0.7) that **include the failure template** are \
+     particularly informative — they show the failure's neighbourhood.\n\
+     5. **The causal story** — assemble a narrative of \"template A → template B → \
+     failure template → consequence template\".  Anchor every step with verbatim \
+     template bodies (including wildcards) and the Jaccard / lead values that \
+     support it.  If the evidence is mixed (multiple plausible precursors), present \
+     the alternatives rather than picking one arbitrarily.\n\
+     6. **Confidence assessment** — how strongly does the template evidence support \
+     the story?  Examples: \"high confidence — single Jaccard 0.85 precursor template \
+     with 2-minute lead\"; \"medium confidence — three competing precursor templates \
+     at Jaccard 0.4–0.6, no clean winner\"; \"low confidence — no precursor template \
+     above Jaccard 0.3, the failure template looks orphaned\".\n\
+     7. **Validation steps** — concrete actions the operator can run.  Useful \
+     patterns for template-level RCA: vector search for one of the precursor \
+     template bodies (with wildcards preserved as verbatim text), filter by the \
+     failure template's cluster, drill down on a single instance of the failure \
+     template to see surrounding context.\n\
+     \n\
+     Quote template bodies verbatim throughout — preserve the `<*>` placeholders \
+     so the operator can paste them straight back into the Templates search box.  \
+     If the evidence doesn't support any clear hypothesis, say so plainly and \
+     suggest widening the duration or lowering `min_support` / `jaccard_threshold` \
+     — RCA failure is itself useful information and dressing it up as a confident \
+     answer wastes the operator's time.";
+
+/// Default prompt for `web.analyze.rca` — output of `v?/rca`, the
+/// telemetry root-cause analyser.  Returns two correlated outputs:
+/// `probable_causes` (keys ranked by Jaccard co-occurrence with the
+/// failure, each with `avg_lead_secs` — positive lead = the key
+/// fired BEFORE the failure, a likely precursor; negative = AFTER,
+/// a likely consequence) and `clusters` (key groupings that move
+/// together within bucket-sized time windows, with a `cohesion`
+/// score).
+///
+/// This is the most analytically demanding target.  The operator
+/// asked for **in-depth RCA insight** — reasoning about cause-
+/// effect ordering, not a one-paragraph summary.  The prompt walks
+/// the model through: failure identification, precursor analysis
+/// (positive lead), consequence analysis (negative lead), cluster
+/// interpretation, the causal story, a confidence assessment, and
+/// concrete validation steps.
+///
+/// Supplied payload: one `_kind=rca_window_stats` row + N
+/// `_kind=rca_cause` rows + M `_kind=rca_cluster` rows.  `max_rows`
+/// caps causes + clusters combined (60/40 split favouring causes —
+/// they directly answer "what caused the failure?"); the stats row
+/// is always included on top.
+pub const DEFAULT_RCA_ANALYZE_PROMPT: &str =
+    "You are reviewing the output of a co-occurrence + Jaccard-based root-cause analysis \
+     (RCA) over recent primary telemetry records.  The detector ranks keys by how often \
+     they co-occur with a failure (`jaccard`) and reports the average lead time in \
+     seconds (`avg_lead_secs`).  **Sign convention:** positive `avg_lead_secs` means \
+     the key fired BEFORE the failure (a likely PRECURSOR / trigger), negative means \
+     AFTER (a likely CONSEQUENCE / effect).  The detector also reports key CLUSTERS — \
+     groups of keys that move together within bucket-sized windows, with a `cohesion` \
+     score (1.0 = always co-occur, 0 = random).\n\
+     \n\
+     The leading `_kind=rca_window_stats` row identifies the failure being analysed \
+     and the window context (event count, key count, time span, RCA knobs).  Your job \
+     is to produce an **in-depth RCA insight** — walk through the evidence, reason \
+     about cause-effect ordering, and tell the operator the most likely story.  This \
+     is NOT a one-paragraph summary; the operator wants you to think.\n\
+     \n\
+     Produce a structured analysis covering:\n\
+     1. **Failure identification** — what failure are we investigating (from the stats \
+     row), and what does the window context say (event count, key count, time span)?  \
+     If `failure_key` is empty, the detector auto-picked the worst failure — call \
+     out which key based on its position in the causes list and note that the \
+     analysis is auto-targeted rather than operator-directed.\n\
+     2. **Precursor analysis** — examine the top causes with **positive** \
+     `avg_lead_secs`.  These preceded the failure.  Walk through them by lead time AND \
+     Jaccard strength: high Jaccard + short positive lead = strong trigger candidate; \
+     high Jaccard + long lead = upstream condition that took time to propagate; low \
+     Jaccard regardless of lead = ambient noise.  Quote the verbatim key names, lead \
+     times, and Jaccard scores.\n\
+     3. **Consequence analysis** — examine the top causes with **negative** \
+     `avg_lead_secs`.  These followed the failure — they don't cause it but show how \
+     it propagated to other subsystems.  Useful for blast-radius assessment.  If a \
+     consequence shows up in many clusters, the failure cascaded broadly.\n\
+     4. **Cluster interpretation** — for each cluster, identify what subsystem or \
+     behavioural pattern it represents.  Clusters with high cohesion (≥ 0.7) that \
+     **include the failure_key** are particularly informative — they show the \
+     failure's neighbourhood and which keys move together with it.  Quote member \
+     keys verbatim.\n\
+     5. **The causal story** — assemble a narrative of \"X happened → Y happened → \
+     failure → Z\".  Anchor every step with verbatim key names and the Jaccard / lead \
+     values that support it.  If the evidence is mixed (e.g. multiple plausible \
+     precursors), present the alternatives rather than picking one arbitrarily — \
+     RCA is not always clean and an honest split is more useful than a false \
+     certainty.\n\
+     6. **Confidence assessment** — how strongly does the evidence support the story?  \
+     Examples: \"high confidence — single Jaccard 0.85 precursor with 2-minute lead\"; \
+     \"medium confidence — three competing precursors at Jaccard 0.4–0.6, no clean \
+     winner\"; \"low confidence — no precursor above Jaccard 0.3, the failure looks \
+     orphaned\".\n\
+     7. **Validation steps** — concrete actions the operator can run to confirm or \
+     refute the hypothesis.  Useful patterns: log-search for the precursor key in \
+     the same time window, per-key metric drill-down on the failure's cluster \
+     neighbourhood, runbook lookup tied to the failure category, comparing this \
+     window to a known-good baseline.\n\
+     \n\
+     Quote key names, Jaccard scores, and lead times verbatim throughout.  Bullet \
+     points and sub-bullets are fine; structure is more important here than terseness.  \
+     If the evidence doesn't support any clear hypothesis (the failure is not well \
+     correlated with anything in the window), say so plainly and recommend widening \
+     the duration or lowering `min_support` — RCA failure is itself useful information \
+     and dressing it up as a confident answer wastes the operator's time.";
+
 /// Default prompt for `web.analyze.knn` — output of `v?/knn`, the
 /// k-Nearest-Neighbour clustering analysis.  Returns two related
 /// outputs: `clusters` (groups of records bound by vector
@@ -768,6 +934,31 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_KNN_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.rca`.  Two-output target:
+    /// `max_rows` caps causes + clusters combined with a 60/40 split
+    /// favouring causes (they directly answer the "what caused it?"
+    /// question); stats row always passes through on top.  Default
+    /// max_rows of 50 is comfortable for typical RCA output sizes
+    /// (15–25 ranked causes + 5–15 clusters).
+    pub fn rca_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_RCA_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+
+    /// Default settings for `web.analyze.rca_templates`.  Same shape
+    /// as `rca_default()` — only the default prompt differs (tuned
+    /// for template-level reasoning with `<*>` wildcard preservation).
+    pub fn rca_templates_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_RCA_TEMPLATES_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -839,6 +1030,12 @@ pub struct AppState {
     /// Operator-configurable knobs for the "Analyze this!" button on
     /// the Analysis → k-NN page (`web.analyze.knn.*`).
     pub knn_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the RCA → Telemetry RCA page (`web.analyze.rca.*`).
+    pub rca_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the RCA → Templates RCA page (`web.analyze.rca_templates.*`).
+    pub rca_templates_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -859,6 +1056,8 @@ impl AppState {
         anomaly_recent_analyze:            AnalyzeTargetConfig,
         denoise_recent_analyze:            AnalyzeTargetConfig,
         knn_analyze:                       AnalyzeTargetConfig,
+        rca_analyze:                       AnalyzeTargetConfig,
+        rca_templates_analyze:             AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -886,6 +1085,8 @@ impl AppState {
             anomaly_recent_analyze:            Arc::new(anomaly_recent_analyze),
             denoise_recent_analyze:            Arc::new(denoise_recent_analyze),
             knn_analyze:                       Arc::new(knn_analyze),
+            rca_analyze:                       Arc::new(rca_analyze),
+            rca_templates_analyze:             Arc::new(rca_templates_analyze),
         }
     }
 }

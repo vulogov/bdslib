@@ -194,6 +194,20 @@
   //         You are reviewing the output of a k-Nearest-Neighbour clustering …
   //       '''
   //     }
+  //     rca: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing the output of a co-occurrence + Jaccard-based RCA …
+  //       '''
+  //     }
+  //     rca_templates: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing the output of a co-occurrence + Jaccard-based root-cause analysis run over drain3-mined log templates …
+  //       '''
+  //     }
   //   }
   // }
 }
