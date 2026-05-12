@@ -29,6 +29,7 @@ cross-reference it rather than duplicating tuning advice.
    - 2.7 [JSON record cache](#27-json-record-cache)
 3. [Ingest tuning](#3-ingest-tuning)
 4. [BUND VM runtime](#4-bund-vm-runtime)
+   - 4.1 [BUND word sandbox](#41-bund-word-sandbox)
 5. [Background tasks](#5-background-tasks)
    - 5.1 [Cron-driven script scheduler](#51-cron-driven-script-scheduler)
    - 5.2 [Periodic global sync](#52-periodic-global-sync)
@@ -395,12 +396,20 @@ OOM.  Set it explicitly unless you have an upstream rate limiter.
 ```hjson
 n_workers:        4
 bund_ttl_secs:    300
+
+// Optional — defaults to "nothing disabled".  See § 4.1.
+bund: {
+  disabled_categories: ["os_shell", "process_control"]
+  disabled_words:      ["cls.script.add", "cls.script.delete"]
+}
 ```
 
 | Field            | Type    | Default | Required |
 |------------------|---------|---------|----------|
 | `n_workers`      | integer | 4       | no       |
 | `bund_ttl_secs`  | integer | 300     | no       |
+| `bund.disabled_categories` | string list | `[]` | no |
+| `bund.disabled_words`      | string list | `[]` | no |
 
 - **`n_workers`** — threads in the process-wide `BundWorkerPool`.
   Each worker runs an ephemeral BUND VM per job submitted via
@@ -412,6 +421,67 @@ bund_ttl_secs:    300
   field).  After this much inactivity the VM is dropped; the
   next call rebuilds it from scratch.  Swept by the
   `vm_cleanup_interval_secs` background task (§ 5.4).
+
+### 4.1 BUND word sandbox
+
+Every BUND word that touches the host (shell, filesystem, process
+lifecycle, cluster writes, …) is classified into one of seven
+**risk categories**.  By default **nothing is disabled** — every
+category is enabled so existing scheduled scripts and dev runs
+keep working without config edits.  Operators who expose the VM
+to less-trusted callers (chat snippets via `llm.chat.bund`,
+public Bund playground UI, untrusted tenants) opt out of one or
+more categories.
+
+The sandbox is applied **every time a Bund VM is initialised**
+(the global Adam instance, per-context VMs, ephemeral
+worker-pool VMs, chat-snippet VMs).  Disabled words are still
+registered in the VM, but invoking them returns:
+
+> `BUND word disabled by bdsnode policy. Edit bund.disabled_categories / bund.disabled_words in bds.hjson (or check startup logs to see which words are currently denied).`
+
+bdsnode logs the active sandbox at startup so operators can
+audit it without running a probe:
+
+```
+[bund::policy] category os_shell DISABLED (arbitrary shell command execution): 2 word(s) blocked: system.shell, system.shell.
+[bund::policy] category process_control DISABLED (kills bdsnode (`bund.exit`) or blocks workers (`sleep.seconds`)): 2 word(s) blocked: bund.exit, sleep.seconds
+```
+
+#### Category reference
+
+| Key | Words blocked | Why dangerous |
+|---|---|---|
+| `os_shell` | `system.shell`, `system.shell.` | Arbitrary shell command execution as the bdsnode user → RCE. |
+| `process_control` | `bund.exit`, `sleep.seconds` | `bund.exit` calls `process::exit()` and kills the entire bdsnode process. `sleep.seconds` ties up a worker thread for any duration. |
+| `filesystem_write` | `file.write[.]`, `fs.cp`, `fs.mv`, `fs.rm` | Arbitrary-path filesystem modification. |
+| `filesystem_read` | `file[.]`, `url[.]`, `fs.ls[.]`, `fs.ls.dir[.]`, `fs.cwd`, `fs.is_file`, `fs_is_file.`, `bund.eval-file[.]`, `filename[.]` | Filesystem layout disclosure, SSRF (`url`), eval-of-file. `filename` canonicalises and therefore touches the FS. |
+| `code_eval` | `bund.eval[.]`, `compile`, `apply`, `use[.]` | Recursive code execution; `use` loads files. |
+| `cluster_admin` | `cls.add[.]`, `cls.add.batch[.]`, `cls.update[.]`, `cls.delete[.]`, `cls.doc.{add,add.file,update.content,update.metadata,delete,reindex,sync}[.]`, `cls.tpl.{add,update.body,update.metadata,delete,reindex}[.]`, `cls.signal.{emit,update}[.]`, `cls.script.{add,update,delete}[.]` | Cluster-replicated writes. **`cls.script.*` installs persistent cron jobs on every peer** — by far the highest blast radius in this category. |
+| `local_db_write` | `db.add[.]`, `db.sync`, `doc.{add,add.file,add.vec,delete,update.content,update.metadata,store.content.vec,store.meta.vec,reindex}[.]`, `doc.sync` | Local-only DB writes that bypass cluster replication — fine for maintenance scripts, dangerous if a chat user invokes them. |
+
+The `.` suffix denotes the workbench variant of the same word; both forms are gated together.  The `[.]` notation in the table is shorthand for "this word and its workbench variant".
+
+Pure-string path words (`system.path.split`, `system.path.filename`) are **NOT gated** — they don't touch the host.
+
+#### Recommended profiles
+
+| Scenario | Recommended `disabled_categories` |
+|---|---|
+| Single-operator dev box | `[]` (default) |
+| Production node, only operators run scripts | `["os_shell", "process_control"]` |
+| Chat snippet eval enabled (`llm.chat.bund.enabled=true`) | `["os_shell", "process_control", "filesystem_write", "code_eval", "cluster_admin", "local_db_write"]` — leave only `filesystem_read` for read-only forensics |
+| Public-facing Bund playground / multi-tenant | All seven categories disabled; rely on `db.search.*` / `cls.search.*` / `cls.aggregation` for read-only queries |
+
+The per-word `disabled_words` list is layered on top of `disabled_categories`.  Use it to keep a category mostly enabled but block specific high-risk words — for example, enable `cluster_admin` but block only the script-persistence triplet:
+
+```hjson
+bund: {
+  disabled_words: ["cls.script.add", "cls.script.update", "cls.script.delete"]
+}
+```
+
+Category names accept short aliases for ergonomics — `shell` → `os_shell`, `fs_write` → `filesystem_write`, `fs_read` → `filesystem_read`, `eval` → `code_eval`, `cluster_write` → `cluster_admin`, `db_write` → `local_db_write`, `process` → `process_control`. Unknown values are logged at WARN and ignored; bdsnode starts up partially-sandboxed rather than refusing to run.
 
 ---
 

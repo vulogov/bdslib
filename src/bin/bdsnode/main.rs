@@ -263,6 +263,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // BUND sandbox — gates dangerous words (shell, FS write, cluster
+    // admin, etc.) per the `bund.disabled_categories` /
+    // `bund.disabled_words` block in bds.hjson.  Defaults to no
+    // denials (every category enabled) for backwards compatibility.
+    // MUST run before `init_adam`: the policy is applied each time a
+    // VM is initialised (Adam, ephemeral, workers), so the OnceLock
+    // has to be populated first or the very first VM ships
+    // unsandboxed.
+    {
+        let pol = match cli.config.as_deref() {
+            Some(path) => bdslib::bund_policy::Policy::load_from_hjson(path),
+            None       => bdslib::bund_policy::Policy::default(),
+        };
+        bdslib::bund_policy::init_policy(pol);
+        bdslib::bund_policy::log_policy_summary();
+    }
+
     bdslib::init_adam()
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise BUND VM")?;

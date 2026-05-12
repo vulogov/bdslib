@@ -22,5 +22,10 @@ pub fn init_adam() -> Result<(), Error> {
 }
 
 pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
-    init_bund_stdlib(vm)
+    init_bund_stdlib(vm)?;
+    // Apply the operator-supplied sandbox AFTER the full stdlib is
+    // registered: re-registering a disabled word with a denying stub
+    // simply replaces the existing entry, so the order matters.
+    crate::vm::policy::apply_to(vm)?;
+    Ok(())
 }

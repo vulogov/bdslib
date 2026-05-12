@@ -60,6 +60,7 @@ pub use vm::context;
 pub use scheduler::Scheduler;
 pub use vm::workers::{submit_script, submit_script_with_id};
 pub use vm::{bund_eval, init_adam};
+pub use vm::policy as bund_policy;
 pub mod setloglevel;
 
 /// Version string of the embedded `bundcore` BUND VM crate.

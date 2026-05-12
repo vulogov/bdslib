@@ -21,6 +21,7 @@ pub mod context;
 pub mod ephemeral;
 pub mod eval;
 pub mod helpers;
+pub mod policy;
 pub mod result_queue;
 pub mod stdlib;
 pub mod vm;

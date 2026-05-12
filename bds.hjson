@@ -151,6 +151,36 @@
   // Default: 4
   n_workers: 4
 
+  // ── BUND word sandbox ─────────────────────────────────────────────────────────
+  //
+  // Every BUND word that touches the host (shell, filesystem, process
+  // lifecycle, cluster writes, …) is classified into one of seven risk
+  // categories. By default NOTHING is disabled — every category is
+  // enabled so existing scheduled scripts and dev runs keep working.
+  // Operators who expose the VM to less-trusted callers (chat snippets
+  // via `llm.chat.bund`, public Bund playground, multi-tenant) opt out
+  // by listing categories and/or individual words.
+  //
+  // Categories:
+  //   os_shell          — system.shell, system.shell.   (RCE)
+  //   process_control   — bund.exit, sleep.seconds       (kills bdsnode)
+  //   filesystem_write  — file.write[.], fs.cp/mv/rm     (arbitrary path)
+  //   filesystem_read   — file[.], url[.], fs.ls[.], …   (FS leakage, SSRF)
+  //   code_eval         — bund.eval[.], compile, apply, use[.]
+  //   cluster_admin     — cls.{add,update,delete,doc.*,tpl.*,signal.*,script.*}[.]
+  //   local_db_write    — db.add[.], doc.{add,update,delete,…}[.], doc.sync
+  //
+  // Recommended for production with chat snippets enabled:
+  //   disabled_categories: ["os_shell","process_control","filesystem_write",
+  //                         "code_eval","cluster_admin","local_db_write"]
+  //
+  // See Documentation/BDSCONFIG.md § 4.1 for the full reference.
+  //
+  // bund: {
+  //   disabled_categories: []
+  //   disabled_words:      []
+  // }
+
   // ── Ollama LLM integration ────────────────────────────────────────────────────
 
   // Base URL of the Ollama HTTP server.

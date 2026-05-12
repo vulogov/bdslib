@@ -440,3 +440,19 @@ doc.reindex println   // prints number of indexed documents
 | `doc.reindex` | `( -- count )` | Rebuild HNSW index from persisted vectors |
 
 Every word except `db.sync` and `doc.sync` has a `.`-suffixed workbench variant with identical semantics.
+
+---
+
+## Operator sandbox
+
+The write-side words listed above (`db.add`, `doc.add*`, `doc.update.*`, `doc.delete`, `doc.reindex`, `doc.sync`, `db.sync`, plus their workbench variants and the `doc.store.*` family) belong to the `local_db_write` sandbox category. Operators can disable them on a per-node basis via `bds.hjson`:
+
+```hjson
+bund: {
+  disabled_categories: ["local_db_write"]
+}
+```
+
+The cluster-replicated equivalents (`cls.add`, `cls.doc.*`, `cls.tpl.*`, `cls.signal.*`, `cls.script.*` and their workbench variants) live in the `cluster_admin` category — disable that one to make a node read-only from a BUND-script point of view.
+
+See `Documentation/BDSCONFIG.md § 4.1` and `Documentation/Bund/BASIC_LIBRARY.md § 23` for the full word-to-category mapping and recommended deployment profiles.

@@ -32,6 +32,7 @@ Complete reference for every word (built-in command) provided by the BUND standa
 20. [File System Operations](#20-file-system-operations)
 21. [Console and Terminal](#21-console-and-terminal)
 22. [BUND Evaluation](#22-bund-evaluation)
+23. [Security: operator-disabled words](#23-security-operator-disabled-words)
 
 ---
 
@@ -752,3 +753,49 @@ Words for loading, compiling, and executing BUND code at runtime.
 "42 println" bund.eval              // evaluates and prints 42
 "examples/01_hello_world.bund" bund.eval-file
 ```
+
+---
+
+## 23. Security: operator-disabled words
+
+bdsnode ships with a per-word sandbox.  By default every word in
+this document is **enabled** — existing scripts run unchanged.  An
+operator may opt out of one or more risk categories by listing them
+in `bds.hjson`:
+
+```hjson
+bund: {
+  disabled_categories: ["os_shell", "process_control"]
+  disabled_words:      ["cls.script.add"]
+}
+```
+
+When a script calls a disabled word, the call fails immediately
+with:
+
+```
+BUND word disabled by bdsnode policy. Edit bund.disabled_categories
+/ bund.disabled_words in bds.hjson (or check startup logs to see
+which words are currently denied).
+```
+
+The word still **exists** in the VM — only its implementation is
+replaced by a stub that returns the error above, so scripts can
+guard with `try`/`if` constructs if they need to behave differently
+when sandboxed.
+
+### Categories
+
+| Key | Words gated | Risk |
+|---|---|---|
+| `os_shell` | `system.shell`, `system.shell.` | Arbitrary shell command execution → RCE on bdsnode. |
+| `process_control` | `bund.exit`, `sleep.seconds` | `bund.exit` kills the entire bdsnode process; `sleep.seconds` blocks a worker for arbitrary duration. |
+| `filesystem_write` | `file.write[.]`, `fs.cp`, `fs.mv`, `fs.rm` | Arbitrary-path filesystem modification. |
+| `filesystem_read` | `file[.]`, `url[.]`, `fs.ls[.]`, `fs.ls.dir[.]`, `fs.cwd`, `fs.is_file`, `fs_is_file.`, `bund.eval-file[.]`, `filename[.]` | Filesystem layout disclosure, SSRF, eval-of-file. |
+| `code_eval` | `bund.eval[.]`, `compile`, `apply`, `use[.]` | Recursive code execution; `use` loads files. |
+| `cluster_admin` | `cls.{add,update,delete,add.batch}[.]`, `cls.doc.{add,add.file,update.*,delete,reindex,sync}[.]`, `cls.tpl.{add,update.*,delete,reindex}[.]`, `cls.signal.{emit,update}[.]`, `cls.script.{add,update,delete}[.]` | Cluster-replicated writes; **`cls.script.*` installs persistent cron jobs on every peer**. |
+| `local_db_write` | `db.add[.]`, `db.sync`, `doc.{add,add.file,add.vec,delete,update.*,store.*,reindex}[.]`, `doc.sync` | Local-only DB writes that bypass cluster replication. |
+
+The `.` suffix denotes the workbench variant of the same word; both forms are gated together.  Pure-string path operations (`system.path.split`, `system.path.filename`) are **not gated** — they don't touch the host.
+
+See `Documentation/BDSCONFIG.md § 4.1` for the full configuration reference and recommended profiles by deployment scenario.

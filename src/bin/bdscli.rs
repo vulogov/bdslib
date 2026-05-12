@@ -425,6 +425,7 @@ fn run(cli: Cli) -> Result<(), easy_error::Error> {
 fn setup_db(config: Option<&str>) -> Result<(), easy_error::Error> {
     init_db(config)
         .map_err(|e| easy_error::err_msg(format!("DB init failed: {e}")))?;
+    install_bund_policy(config);
     bdslib::init_adam()
         .map_err(|e| easy_error::err_msg(format!("VM init failed: {e}")))?;
     bdslib::context::init(config)
@@ -432,9 +433,22 @@ fn setup_db(config: Option<&str>) -> Result<(), easy_error::Error> {
     Ok(())
 }
 
+/// Install the BUND word sandbox before any VM is initialised.  When
+/// no config file is supplied (`bdscli eval` from a script with no
+/// hjson) the default empty policy applies — nothing disabled,
+/// preserving the historical behaviour of the CLI.
+fn install_bund_policy(config: Option<&str>) {
+    let pol = match config {
+        Some(path) => bdslib::bund_policy::Policy::load_from_hjson(path),
+        None       => bdslib::bund_policy::Policy::default(),
+    };
+    bdslib::bund_policy::init_policy(pol);
+}
+
 // ── eval ──────────────────────────────────────────────────────────────────────
 
 fn cmd_eval(config: Option<&str>, stdin: bool, eval: Option<String>, file: Option<String>, url: Option<String>) -> Result<(), easy_error::Error> {
+    install_bund_policy(config);
     bdslib::init_adam()
         .map_err(|e| easy_error::err_msg(format!("VM init failed: {e}")))?;
     bdslib::context::init(config)
