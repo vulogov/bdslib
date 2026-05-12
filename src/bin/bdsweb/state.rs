@@ -114,6 +114,90 @@ pub const DEFAULT_METRICS_ANALYZE_PROMPT: &str =
      terse.  If the data is too sparse to support a numeric conclusion, say so \
      plainly rather than speculating.";
 
+/// Default prompt for `web.analyze.agg_search` — output of
+/// `v?/aggregationsearch`, i.e. two correlated corpora returned for
+/// the same query: live telemetry rows AND operational documents
+/// (runbooks, postmortems, design notes, …).  The model must
+/// **cross-reference** the two sets — that's the whole reason for
+/// the page existing — and produce a single coherent picture.
+///
+/// Each row in the supplied payload carries a synthetic `_kind`
+/// field set to either `"telemetry"` or `"document"` so the model
+/// (via `json_fingerprint`) can tell them apart inside the prompt.
+pub const DEFAULT_AGG_SEARCH_ANALYZE_PROMPT: &str =
+    "You are reviewing the output of an aggregated search that returned **two correlated \
+     corpora** for the same operator query: live telemetry rows (`_kind=telemetry`) AND \
+     operational documents (`_kind=document` — runbooks, postmortems, design notes, …).  \
+     Your job is to cross-reference them and produce a single coherent picture, not two \
+     unrelated summaries.  Produce a concise analysis covering:\n\
+     1. What is the live telemetry actually saying right now — dominant keys, value \
+     ranges, anomalies, failure signals?  Be specific; quote keys and timestamps.\n\
+     2. What relevant operational knowledge do the matched documents bring — runbook \
+     procedures, prior incidents, architecture context, threshold definitions?  Quote \
+     the document name and a short verbatim snippet for each citation.\n\
+     3. **Cross-reference** — does any document explain, contextualise, or contradict \
+     what the telemetry is showing?  Examples: \"runbook X says the canonical fix for \
+     the error pattern in row [3] is to bounce the deployment\"; \"postmortem Y describes \
+     the same database-lock signature seen in rows [1, 4, 7]\".  This step is the value \
+     of the aggregated view — don't skip it.\n\
+     4. The most likely coherent story — what is the operator looking at, and what \
+     does the evidence (telemetry + docs together) say is going on?\n\
+     5. Gaps — what would you want to know that neither corpus contains?  (Frequently: \
+     a longer time window, a specific runbook section, or telemetry for a key that's \
+     missing.)\n\
+     6. One concrete next investigative or remediation step — preferably one the \
+     documents already authorise (\"runbook X step 3\") rather than an ad-hoc action.\n\
+     \n\
+     Quote both telemetry rows (by key + timestamp) and document names verbatim when \
+     citing evidence.  Be terse; bullet points are fine.  If one corpus is empty or \
+     dominated by noise, say so explicitly rather than padding the answer.";
+
+/// Default prompt for `web.analyze.templates_summary` — output of
+/// `v?/textrank.templates` (a TextRank-PageRank extract of the
+/// highest-rank drain3 templates) plus the LDA-discovered topic
+/// keywords from `v?/topics.all`.  Neither input is a row list; both
+/// are derived/condensed views of the same template population.
+/// The model's job is to *weave the summary and the keywords into a
+/// coherent story* — that's the value this page adds over the raw
+/// Templates page.
+///
+/// The supplied payload contains exactly two row kinds:
+/// `_kind=textrank_summary` (one row, the concatenated summary
+/// string) and `_kind=topic_keywords` (one row per log key, carrying
+/// the LDA top-N keyword list).
+pub const DEFAULT_TEMPLATES_SUMMARY_ANALYZE_PROMPT: &str =
+    "You are reviewing two complementary derived views of the system's recent log activity:\n\
+     - A TextRank summary built from drain3-mined templates (`_kind=textrank_summary`) — a \
+     concatenation of the highest-PageRank template sentences in the lookback window.\n\
+     - LDA-discovered topic keywords grouped by log key (`_kind=topic_keywords`) — the \
+     vocabulary the system is actually using right now.\n\
+     \n\
+     Your job is to *weave both into one coherent story* — not summarise them again.  An \
+     SRE should be able to read your output and immediately know what the system has been \
+     doing.  Produce a concise analysis covering:\n\
+     1. **Headline** — one sentence answering \"what is the system reporting right now?\"  \
+     Use the dominant keywords AND a fragment of the summary to anchor it.\n\
+     2. **Themes** — group the summary sentences and keywords into 2–4 themes (auth, \
+     networking, storage, scheduling, errors, …).  Describe each in one or two lines, \
+     citing the keywords that label it.\n\
+     3. **Signals of trouble** — call out summary fragments that look like warnings or \
+     failures (`error`, `fail`, `timeout`, `panic`, non-2xx HTTP, OOM, certificate, \
+     unauthorized, …).  Quote the fragment verbatim and explain what condition it \
+     points to.\n\
+     4. **Healthy noise** — patterns the operator can mentally tune out (heartbeats, \
+     polling, periodic writes, scheduled jobs).  Listing the key(s) responsible is \
+     enough; don't dwell.\n\
+     5. **Most likely incident or condition** the slice points to, if any — cite \
+     evidence from BOTH the summary AND the keyword set (one without the other is \
+     half a story).\n\
+     6. One concrete **next investigative step** — usually a vector search for one of \
+     the failure-indicator keywords, or drilling into a specific key from the topic list.\n\
+     \n\
+     Quote summary fragments and keyword tokens verbatim when citing evidence — the \
+     operator wants to be able to grep / drill down.  Bullet points are fine; be terse.  \
+     If the summary is very short or the keyword set is dominated by stopwords, say so \
+     plainly rather than speculating.";
+
 /// Default prompt for `web.analyze.templates` — drain3-mined log
 /// templates.  Each record is a recurring log-line pattern where the
 /// variable parts (IDs, timestamps, paths, numbers) are replaced by
@@ -181,6 +265,32 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_TEMPLATES_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.agg_search`.  The underlying
+    /// `v?/aggregationsearch` RPC already caps its two corpora
+    /// (~30 telemetry hits, ~10 document hits), so a 50-row total
+    /// budget cleanly accommodates the combined payload.
+    pub fn agg_search_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_AGG_SEARCH_ANALYZE_PROMPT.to_owned(),
+        }
+    }
+
+    /// Default settings for `web.analyze.templates_summary`.  The
+    /// payload is small (one summary blob + per-key keyword rows),
+    /// but operators with large key cardinality may produce a long
+    /// topics list — `max_rows` here caps the *topic-keyword rows*
+    /// included, not raw templates.  Default 50 comfortably covers
+    /// most deployments.
+    pub fn templates_summary_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_TEMPLATES_SUMMARY_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -220,6 +330,13 @@ pub struct AppState {
     /// Operator-configurable knobs for the "Analyze this!" button on
     /// the Telemetry → Templates page (`web.analyze.templates.*`).
     pub templates_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Agg. Search page (`web.analyze.agg_search.*`).
+    pub agg_search_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Templates Summary page
+    /// (`web.analyze.templates_summary.*`).
+    pub templates_summary_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -228,9 +345,11 @@ impl AppState {
         dashboard_refresh_secs: u64,
         cluster_refresh_secs:   u64,
         shared_secret: String,
-        logs_analyze:      AnalyzeTargetConfig,
-        metrics_analyze:   AnalyzeTargetConfig,
-        templates_analyze: AnalyzeTargetConfig,
+        logs_analyze:              AnalyzeTargetConfig,
+        metrics_analyze:           AnalyzeTargetConfig,
+        templates_analyze:         AnalyzeTargetConfig,
+        agg_search_analyze:        AnalyzeTargetConfig,
+        templates_summary_analyze: AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -246,9 +365,11 @@ impl AppState {
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             shared_secret:   Arc::new(shared_secret),
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),
-            logs_analyze:      Arc::new(logs_analyze),
-            metrics_analyze:   Arc::new(metrics_analyze),
-            templates_analyze: Arc::new(templates_analyze),
+            logs_analyze:              Arc::new(logs_analyze),
+            metrics_analyze:           Arc::new(metrics_analyze),
+            templates_analyze:         Arc::new(templates_analyze),
+            agg_search_analyze:        Arc::new(agg_search_analyze),
+            templates_summary_analyze: Arc::new(templates_summary_analyze),
         }
     }
 }

@@ -131,6 +131,20 @@
   //         You are reviewing a slice of drain3-mined log templates …
   //       '''
   //     }
+  //     agg_search: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing the output of an aggregated search …
+  //       '''
+  //     }
+  //     templates_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template: '''
+  //         You are reviewing two complementary derived views …
+  //       '''
+  //     }
   //   }
   // }
 }

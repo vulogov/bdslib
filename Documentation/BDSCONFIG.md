@@ -1048,6 +1048,44 @@ web: {
 
 Default prompt — 6-step *pattern* frame designed for drain3 output (each row is a recurring log-line pattern with `<*>` placeholders): system-behavior themes, failure-indicator templates with verbatim citations, benign/high-volume templates the operator can tune out, suspicious wildcards (drain3 over-collapsing different value classes), most-likely incident, next step.  Operators rewriting it should preserve the "quote bodies verbatim" instruction — that's what lets the SRE grep / drill down from the answer.  Works in both browse-recent mode (empty query, lists the last `duration` of templates) and search mode (vector search over the tpl store).
 
+#### `web.analyze.agg_search` (Analysis → Agg. Search page)
+
+```hjson
+web: {
+  analyze: {
+    agg_search: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing the output of an aggregated search …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *cross-corpus* frame designed for `v?/aggregationsearch` output, which returns **two correlated corpora** in parallel: live telemetry rows and matched operational documents (runbooks, postmortems, design notes).  The prompt forces the model to cross-reference the two sets rather than producing two unrelated summaries: live-telemetry signal, document-knowledge surface, **explicit cross-reference**, coherent story, gaps in the evidence, next-step preferably authorised by a runbook.  Each row handed to the LLM carries a synthetic `_kind=telemetry` or `_kind=document` field so the model can tell which corpus the evidence came from inside the prompt; documents are clipped to ~800 chars each so one large runbook can't crowd out telemetry rows.  `max_rows` caps the *total* row count handed to the LLM; up to half the budget is reserved for documents so a query with many telemetry hits can't drop the doc rows.
+
+#### `web.analyze.templates_summary` (Analysis → Templates Summary page)
+
+```hjson
+web: {
+  analyze: {
+    templates_summary: {
+      timeout_secs:    600
+      max_rows:        50
+      prompt_template:
+        '''
+        You are reviewing two complementary derived views …
+        '''
+    }
+  }
+}
+```
+
+Default prompt — 6-step *story-from-summary* frame.  This page is structurally different from the others: instead of analysing raw rows, the LLM is handed a single TextRank summary (`v?/textrank.templates`) **plus** the LDA-discovered topic keywords (`v?/topics.all`), and asked to weave both into a coherent narrative: headline, themes anchored to keywords, trouble signals quoted verbatim from the summary, healthy noise to tune out, most-likely incident citing *both* the summary AND the keywords, next investigative step.  Each payload entry carries a synthetic `_kind=textrank_summary` (always exactly one row) or `_kind=topic_keywords` (one row per log key, carrying the LDA top-N words).  `max_rows` caps only the topic rows — the summary always gets through.  Use this knob to rewrite the prompt for a different storytelling angle ("narrate as an exec summary", "focus only on the security keywords", "respond in markdown table form").
+
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
   on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
@@ -1074,9 +1112,11 @@ edit anything.
 Active settings are logged at bdsweb startup:
 
 ```
-[INFO] web.analyze.logs:      timeout=600s, max_rows=50, prompt_chars=621
-[INFO] web.analyze.metrics:   timeout=600s, max_rows=50, prompt_chars=863
-[INFO] web.analyze.templates: timeout=600s, max_rows=50, prompt_chars=1110
+[INFO] web.analyze.logs:              timeout=600s, max_rows=50, prompt_chars=621
+[INFO] web.analyze.metrics:           timeout=600s, max_rows=50, prompt_chars=863
+[INFO] web.analyze.templates:         timeout=600s, max_rows=50, prompt_chars=1110
+[INFO] web.analyze.agg_search:        timeout=600s, max_rows=50, prompt_chars=1457
+[INFO] web.analyze.templates_summary: timeout=600s, max_rows=50, prompt_chars=1620
 ```
 
 ---

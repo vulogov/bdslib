@@ -2,6 +2,56 @@
 {% block title %}Templates Summary · bdsnode{% endblock %}
 {% block nav_templates_summary %}active{% endblock %}
 
+{% block head %}
+<style>
+/* ── "Analyze this!" floating pane (mirror of /logs implementation) ── */
+#analysis-panel {
+  position: fixed;
+  top: 57px;
+  left: 0;
+  bottom: 0;
+  width: min(640px, 100vw);
+  background: #0e1520;
+  border-right: 1px solid #1e2535;
+  box-shadow: 6px 0 32px rgba(0,0,0,0.5);
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease-in-out;
+  overflow: hidden;
+}
+#analysis-panel.open { transform: translateX(0); }
+#analysis-spinner {
+  display: none;
+  font-size: 0.75rem;
+  color: #60a5fa;
+}
+#analysis-spinner.htmx-request,
+.htmx-request#analysis-spinner { display: inline; }
+.btn-analyze {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #c7d2fe;
+  background: linear-gradient(180deg, #2937a2 0%, #1f2774 100%);
+  border: 1px solid #3b46c9;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.btn-analyze:hover { filter: brightness(1.15); }
+.btn-analyze:disabled {
+  filter: grayscale(0.6);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="flex items-center justify-between mb-6">
   <div>
@@ -61,6 +111,27 @@
     </div>
     <button type="submit" class="btn btn-primary">Summarise</button>
     <span id="spinner" class="htmx-indicator text-blue-400 text-sm self-center">Summarising…</span>
+    <!-- "Analyze this!" — feed the TextRank summary + LDA topic
+         keywords into the LLM and ask for a coherent story.  Note
+         this page has no `q` to include — the duration alone fully
+         identifies what we send to the model. -->
+    <button id="analyze-btn"
+            type="button"
+            class="btn-analyze self-center"
+            hx-get="/templates_summary/analyze"
+            hx-include="[name=duration],[name=max_sentences],[name=min_word_len]"
+            hx-target="#analysis-body"
+            hx-swap="innerHTML"
+            hx-indicator="#analysis-spinner"
+            hx-disabled-elt="this"
+            onclick="onAnalyzeClick()"
+            title="LLM weaves the TextRank summary and topic keywords into a coherent story">
+      <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      Analyze this!
+    </button>
+    <span id="analysis-spinner" class="self-center">Analyzing…</span>
   </form>
 </div>
 
@@ -83,4 +154,78 @@
      hx-swap="innerHTML">
   <div class="text-center py-12 text-slate-500 text-sm">Loading summary…</div>
 </div>
+
+<!-- ── Floating "Analyze this!" pane ────────────────────────────────────── -->
+<!-- data-* carries the default LLM identity so onAnalyzeClick() can name
+     the actual upstream in the wait message.  Both attributes may be
+     empty when bdsnode has no providers registered or HMAC isn't
+     configured — the JS degrades to a generic phrasing. -->
+<div id="analysis-panel"
+     data-analyze-provider="{{ analyze_provider }}"
+     data-analyze-model="{{ analyze_model }}">
+  <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+       style="border-bottom:1px solid #1e2535;background:#0a0f18;">
+    <div class="flex items-center gap-2 min-w-0">
+      <svg viewBox="0 0 16 16" width="14" height="14" class="text-blue-400 shrink-0" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      <span class="text-xs text-slate-300 uppercase tracking-wide">LLM analysis</span>
+      <span class="text-xs text-slate-600">· templates summary · one-shot, not chat</span>
+    </div>
+    <button onclick="closeAnalysisPanel()"
+            class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
+            title="Close">✕</button>
+  </div>
+  <div id="analysis-body" class="flex-1 overflow-y-auto p-4">
+    <div class="text-center text-slate-500 text-sm py-8">
+      Click <span class="text-slate-300">"Analyze this!"</span> in the form above to ask
+      {% if !analyze_provider.is_empty() %}
+        <span class="font-mono text-slate-300">{{ analyze_provider }}{% if !analyze_model.is_empty() %} ({{ analyze_model }}){% endif %}</span>
+      {% else %}
+        the default LLM
+      {% endif %}
+      to weave this TextRank summary and the discovered topic keywords into a coherent story.
+    </div>
+  </div>
+</div>
+
+<script>
+function openAnalysisPanel()  { document.getElementById('analysis-panel').classList.add('open'); }
+function closeAnalysisPanel() { document.getElementById('analysis-panel').classList.remove('open'); }
+
+function onAnalyzeClick() {
+  var pane     = document.getElementById('analysis-panel');
+  var provider = (pane && pane.dataset.analyzeProvider) || '';
+  var model    = (pane && pane.dataset.analyzeModel)    || '';
+  var providerLabel = provider && model ? provider + ' (' + model + ')'
+                    : (provider || 'the default LLM');
+  var localProviders = { 'ollama': true };
+  var perfHint = localProviders[provider]
+    ? 'Local inference on a CPU is the slow path — expect 10–60s. Cached repeats return instantly.'
+    : 'Hosted providers usually return in a few seconds. Cached repeats return instantly.';
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  document.getElementById('analysis-body').innerHTML =
+    '<div class="card rounded-lg p-5 text-sm text-slate-300 flex items-center gap-3">' +
+      '<div style="width:14px;height:14px;border:2px solid #2937a2;border-top-color:#c7d2fe;' +
+            'border-radius:50%;animation:spin 0.9s linear infinite"></div>' +
+      '<div>' +
+        'Asking <span class="font-mono text-slate-200">' + esc(providerLabel) +
+        '</span> to tell the story of this template summary…' +
+        '<div class="text-xs text-slate-500 mt-1">' + esc(perfHint) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+  openAnalysisPanel();
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' &&
+      document.getElementById('analysis-panel').classList.contains('open')) {
+    closeAnalysisPanel();
+  }
+});
+</script>
 {% endblock %}

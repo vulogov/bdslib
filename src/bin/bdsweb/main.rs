@@ -62,6 +62,10 @@ struct WebConfig {
     metrics_analyze:        state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Telemetry → Templates → "Analyze this!".
     templates_analyze:      state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Agg. Search → "Analyze this!".
+    agg_search_analyze:     state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Templates Summary → "Analyze this!".
+    templates_summary_analyze: state::AnalyzeTargetConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -70,9 +74,11 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         cluster_refresh_secs:   10,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
-        logs_analyze:      state::AnalyzeTargetConfig::logs_default(),
-        metrics_analyze:   state::AnalyzeTargetConfig::metrics_default(),
-        templates_analyze: state::AnalyzeTargetConfig::templates_default(),
+        logs_analyze:              state::AnalyzeTargetConfig::logs_default(),
+        metrics_analyze:           state::AnalyzeTargetConfig::metrics_default(),
+        templates_analyze:         state::AnalyzeTargetConfig::templates_default(),
+        agg_search_analyze:        state::AnalyzeTargetConfig::agg_search_default(),
+        templates_summary_analyze: state::AnalyzeTargetConfig::templates_summary_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -133,9 +139,11 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             None => d,
         }
     };
-    let logs_analyze      = parse_target("logs",      state::AnalyzeTargetConfig::logs_default());
-    let metrics_analyze   = parse_target("metrics",   state::AnalyzeTargetConfig::metrics_default());
-    let templates_analyze = parse_target("templates", state::AnalyzeTargetConfig::templates_default());
+    let logs_analyze              = parse_target("logs",              state::AnalyzeTargetConfig::logs_default());
+    let metrics_analyze           = parse_target("metrics",           state::AnalyzeTargetConfig::metrics_default());
+    let templates_analyze         = parse_target("templates",         state::AnalyzeTargetConfig::templates_default());
+    let agg_search_analyze        = parse_target("agg_search",        state::AnalyzeTargetConfig::agg_search_default());
+    let templates_summary_analyze = parse_target("templates_summary", state::AnalyzeTargetConfig::templates_summary_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -153,6 +161,8 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         logs_analyze,
         metrics_analyze,
         templates_analyze,
+        agg_search_analyze,
+        templates_summary_analyze,
     }
 }
 
@@ -192,6 +202,18 @@ async fn main() {
         cfg.templates_analyze.max_rows,
         cfg.templates_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.agg_search: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.agg_search_analyze.timeout_secs,
+        cfg.agg_search_analyze.max_rows,
+        cfg.agg_search_analyze.prompt_template.len(),
+    );
+    log::info!(
+        "web.analyze.templates_summary: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.templates_summary_analyze.timeout_secs,
+        cfg.templates_summary_analyze.max_rows,
+        cfg.templates_summary_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -200,6 +222,8 @@ async fn main() {
         cfg.logs_analyze,
         cfg.metrics_analyze,
         cfg.templates_analyze,
+        cfg.agg_search_analyze,
+        cfg.templates_summary_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -273,6 +297,7 @@ async fn main() {
         .route("/docs/results",   get(routes::docs::results))
         .route("/search",         get(routes::search::page))
         .route("/search/results", get(routes::search::results))
+        .route("/search/analyze", get(routes::search::analyze))
         .route("/trends",           get(routes::trends::page))
         .route("/trends/results",   get(routes::trends::results))
         .route("/signals",          get(routes::signals::page))
@@ -286,6 +311,7 @@ async fn main() {
         .route("/templates/analyze", get(routes::templates::analyze))
         .route("/templates_summary",         get(routes::templates_summary::page))
         .route("/templates_summary/results", get(routes::templates_summary::results))
+        .route("/templates_summary/analyze", get(routes::templates_summary::analyze))
         .route("/primary_summary",         get(routes::primary_summary::page))
         .route("/primary_summary/results", get(routes::primary_summary::results))
         .route("/primary_query_summary",         get(routes::primary_query_summary::page))

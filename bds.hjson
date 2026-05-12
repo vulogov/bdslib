@@ -362,6 +362,40 @@
   //         '''
   //     }
   //
+  //     // ── Analysis → Agg. Search (telemetry + documents together) ──
+  //     // Default prompt forces the model to CROSS-REFERENCE live
+  //     // telemetry rows and matched operational docs (runbooks,
+  //     // postmortems, …) rather than summarising them separately.
+  //     // Each row gets a `_kind=telemetry`/`_kind=document` tag so
+  //     // the model knows which corpus the evidence came from.
+  //     // max_rows caps the TOTAL row count (telemetry first, docs
+  //     // guaranteed up to half the budget).
+  //     agg_search: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing the output of an aggregated search …
+  //         '''
+  //     }
+  //
+  //     // ── Analysis → Templates Summary (TextRank + LDA keywords) ──
+  //     // Special case: the page derives a TextRank summary of the
+  //     // recent drain3 templates and LDA-discovered topic keywords;
+  //     // the LLM is asked to weave both into a coherent story.
+  //     // Each payload entry is tagged `_kind=textrank_summary` (1
+  //     // row, always) or `_kind=topic_keywords` (one per log key).
+  //     // max_rows caps the topic rows only — the summary always
+  //     // gets through.
+  //     templates_summary: {
+  //       timeout_secs: 600
+  //       max_rows:     50
+  //       prompt_template:
+  //         '''
+  //         You are reviewing two complementary derived views …
+  //         '''
+  //     }
+  //
   //     // Future: web.analyze.rca, web.analyze.signals, …
   //   }
   // }
