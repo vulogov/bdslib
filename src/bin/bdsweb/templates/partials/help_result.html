@@ -1,0 +1,73 @@
+{% if has_error %}
+<div class="flex items-start gap-2 bg-red-950 border border-red-800 rounded-lg px-3 py-2 text-xs text-red-200">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mt-0.5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+  </svg>
+  <div class="flex-1 min-w-0">{{ error_msg }}</div>
+</div>
+{% else %}
+<div class="space-y-3">
+
+  {# Header — providers / model / timing / doc count.  Same visual
+     language as the chat page's context badge. #}
+  <div class="flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
+    {% if n_docs == 0 %}
+      <span class="px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800 text-amber-300">
+        ⚠ 0 docs matched
+      </span>
+    {% else %}
+      <span class="px-2 py-0.5 rounded-full bg-emerald-950 border border-emerald-800 text-emerald-300">
+        ✓ {{ n_docs }} doc{% if n_docs != 1 %}s{% endif %}
+      </span>
+    {% endif %}
+    {% if internal_only %}
+      <span class="px-2 py-0.5 rounded-full bg-blue-950 border border-blue-800 text-blue-300">
+        internal only
+      </span>
+    {% endif %}
+    <span>{{ provider }}/{{ model }}</span>
+    <span class="text-slate-600">·</span>
+    <span>limit {{ limit }}</span>
+    <span class="text-slate-600">·</span>
+    <span>{{ ms }}ms</span>
+    {% if has_tokens %}
+      <span class="text-slate-600">·</span>
+      <span>{{ tokens_in }}→{{ tokens_out }} tok</span>
+    {% endif %}
+  </div>
+
+  {# Empty-corpus note (only when n_docs == 0 and the server set a note). #}
+  {% if has_note %}
+  <div class="text-xs text-amber-300 bg-amber-950 border border-amber-900 rounded px-3 py-2">
+    {{ note }}
+  </div>
+  {% endif %}
+
+  {# Markdown-rendered answer.  `answer_html` is escaped + sanitised
+     by `markdown::render` server-side; askama's `|safe` filter lets
+     it through verbatim. #}
+  {% if !answer.is_empty() %}
+  <div class="md">{{ answer_html|safe }}</div>
+  {% else %}
+  <div class="text-slate-500 italic text-sm">The model returned an empty response.</div>
+  {% endif %}
+
+  {# Sources block — citations come back in score order.  Internal
+     docs get a distinct pill colour so it's obvious which corpus
+     answered. #}
+  {% if !sources.is_empty() %}
+  <div class="pt-2 border-t border-slate-800">
+    <div class="text-[11px] text-slate-500 uppercase tracking-wide mb-2">Sources</div>
+    <div class="flex flex-wrap gap-2">
+      {% for s in sources %}
+      <span class="src-pill {% if s.internal_doc %}internal{% endif %}"
+            title="{% if s.internal_doc %}internal docs corpus{% else %}user-loaded document{% endif %}">
+        <span class="src-score">{{ s.score }}</span>
+        <span>{{ s.name }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}

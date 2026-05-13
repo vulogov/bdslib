@@ -21,6 +21,7 @@ trend analysis, and an interactive BUND scripting workbench.
 9. [Aggregated Search](#9-aggregated-search)
 10. [Trends](#10-trends)
 11. [Bund Workbench](#11-bund-workbench)
+11b. [Help pane](#11b-help-pane)
 12. [Common UI Patterns](#12-common-ui-patterns)
 13. [Authentication](#13-authentication)
 14. [LLM — Chat + Administration](#14-llm--chat--administration)
@@ -72,17 +73,25 @@ When `BDSNODE_URL` is set, `--node` is not required.
 
 ## 4. Navigation
 
-The sticky navigation bar at the top of every page contains seven items:
+The sticky navigation bar at the top of every page contains the
+following items.  Left-side links are content pages; an
+`Administration` dropdown and a final `Help` link are pushed to the
+right edge of the bar via `margin-left:auto` on the first
+right-floating element.
 
-| Label | Path | Purpose |
-|-------|------|---------|
-| Dashboard | `/` | System health and shard overview |
-| Telemetry | `/telemetry` | Semantic search over telemetry records |
-| Logs | `/logs` | Semantic search over log entries + LDA topics |
-| Documents | `/docs` | Knowledge-base document retrieval |
-| Agg. Search | `/search` | Combined telemetry + document search |
-| Trends | `/trends` | Statistical analysis and time-series charts |
-| Bund | `/bund` | Interactive BUND scripting workbench |
+| Side | Label | Path | Purpose |
+|------|-------|------|---------|
+| left  | Dashboard      | `/`           | System health and shard overview |
+| left  | Telemetry      | `/telemetry`  | Semantic search over telemetry records |
+| left  | Logs           | `/logs`       | Semantic search over log entries + LDA topics |
+| left  | Documents      | `/docs`       | Knowledge-base document retrieval |
+| left  | Agg. Search    | `/search`     | Combined telemetry + document search |
+| left  | Trends         | `/trends`     | Statistical analysis and time-series charts |
+| left  | Signals        | `/signals`    | Emit and search named events |
+| left  | Bund           | `/bund`       | Interactive BUND scripting workbench |
+| left  | Chat           | `/chat`       | Provider-aware RAG chat |
+| right | Administration | `/admin/*`    | User management + LLM admin (dropdown) |
+| right | **Help**       | `/help`       | Docstore-backed Q&A — see [§ 11b](#11b-help-pane) |
 
 The active page is highlighted in blue.
 
@@ -517,6 +526,65 @@ for the prompt assembly + retry semantics.
 |--------|---------|
 | `v2/eval` | Run button / ⌘↵ |
 | `v2/to.bund` | Translate-from-English **Translate** button |
+
+---
+
+## 11b. Help pane
+
+**Path:** `GET /help`
+
+Natural-language Q&A over the cluster docstore.  The page hosts a
+single text field, a checkbox, an optional limit input, and a
+**Help!** button; submitting the form posts to `/help/query`, which
+calls [`v3/help`](../jsonrpc_api/v3_help.md) and renders the LLM
+answer inline with full markdown formatting.
+
+### Controls
+
+| Control                  | Purpose                                                                                  |
+|--------------------------|------------------------------------------------------------------------------------------|
+| **Question** (textarea)  | The English question.  `⌘↵` / `Ctrl↵` from inside the textarea submits.                  |
+| **Internal docs only**   | Sends `internal_only=true` — restricts retrieval to documents tagged `metadata.internal_doc == true` (the corpus loaded by `scripts/load_internal_documentation.sh`). |
+| **Limit** (number input) | Number of documents to feed into the prompt.  Range `1..50`; default `8` (server-side).  |
+| **Help!** button         | Submits the form.                                                                        |
+
+### Result pane
+
+The partial returned by `POST /help/query` carries:
+
+| Element              | Source                                                                              |
+|----------------------|-------------------------------------------------------------------------------------|
+| Validity badge       | Green `✓ N docs` when `n_docs > 0`, amber `⚠ 0 docs matched` otherwise.            |
+| `internal only` pill | Shown only when the request was issued with `internal_only=true`.                   |
+| Provider / model     | Echoed from the response.                                                           |
+| Limit / ms / tokens  | `limit·{ms}ms·{tokens_in}→{tokens_out} tok`.  Tokens row hidden when none reported. |
+| Empty-corpus note    | Shown only when the server set the `note` field (no documents matched).             |
+| Answer body          | Rendered via `crate::markdown::render` — full GitHub-style Markdown including `<h1>`–`<h4>`, tables, fenced code, blockquotes, task lists.  Sanitised through ammonia's allowlist before interpolation. |
+| Sources              | One pill per cited document — score + name; pills with `internal_doc=true` get a distinct blue border. |
+
+When `v3/help` returns an RPC error (e.g. provider unreachable,
+docstore search failure) the pane renders a red error bar with the
+upstream message instead of an answer.
+
+### Routes
+
+| Path           | Method | Notes                                                                |
+|----------------|--------|----------------------------------------------------------------------|
+| `/help`        | GET    | Empty page with the search form.                                     |
+| `/help/query`  | POST   | HTMX target; renders `partials/help_result.html` with the response.  |
+
+### JSON-RPC calls made
+
+| Method     | Trigger          |
+|------------|------------------|
+| `v3/help`  | Help! button     |
+
+### Timeout
+
+`/help/query` uses a 5-minute reqwest timeout (matches `/chat`).
+This accommodates slow local Ollama deployments running CPU-bound
+inference over a fat prompt; cloud providers normally answer in
+under 10 seconds.
 
 ---
 

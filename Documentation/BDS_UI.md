@@ -35,6 +35,7 @@ component-oriented.
 18. [Scripts — store, run, and schedule BUND scripts](#18-scripts--store-run-and-schedule-bund-scripts)
 19. [Signals — emit and search named events](#19-signals--emit-and-search-named-events)
 20. [Bund — interactive scripting workbench](#20-bund--interactive-scripting-workbench)
+20b. [Help — ask the docs anything](#20b-help--ask-the-docs-anything)
 21. [Chat — provider-aware RAG assistant](#21-chat--provider-aware-rag-assistant)
 22. [Common interaction patterns](#22-common-interaction-patterns)
 23. [Cookbook — typical workflows end to end](#23-cookbook--typical-workflows-end-to-end)
@@ -78,21 +79,30 @@ syntax highlighting).
 
 ## 2. The navigation bar
 
-The sticky bar at the top of every page contains nine items, in this
-order:
+The sticky bar at the top of every page splits into a **left
+group** of content links and a **right group** anchored to the far
+edge of the bar:
 
 ```
-Dashboard │ Telemetry ▾ │ Analysis ▾ │ RCA ▾ │ Documents │ Scripts │ Signals │ Bund │ Chat
+Dashboard │ Telemetry ▾ │ Analysis ▾ │ RCA ▾ │ Documents │ Scripts │ Signals │ Bund │ Chat ────── Administration ▾ │ Help
 ```
 
-Three items are **dropdown groups** — clicking opens a menu of
-sub-pages:
+Three items on the left are **dropdown groups** — clicking opens a
+menu of sub-pages:
 
 | Group | Sub-pages |
 |---|---|
 | **Telemetry ▾** | Metrics · Logs · Templates |
 | **Analysis ▾**  | Agg. Search · Trends · Templates Summary · Primary Summary · Primary Query Summary · Primary LSA Summary · Primary LSA Query Summary |
 | **RCA ▾**       | Telemetry RCA · Template RCA |
+
+On the right edge:
+
+- **Administration ▾** — User management + LLM admin pages.
+- **Help** — the always-visible rightmost link.  Click for a
+  natural-language question form that consults the cluster
+  documentation and renders an LLM-grounded answer.  See
+  [§ 20b](#20b-help--ask-the-docs-anything).
 
 Conventions:
 
@@ -931,6 +941,107 @@ If the script throws an error, the error message appears in red.
 - The Bund workbench is for **interactive exploration**. Once a
   script settles, move it to the Scripts page for storage and
   scheduling.
+
+---
+
+## 20b. Help — ask the docs anything
+
+**URL:** `/help` · always reachable from the rightmost item in the
+navigation bar.
+
+The Help page is a single text field, a checkbox, and a big
+**Help!** button.  Type a question in plain English, click the
+button, and bdsweb hands the request to the cluster's default LLM
+along with the most relevant documents from the cluster
+documentation as context.  You get back an answer with the same
+markdown formatting the Chat page uses — headings, bullet lists,
+code blocks, tables — and a row of pill-shaped citations showing
+which documents the answer came from.
+
+### What's on the page
+
+- **Question** (textarea) — type your question.  Multi-line is
+  fine; `⌘↵` / `Ctrl↵` submits.  Example: *"How do I rotate the
+  cluster shared secret?"*
+- **Internal docs only** (checkbox) — when ticked, only the
+  documents loaded by `scripts/load_internal_documentation.sh`
+  (i.e. the contents of the project's `Documentation/` tree) are
+  searched.  Untick to also include anything else that's been
+  uploaded to the docstore (runbooks, post-mortems, user-added
+  knowledge-base entries).  **Off by default.**
+- **Limit** (number input) — how many documents to feed into the
+  prompt.  Range 1–50.  Leave blank for a sensible default of 8.
+  Higher = more breadth, slower answers, sometimes a less focused
+  reply.  Lower = faster, sharper, occasionally misses context.
+- **Help!** button (or `⌘↵` from inside the textarea) — submits
+  the form.  An *Asking…* spinner appears while the LLM works; on
+  a local Ollama with a 30-doc prompt this is usually 5–30 seconds.
+
+### What the answer pane shows
+
+After the **Help!** button finishes:
+
+- A **status row** at the top of the pane:
+  - Green `✓ 4 docs` when the search found documents.  Amber
+    `⚠ 0 docs matched` when nothing came back (the LLM will say so
+    plainly — the system prompt instructs it not to make things up).
+  - A blue **internal only** pill if you ticked the checkbox.
+  - Provider, model, response time, and (when available) token
+    counts.
+- An optional **note** strip, only shown when the search returned
+  nothing — a plain-English heads-up that the answer is from the
+  model's general knowledge rather than your docs.
+- The **answer body**, rendered as markdown.  The model is
+  instructed to cite document names in square brackets (e.g.
+  *"According to [BDSCONFIG.md], …"*) so you can scan the answer
+  and recognise which doc it pulled from.
+- A **Sources** row at the bottom — one pill per document that
+  fed the prompt.  Each pill shows the similarity score (higher =
+  closer to your question) and the document name.  Pills with a
+  blue border are internal documentation; grey-border pills are
+  user-loaded documents from your docstore.
+
+### When to use it
+
+- **First stop for any "how do I…" question** about bdslib /
+  bdsnode / bdsweb.  Even when you know the answer, the page often
+  finds the doc you need to deep-link to in five seconds.
+- **Forgotten config keys** — *"what's the field in `bds.hjson`
+  for the LLM cache TTL?"* — the answer points straight at
+  `BDSCONFIG.md`.
+- **API discovery** — *"what RPC do I use to delete a script in
+  cluster mode?"* — the model finds it in the jsonrpc reference
+  and quotes the method name.
+- **Investigations** — when you've loaded your team's runbooks and
+  post-mortems with the standard docstore loader, leave **Internal
+  docs only** unchecked and let the model pull in operational
+  context alongside the manuals.
+
+### Tips
+
+- **The answer is only as good as the docs.**  If a feature was
+  added after the last documentation refresh, the model can't
+  cite it; refresh with
+  `./scripts/load_internal_documentation.sh`.
+- **Citations matter.**  When the answer doesn't cite anything in
+  square brackets, treat it with suspicion — the model may be
+  pattern-matching from general knowledge rather than the supplied
+  documents.
+- **Tick "Internal docs only"** when you want the answer to be
+  reproducible across teams — it pins retrieval to the canonical
+  documentation and ignores everything else in your docstore.
+- **Long answers can be copied** — the markdown rendering is
+  faithful, so right-click → *Select all* in the answer body gives
+  you clean text you can paste into Slack / an issue tracker.
+
+### Why a separate page from Chat?
+
+Chat (§ 21) is conversational — it keeps history per session and
+draws in live telemetry as context.  Help is **stateless** —
+every question is independent and only the documentation goes into
+the prompt.  Use Help when you want a focused, citable answer.
+Use Chat when you want a back-and-forth conversation about live
+data.
 
 ---
 

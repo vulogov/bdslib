@@ -477,6 +477,8 @@ async fn main() {
         // ── Administration → LLM ─────────────────────────────────────
         .route("/admin/llm",       get(routes::admin_llm::page_with_banners))
         .route("/admin/llm/purge", post(routes::admin_llm::purge))
+        .route("/help",            get(routes::help::page))
+        .route("/help/query",      post(routes::help::query))
 
         // Gate every other route behind the session-cookie middleware.
         // Open paths (/login, /logout, /version) are checked inside the

@@ -330,6 +330,21 @@
         </div>
       </div>
 
+      <!-- Help — rightmost nav item.  Backed by v3/help → LLM
+           completion over the docstore.  Placed AFTER the
+           Administration dropdown so the visual order is
+           "... Admin · Help".  No left-margin override needed —
+           Administration's margin-left:auto already pushed the row
+           to the right, and subsequent items inherit that position. -->
+      <a href="/help" class="nav-link {% block nav_help %}{% endblock %}">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
+          <line stroke-linecap="round" x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        Help
+      </a>
+
       <!-- Current user + Sign out (populated client-side via /whoami) -->
       <div id="auth-status" class="flex items-center gap-2" style="margin-left:0.5rem;">
         <!-- Hidden until /whoami responds with authenticated=true. -->

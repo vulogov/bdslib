@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Help · bdsnode{% endblock %}
+{% block nav_help %}active{% endblock %}
+
+{% block head %}
+<style>
+  /* GitHub-ish markdown surface inside the result pane.  Mirrors the
+     chat page's `.md` class so the experience is consistent. */
+  .md           { font-size: 0.875rem; line-height: 1.65; color: #e2e8f0; }
+  .md h1, .md h2, .md h3, .md h4 { color: #cbd5e1; font-weight: 600; margin: 1rem 0 0.5rem; }
+  .md h1        { font-size: 1.25rem; }
+  .md h2        { font-size: 1.1rem; }
+  .md h3        { font-size: 1rem;   }
+  .md h4        { font-size: 0.9rem; }
+  .md p         { margin: 0.6rem 0; }
+  .md ul, .md ol { margin: 0.4rem 0 0.6rem 1.4rem; }
+  .md li        { margin: 0.15rem 0; }
+  .md a         { color: #93c5fd; text-decoration: underline; }
+  .md a:hover   { color: #bfdbfe; }
+  .md strong    { color: #f1f5f9; font-weight: 600; }
+  .md em        { color: #cbd5e1; }
+  .md code      { background: #0d1117; padding: 0.05rem 0.35rem; border-radius: 0.25rem;
+                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                  font-size: 0.85em; color: #fdba74; }
+  .md pre       { background: #0d1117; border: 1px solid #1e2535; border-radius: 0.5rem;
+                  padding: 0.7rem 0.9rem; overflow-x: auto; margin: 0.7rem 0; }
+  .md pre code  { background: transparent; padding: 0; font-size: 0.8rem;
+                  color: #e2e8f0; line-height: 1.55; }
+  .md blockquote { border-left: 3px solid #2d3748; padding: 0.2rem 0.9rem;
+                   color: #94a3b8; margin: 0.6rem 0; font-style: italic; }
+  .md table     { font-size: 0.8rem; margin: 0.6rem 0; }
+  .md th, .md td { padding: 0.4rem 0.7rem; }
+  .md hr        { border: none; border-top: 1px solid #1e2535; margin: 1rem 0; }
+
+  /* Citation row pills */
+  .src-pill   { display: inline-flex; align-items: center; gap: 0.35rem;
+                background: #161b27; border: 1px solid #1e2535;
+                border-radius: 9999px; padding: 0.18rem 0.7rem;
+                font-size: 0.72rem; color: #cbd5e1; }
+  .src-pill.internal { border-color: rgba(59,130,246,0.45); background: rgba(59,130,246,0.08); color: #bfdbfe; }
+  .src-score  { color: #64748b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-xl font-semibold text-slate-200">Help</h1>
+  <span class="text-xs text-slate-500">
+    docstore Q&A · <code class="text-slate-400">v3/help</code>
+  </span>
+</div>
+
+<p class="text-sm text-slate-400 mb-3">
+  Ask a natural-language question.  The cluster's default LLM
+  provider answers using the docstore as RAG context.  Toggle
+  <strong>Internal docs only</strong> to scope retrieval to the
+  curated <code class="text-slate-300">Documentation/</code> corpus
+  loaded by
+  <code class="text-slate-300">scripts/load_internal_documentation.sh</code>.
+</p>
+
+<form id="help-form"
+      hx-post="/help/query"
+      hx-target="#help-output"
+      hx-swap="innerHTML"
+      hx-indicator="#help-spinner"
+      class="card rounded-lg p-4 mb-5">
+
+  <textarea name="message"
+            rows="3"
+            placeholder='e.g. "How do I rotate the cluster shared secret?"'
+            autofocus
+            class="w-full rounded px-3 py-2 text-sm bg-slate-950 border border-slate-800 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-700"></textarea>
+
+  <div class="flex items-center gap-4 mt-3 flex-wrap">
+    <label class="inline-flex items-center gap-2 text-xs text-slate-300 select-none cursor-pointer">
+      <input type="checkbox" name="internal_only" value="on"
+             class="rounded" style="accent-color:#3b82f6;">
+      Internal docs only
+    </label>
+
+    <label class="inline-flex items-center gap-2 text-xs text-slate-400">
+      Limit
+      <input type="number" name="limit" min="1" max="50"
+             placeholder="8"
+             class="w-16 rounded px-2 py-1 text-xs font-mono text-center"
+             title="Number of documents to retrieve (1–50; default 8)">
+    </label>
+
+    <div class="flex-1"></div>
+
+    <span id="help-spinner" class="htmx-indicator text-blue-400 text-xs">
+      Asking…
+    </span>
+
+    <button type="submit" class="btn btn-primary text-xs flex items-center gap-1.5">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none"
+           viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
+        <line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      Help!
+      <kbd class="ml-1 text-blue-300 opacity-60 font-sans text-xs normal-case font-normal">⌘↵</kbd>
+    </button>
+  </div>
+</form>
+
+<div class="card rounded-lg p-4">
+  <div class="text-xs text-slate-500 uppercase tracking-wide mb-3">Answer</div>
+  <div id="help-output">
+    <div class="text-center py-8 text-slate-600 text-sm italic">
+      Ask a question above to see an answer drawn from the documentation.
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+  // ⌘↵ / Ctrl↵ submits from anywhere within the textarea.
+  document.querySelector('textarea[name="message"]').addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      document.getElementById('help-form').requestSubmit();
+    }
+  });
+</script>
+{% endblock %}

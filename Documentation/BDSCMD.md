@@ -91,6 +91,7 @@ output suitable for piping into `jq`.
 14d. [user — cluster-replicated user management](#14d-user--cluster-replicated-user-management)
 14e. [llm — drive the v4/llm.* surface](#14e-llm--drive-the-v4llm-surface)
 14f. [to-bund — English → Bund translator](#14f-to-bund--english--bund-translator)
+14g. [ask — Docstore-backed Q&A (`v3/help`)](#14g-ask--docstore-backed-qa-v3help)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -3017,6 +3018,118 @@ JSON envelope when scripting against the default mode.
 
 ---
 
+## 14g. `ask` — Docstore-backed Q&A (`v3/help`)
+
+Ask a natural-language question over the cluster docstore.
+The default LLM provider answers using the top matching documents
+as RAG context.  Wraps
+[`v3/help`](../jsonrpc_api/v3_help.md) — see
+[`LLM.md`](LLM.md) § 14 for the design and
+[`SCRIPTS.md`](SCRIPTS.md) § `load_internal_documentation.sh` for
+loading the curated `Documentation/` corpus that this subcommand
+is designed to query.
+
+This is a **v2/** semantics surface (read-only, no HMAC) — the
+bdsnode RPC port is the trust boundary, same as `v3/search`.
+
+> **Naming note.** The CLI subcommand is `ask`, not `help`, because
+> clap reserves `help` for the auto-generated per-subcommand help
+> surface (`bdscmd help status` → docs for `status`).  Renaming
+> would clobber that.  Semantically equivalent — the underlying
+> RPC is still `v3/help`.
+
+### Usage
+
+```bash
+bdscmd ask [OPTIONS] [MESSAGE]
+```
+
+Input precedence — first non-empty wins:
+
+1. positional `MESSAGE`
+2. `--message-file <path>` (use `-` for stdin)
+3. stdin (default when neither is set)
+
+### Flags
+
+| Flag                      | Purpose                                                                 |
+|---------------------------|-------------------------------------------------------------------------|
+| `--message-file <path>`   | Read the question from a file (`-` = stdin).  Mutually exclusive with positional `MESSAGE`. |
+| `--internal-only`         | Restrict RAG to documents tagged `metadata.internal_doc=true` (the corpus loaded by `scripts/load_internal_documentation.sh`). |
+| `-l, --limit <n>`         | Number of documents to include in the prompt.  Server-clamped to `[1, 50]`; omit for the server default (8). |
+| `--provider <name>`       | Override `llm.default`.                                                 |
+| `--model <name>`          | Override the provider's `default_model`.                                |
+| `--temperature <f>`       | Sampling temperature passed as `options.temperature`.                   |
+| `--max-tokens <n>`        | Hard cap on output tokens.                                              |
+| `--top-p <f>`             | Nucleus-sampling top-p.                                                 |
+| `--seed <n>`              | Deterministic seed (Ollama / OpenAI only).                              |
+| `--num-ctx <n>`           | Override the auto-bucketed context window (16k / 32k / 64k).            |
+| `--answer-only`           | Pipeline mode — see below.                                              |
+
+### Output modes
+
+**Default** — full JSON envelope pretty-printed (matches every other
+`bdscmd` subcommand).  Useful when you want to script against the
+structured response or stash the sources for an audit trail.
+
+**`--answer-only`** — pipeline-friendly mode:
+
+- **stdout** — just the LLM answer body (one trailing newline).
+- **stderr** — one summary line:
+  `[help] ollama/llama3.2 · 3 doc(s) · 12265ms`
+  followed by one line per source citation:
+  `[help] [I] 0.654  SCRIPTS.md`   (`[I]` = internal-doc badge)
+  and the `note` field when the server set one (no-doc fallback).
+- **exit code** — `0` when at least one document fed the prompt,
+  `2` when the model answered from general knowledge (the
+  `n_docs == 0` fallback path).  Lets pipelines branch on `$?`
+  to decide whether the answer was grounded in the corpus.
+
+### Examples
+
+```bash
+# Full JSON envelope, internal corpus only
+bdscmd ask --internal-only "How do I rotate the cluster shared secret?"
+
+# Pipe just the answer somewhere
+bdscmd ask --answer-only \
+    "What's the difference between v3/search and v3/aggregationsearch?" \
+    > /tmp/answer.md
+
+# Tune retrieval breadth
+bdscmd ask --internal-only --limit 12 \
+    "Walk me through anti-entropy in 4 sentences."
+
+# Long question from a file
+bdscmd ask --message-file ./questions/incident-postmortem.txt
+
+# Read from stdin via heredoc
+bdscmd ask --internal-only <<'EOF'
+Our chat helper crashed with "session not found" after bdsnode --new.
+Where does the auto-recovery happen and which v4/llm.* code path
+handles it?
+EOF
+
+# Force a specific provider for tough technical questions
+bdscmd ask --provider anthropic --model claude-sonnet-4-5 \
+    --internal-only \
+    "Why does cls.script.add need full-cluster fan-out?"
+```
+
+### Exit codes (in addition to § 16)
+
+| Code | Meaning                                                                         |
+|------|---------------------------------------------------------------------------------|
+| `0`  | `--answer-only` and `n_docs > 0` — the answer was grounded in the corpus.       |
+| `2`  | `--answer-only` and `n_docs == 0` — the model answered from general knowledge.  |
+
+Without `--answer-only` the exit code is the standard bdscmd code
+(0 on RPC success regardless of `n_docs`).  Inspect `.n_docs` and
+`.sources[]` in the JSON envelope when scripting against the
+default mode.
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -3087,6 +3200,7 @@ JSON envelope when scripting against the default mode.
 | `llm cache stats`   | `v4/llm.cache.stats`   | parent `-s` |
 | `llm cache purge`   | `v4/llm.cache.purge`   | `[--provider]`, `[--kind]`, `[--older-than-secs]`, parent `-s` |
 | `to-bund`           | `v2/to.bund`           | `MESSAGE` / `--message-file`, `[--provider]`, `[--model]`, `[--max-retries]`, generation opts, `[--script-only]` |
+| `ask`               | `v3/help`              | `MESSAGE` / `--message-file`, `[--internal-only]`, `[-l/--limit]`, `[--provider]`, `[--model]`, generation opts, `[--answer-only]` |
 
 ---
 

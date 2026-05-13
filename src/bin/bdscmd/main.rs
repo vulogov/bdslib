@@ -264,6 +264,17 @@ enum Commands {
     /// and a one-line summary to stderr — ideal for piping into
     /// `bdscmd eval -`.
     ToBund(cmd::to_bund::Cmd),
+
+    /// Ask a natural-language question over the cluster docstore
+    /// via `v3/help`.  Use `--internal-only` to scope retrieval to
+    /// the corpus loaded by `scripts/load_internal_documentation.sh`.
+    /// Default output is the full response JSON
+    /// (answer, sources, n_docs, …); pass `--answer-only` to print
+    /// just the answer to stdout and citations to stderr.
+    ///
+    /// (Named `ask` rather than `help` because clap reserves `help`
+    /// for its auto-generated subcommand-help surface.)
+    Ask(cmd::ask::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -360,6 +371,7 @@ fn main() -> Result<()> {
         Commands::User(a)                     => cmd::user::run(&url, &session, a),
         Commands::Llm(a)                      => cmd::llm::run(&url, &session, a),
         Commands::ToBund(a)                   => cmd::to_bund::run(&url, &session, a),
+        Commands::Ask(a)                      => cmd::ask::run(&url, &session, a),
     }?;
 
     if cli.raw {

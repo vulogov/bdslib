@@ -24,7 +24,8 @@ BUND is a stack-based, concatenative programming language with a circular multis
 
 | Document | Format | Contents |
 |---|---|---|
-| [BDS.md](BDS.md) | Markdown | All `db.*` and `doc.*` words — shard DB ingest/search and document store operations |
+| [BDS.md](BDS.md) | Markdown | All `db.*` and `doc.*` words — **local-only** shard DB ingest/search and document store operations |
+| [BUND_BDS.md](BUND_BDS.md) | Markdown | Every `cls.*` cluster-aware word — same operations as `db.*`/`doc.*` but with transparent fan-out / replication.  Covers `cls.add`, `cls.search.*`, `cls.signal.*`, `cls.doc.*`, `cls.tpl.*`, `cls.script.*`, `cls.llm.*`, plus `?cluster.meta` / `?llm.meta` introspection |
 
 ---
 
