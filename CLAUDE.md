@@ -189,6 +189,63 @@ v4/llm.* but specialised for "ops asks the docs a question":
 
 Companion script: `scripts/load_internal_documentation.sh` ingests the entire `Documentation/` tree tagged `internal_doc: true`.  The expected operator workflow is "run loader → consumers call `v3/help` with `internal_only: true`".
 
+### Shard retention (`src/retention.rs`, `src/bin/bdsnode/server/retention.rs`)
+
+Online time-based shard eviction.  Per-node, opt-in.  Touches **only** sharded telemetry (shards under `{dbpath}/{start_ts}_{end_ts}/`); never docs/signals/scripts/users/llm_cache (fully-replicated, anti-entropy keeps them converged).
+
+**Library** (`src/retention.rs`):
+- `pub fn evict_expired(cfg, now) -> Result<EvictionReport>` is the single sweep entry-point.  `cfg: &RetentionConfig` (enabled / duration / max_evictions_per_run / dry_run).  `now: SystemTime` is injected so unit tests drive the cutoff deterministically.
+- Process-wide `RetentionStats` (atomic counters behind `OnceLock`) — `evicted_lifetime`, `evicted_last_run`, `freed_lifetime_bytes`, `freed_last_run_bytes`, `last_run_ts`, `last_run_ms`, `errors_lifetime`.  `record_run(&report)` rolls a report into them.
+
+**ShardsManager** (`src/shardsmanager.rs`):
+- `evict_shard(shard_id) -> Result<EvictionOutcome>` runs the 5-step procedure: mark_evicting → close_if_open → rename to `.evicting` → catalog delete → `fs::remove_dir_all`.
+- `cleanup_orphan_evicting()` discovers leftover `*.evicting` rows / dirs from a prior crashed sweep on startup.
+- `drain_reload(duration)` re-seeds the in-memory drain parser after a sweep that touched its working window.
+
+**ShardInfoEngine** (`src/shardsinfo.rs`):
+- New `evicting BOOLEAN` column (migrated in-place via `migrate_evicting_column` — drops indexes, ADD COLUMN, recreates indexes, since DuckDB rejects ALTER on indexed tables).
+- New methods: `mark_evicting`, `delete_by_id`, `get_by_id`, `is_evicting`, `list_evictable(cutoff_ts)`, `list_evicting`.
+
+**ShardsCache** (`src/shardscache.rs`):
+- `close_if_open(key)` flushes + drops a single shard's cached instance.
+- `shard()` short-circuits with "shard is being evicted" when the catalog says `evicting=true` — race-guard for ingest concurrent with a sweep.
+
+**JsonCache** (`src/common/cache_json.rs`):
+- `drop_window(start_ts, end_ts)` filter-pass removes entries whose `(_, timestamp)` falls in the half-open range.  Called post-sweep with the union of evicted windows.
+
+**bdsnode task** (`src/bin/bdsnode/server/retention.rs`):
+- Mirrors `server/sync.rs` — `Handle { stop }`, `start(cfg) -> Handle`, `tokio::select!` over shutdown / interval.  Spawns the sweep on `spawn_blocking` (catalog reads + filesystem deletes are sync, may take seconds).
+- `ActiveConfig` `OnceLock` shared between the task and the JSON-RPC handlers (`crate::server::retention::active()`) so `v2/retention.settings` reflects the runtime config, not a re-parse of `$BDS_CONFIG`.
+- Calls `db.cleanup_orphan_evicting()` from main.rs BEFORE the JSON-RPC listener binds.
+
+**RPC** (`src/bin/bdsnode/jsonrpc/v2_retention.rs`):
+- `v2/retention.sweep` — operator-triggered sweep; optional per-call overrides (`duration`, `max_evictions_per_run`, `dry_run`, `force`).
+- `v2/retention.settings` — echoes the active config + lifetime stats.
+- `v2/status` grows a `retention` block from the same atomic counters.
+
+**bdscmd** (`src/bin/bdscmd/cmd/retention.rs`): `retention-sweep` and `retention-settings` subcommands.
+
+**Tests**:
+- 11 new unit tests in `tests/shardsinfo_test.rs` (evicting flag, list_evictable, list_evicting, idempotent delete).
+- 3 unit tests in `tests/cache_json_test.rs` (drop_window).
+- 3 unit tests in `src/retention.rs` (disabled short-circuit, zero-duration rejection, stats accumulation).
+- 7 integration tests in `tests/retention_test.rs` against a real ShardsManager tempdir — disabled is a no-op, real eviction removes catalog + dirs, dry-run doesn't mutate, `max_evictions_per_run` cap, JsonCache window invalidation, `cleanup_orphan_evicting` recovery, stats are recorded.
+
+**Phase 2 — cluster-wide audit RPC** (`src/bin/bdsnode/jsonrpc/v3_cluster_retention.rs`):
+- `v3/cluster.retention.status` — read-only fan-out of `v2/retention.settings` across every Alive peer plus the local node.  Adds a `summary` block with `consistent` / `distinct_durations` / `distinct_interval_secs` / aggregated lifetime counts so operators can spot policy drift in one call.
+- Mirrors `v3/timeline`'s structure: `tokio::join!` over local + `cluster::fanout::fan_out_v2`, standard `v3_cluster_meta` wrapping.
+- Surfaced via `bdscmd cluster retention-status` (no auth required — same trust boundary as `v3/timeline`).
+- Deliberate non-goal: no cluster-wide sweep.  Mass eviction is gated behind per-node `v2/retention.sweep` to prevent `--force --duration 1s` accidents wiping the entire cluster.
+
+**Phase 3 — cluster-aware quorum** (opt-in safety net):
+- `retention.quorum_check_enabled` + `retention.quorum_min_peers` in hjson (default false / 1).  When on, every candidate is gated against a `(interval) → peer-count` map built at the start of each sweep.
+- New `v2/cluster.shards.list` (`src/bin/bdsnode/jsonrpc/v2_cluster_shards_list.rs`) — pure catalog dump used as the quorum probe RPC.
+- New library API `bdslib::retention::evict_expired_with_quorum<F>(cfg, now, |start, end| -> bool)` where the closure decides per-shard.  The old `evict_expired` is a wrapper passing `|_,_| true`.
+- `EvictionReport` gains `quorum_skipped`; `RetentionStats` gains `quorum_skipped_lifetime` / `_last_run` atomics, surfaced via `v2/status.retention`, `v2/retention.settings`, `v2/retention.sweep`, `v3/cluster.retention.status`.
+- `src/bin/bdsnode/server/retention.rs` does the async pre-fetch via `cluster::fanout::fan_out_v2("v2/cluster.shards.list", …)` → `HashMap<(i64,i64), usize>` → closure passed into `spawn_blocking`.  Fail-safe: cluster unreachable or zero Alive peers → empty map → every candidate skipped (data preservation > convenience).
+- `run_sweep(cfg, drain_reload) -> EvictionReport` is the shared entrypoint for both the background loop and `v2/retention.sweep`.
+- 5 new integration tests in `tests/retention_test.rs` (closure-false skips, closure-true evicts, per-interval matching, disabled-bypasses-closure, lifetime stats roll-up).
+
 ## Integration Tests
 
 Tests live in `tests/storageengine_test.rs`. Each test creates its own DuckDB instance (`:memory:` or `tempfile`):

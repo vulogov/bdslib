@@ -141,6 +141,17 @@ impl ShardsCache {
         // 2. Catalog lookup.
         let infos = self.info.shards_at(timestamp)?;
         let (insert_key, shard) = if let Some(info) = infos.into_iter().next() {
+            // Race-guard for the retention subsystem: if the catalog
+            // says this shard is being evicted, refuse to open it.  The
+            // caller (typically the ingest path) sees this as a
+            // transient failure and can fall back to retry / pick a
+            // future shard / drop the record.
+            if self.info.is_evicting(info.shard_id)? {
+                return Err(err_msg(format!(
+                    "shard {} ({}) is being evicted",
+                    info.shard_id, info.path
+                )));
+            }
             let shard = Shard::with_config(
                 &info.path,
                 self.pool_size,
@@ -244,6 +255,31 @@ impl ShardsCache {
             None => Ok(()),
             Some(msg) => Err(err_msg(msg)),
         }
+    }
+
+    /// Flush a single shard to disk and remove it from the in-memory cache.
+    ///
+    /// Idempotent: if the key is not currently cached, returns `Ok(())`
+    /// without touching anything.  Used by the retention subsystem to
+    /// drop the cached [`Shard`] instance before the on-disk shard
+    /// directory is renamed + deleted.
+    ///
+    /// Note: as with [`close`](Self::close), the underlying engine
+    /// resources (DuckDB pool, Tantivy IndexWriter lock, VecStore index)
+    /// are only released when every cloned [`Shard`] returned by prior
+    /// calls is also dropped.  On POSIX this is fine — `remove_dir_all`
+    /// succeeds even with open FDs (the inodes survive until the last
+    /// close).  On Windows the retention subsystem would have to poll
+    /// for the refcount to settle, but bdslib is POSIX-only.
+    pub fn close_if_open(&self, key: (std::time::SystemTime, std::time::SystemTime)) -> Result<()> {
+        let mut state = self.cache.lock();
+        let shard = match state.map.remove(&key) {
+            Some(s) => s,
+            None    => return Ok(()),  // not cached → nothing to do
+        };
+        state.lru.retain(|k| k != &key);
+        drop(state);  // release the cache lock before the (potentially slow) sync
+        shard.sync()
     }
 
     /// Flush all cached shards to disk and evict them from the in-memory cache.

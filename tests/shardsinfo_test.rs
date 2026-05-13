@@ -245,3 +245,119 @@ fn test_concurrent_add_and_query() {
         assert!(engine.shard_exists_at(at(base + 1_800)).unwrap());
     }
 }
+
+// ── retention surface (Phase 1) ──────────────────────────────────────────────
+
+#[test]
+fn evicting_flag_defaults_false_on_insert() {
+    let engine = in_memory();
+    let id = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    assert!(!engine.is_evicting(id).unwrap(),
+        "fresh shards must NOT be marked evicting");
+}
+
+#[test]
+fn mark_evicting_flips_the_flag() {
+    let engine = in_memory();
+    let id = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    engine.mark_evicting(id).unwrap();
+    assert!(engine.is_evicting(id).unwrap());
+}
+
+#[test]
+fn mark_evicting_is_idempotent() {
+    let engine = in_memory();
+    let id = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    engine.mark_evicting(id).unwrap();
+    engine.mark_evicting(id).unwrap();  // second call must not error
+    assert!(engine.is_evicting(id).unwrap());
+}
+
+#[test]
+fn delete_by_id_removes_the_row() {
+    let engine = in_memory();
+    let id = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    engine.delete_by_id(id).unwrap();
+    assert_eq!(engine.list_all().unwrap().len(), 0);
+    assert!(engine.get_by_id(id).unwrap().is_none());
+}
+
+#[test]
+fn delete_by_id_is_idempotent_on_missing_row() {
+    let engine = in_memory();
+    let id = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    engine.delete_by_id(id).unwrap();
+    engine.delete_by_id(id).unwrap();  // second call on a missing row is silent
+}
+
+#[test]
+fn list_evictable_returns_only_old_unmarked_shards() {
+    let engine = in_memory();
+    let a = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    let _ = engine.add_shard("/data/b", at(2_000), at(3_000)).unwrap();
+    let _ = engine.add_shard("/data/c", at(3_000), at(4_000)).unwrap();
+
+    // cutoff = 2_500 — only end_ts < 2_500 is evictable, so just `a`.
+    let evictable = engine.list_evictable(2_500).unwrap();
+    assert_eq!(evictable.len(), 1);
+    assert_eq!(evictable[0].shard_id, a);
+    assert_eq!(evictable[0].path, "/data/a");
+}
+
+#[test]
+fn list_evictable_excludes_marked_rows() {
+    let engine = in_memory();
+    let a = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    let b = engine.add_shard("/data/b", at(1_000), at(2_000)).unwrap();
+    // Mark `a` as already evicting — list_evictable must skip it so a
+    // concurrent sweep won't pick it up twice.
+    engine.mark_evicting(a).unwrap();
+
+    let evictable = engine.list_evictable(2_500).unwrap();
+    assert_eq!(evictable.len(), 1);
+    assert_eq!(evictable[0].shard_id, b);
+}
+
+#[test]
+fn list_evictable_orders_by_end_ts_ascending() {
+    let engine = in_memory();
+    let mid    = engine.add_shard("/data/m", at(2_000), at(3_000)).unwrap();
+    let oldest = engine.add_shard("/data/o", at(1_000), at(2_000)).unwrap();
+    let newer  = engine.add_shard("/data/n", at(3_000), at(4_000)).unwrap();
+
+    let evictable = engine.list_evictable(5_000).unwrap();
+    assert_eq!(evictable.len(), 3);
+    assert_eq!(evictable[0].shard_id, oldest);
+    assert_eq!(evictable[1].shard_id, mid);
+    assert_eq!(evictable[2].shard_id, newer);
+}
+
+#[test]
+fn list_evicting_returns_orphan_marked_rows() {
+    let engine = in_memory();
+    let a = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    let _ = engine.add_shard("/data/b", at(2_000), at(3_000)).unwrap();
+    engine.mark_evicting(a).unwrap();
+
+    let evicting = engine.list_evicting().unwrap();
+    assert_eq!(evicting.len(), 1);
+    assert_eq!(evicting[0].shard_id, a);
+}
+
+#[test]
+fn is_evicting_returns_false_for_missing_shard() {
+    let engine = in_memory();
+    let id = bdslib::common::uuid::generate_v7();
+    assert!(!engine.is_evicting(id).unwrap());
+}
+
+#[test]
+fn get_by_id_round_trips_a_shard_info() {
+    let engine = in_memory();
+    let id = engine.add_shard("/data/a", at(1_000), at(2_000)).unwrap();
+    let info = engine.get_by_id(id).unwrap().expect("shard must exist");
+    assert_eq!(info.shard_id, id);
+    assert_eq!(info.path, "/data/a");
+    assert_eq!(info.start_time, at(1_000));
+    assert_eq!(info.end_time,   at(2_000));
+}

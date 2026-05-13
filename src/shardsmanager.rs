@@ -167,6 +167,38 @@ fn parse_embedding_model(name: &str) -> Result<EmbeddingModel> {
 ///
 /// `ShardsManager` is `Clone`; all clones share the same underlying shard cache,
 /// document store, drain parser, and JSON cache.
+/// Outcome of a single [`ShardsManager::evict_shard`] call.
+///
+/// `start_time` / `end_time` are surfaced so the retention sweeper can
+/// invalidate any cache layer keyed by record timestamp (the JsonCache)
+/// without having to re-fetch the catalog row.
+#[derive(Debug, Clone)]
+pub struct EvictionOutcome {
+    pub shard_id:   Uuid,
+    pub path:       String,
+    pub start_time: SystemTime,
+    pub end_time:   SystemTime,
+    pub freed_bytes: u64,
+    /// `false` when `shard_id` didn't match any catalog row (idempotent
+    /// no-op).  `true` for any actual removal — including the case where
+    /// the on-disk directory had already vanished but the catalog row
+    /// existed.
+    pub existed:    bool,
+}
+
+impl EvictionOutcome {
+    fn not_found(shard_id: Uuid) -> Self {
+        Self {
+            shard_id,
+            path:       String::new(),
+            start_time: UNIX_EPOCH,
+            end_time:   UNIX_EPOCH,
+            freed_bytes: 0,
+            existed:    false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ShardsManager {
     pub(crate) cache: ShardsCache,
@@ -1063,6 +1095,164 @@ impl ShardsManager {
         Ok(result)
     }
 
+    // ── retention / shard eviction ────────────────────────────────────────────
+    //
+    // Online eviction is the 5-step procedure documented in
+    // `Documentation/RETENTION.md`.  The catalog `evicting` flag is
+    // flipped first so any concurrent ingest racing us either hits the
+    // shard before the cache entry is dropped (the write succeeds, but
+    // is lost on delete — operator chose retention < shard_duration is
+    // their problem) or sees the catalog say "evicting" and falls back
+    // upstream.
+    //
+    // POSIX `remove_dir_all` is safe even with FDs still open against
+    // the directory's children: inodes survive until the last close, so
+    // any in-flight query against the shard completes against the
+    // about-to-be-unlinked files.  Windows would need a refcount wait;
+    // bdslib is POSIX-only.
+
+    /// Evict a single shard online — closes its cached instance,
+    /// removes the row from the catalog, and deletes the shard's
+    /// directory.  Idempotent on a missing shard.  Returns the
+    /// reclaimed bytes (best-effort `du`) plus the original time
+    /// window so the caller can do post-eviction cache invalidation.
+    pub fn evict_shard(&self, shard_id: Uuid) -> Result<EvictionOutcome> {
+        let info = match self.cache.info().get_by_id(shard_id)? {
+            Some(i) => i,
+            None    => return Ok(EvictionOutcome::not_found(shard_id)),
+        };
+        let path = info.path.clone();
+
+        // 1) Flag the row.  Racing opens hit the is_evicting guard in
+        //    ShardsCache::shard() and refuse.
+        self.cache.info().mark_evicting(shard_id)?;
+
+        // 2) Close the open Shard (if any).  Sync first so on-disk
+        //    state is consistent with the in-memory state we're about
+        //    to throw away.  No-op when the shard isn't cached.
+        let key = (info.start_time, info.end_time);
+        if let Err(e) = self.cache.close_if_open(key) {
+            log::warn!("[retention] close_if_open failed for shard {shard_id} \
+                        ({path}): {e}; continuing with eviction");
+        }
+
+        // 3) Move the shard dir aside.  If the process crashes between
+        //    here and step 5, startup discovery
+        //    (`cleanup_orphan_evicting`) walks the catalog for any
+        //    `evicting=true` rows, removes their .evicting directories,
+        //    and deletes the rows.
+        let evict_path = format!("{path}.evicting");
+        if std::path::Path::new(&path).exists() {
+            if let Err(e) = std::fs::rename(&path, &evict_path) {
+                // Roll back the flag — the shard is unharmed.
+                let _ = self.cache.info().mark_evicting(shard_id);  // re-mark is harmless
+                return Err(err_msg(format!(
+                    "[retention] cannot rename {path} → {evict_path}: {e}"
+                )));
+            }
+        }
+
+        let freed_bytes = du_secs(&evict_path).unwrap_or(0);
+
+        // 4) Delete the catalog row.
+        self.cache.info().delete_by_id(shard_id)?;
+
+        // 5) Recursively unlink the on-disk shard data.  Failure here
+        //    leaves orphan files but the catalog is already clean —
+        //    operators see the warning and can rm -rf manually.
+        if let Err(e) = std::fs::remove_dir_all(&evict_path) {
+            log::warn!("[retention] catalog row for shard {shard_id} deleted but \
+                        on-disk dir {evict_path} could not be removed: {e}");
+        }
+
+        Ok(EvictionOutcome {
+            shard_id,
+            path,
+            start_time: info.start_time,
+            end_time:   info.end_time,
+            freed_bytes,
+            existed:    true,
+        })
+    }
+
+    /// Discover and finish any half-completed evictions from a prior
+    /// run.  Walks the catalog for `evicting=true` rows, removes their
+    /// `.evicting` directories from disk, and deletes the catalog rows.
+    /// Returns the number of orphans cleaned up.
+    ///
+    /// Safe to call on every startup; no-op when there are no orphans.
+    /// MUST run BEFORE the first regular shard open so a racing ingest
+    /// doesn't get pointed at an `evicting=true` row.
+    pub fn cleanup_orphan_evicting(&self) -> Result<usize> {
+        let orphans = self.cache.info().list_evicting()?;
+        let n = orphans.len();
+        for info in orphans {
+            let evict_path = format!("{}.evicting", info.path);
+            if std::path::Path::new(&evict_path).exists() {
+                if let Err(e) = std::fs::remove_dir_all(&evict_path) {
+                    log::warn!(
+                        "[retention] startup orphan cleanup: cannot remove \
+                         {evict_path}: {e}; leaving catalog row {} as-is",
+                        info.shard_id,
+                    );
+                    continue;
+                }
+            }
+            // Also unlink the original path in case the rename never
+            // happened (crashed between step 1 and step 3).
+            if std::path::Path::new(&info.path).exists() {
+                if let Err(e) = std::fs::remove_dir_all(&info.path) {
+                    log::warn!(
+                        "[retention] startup orphan cleanup: cannot remove \
+                         {}: {e}; leaving catalog row {} as-is",
+                        info.path, info.shard_id,
+                    );
+                    continue;
+                }
+            }
+            self.cache.info().delete_by_id(info.shard_id)?;
+            log::info!(
+                "[retention] startup orphan cleanup: dropped shard {} ({})",
+                info.shard_id, info.path,
+            );
+        }
+        if n > 0 {
+            log::info!("[retention] startup cleanup removed {n} orphan shard(s)");
+        }
+        Ok(n)
+    }
+
+    /// Borrow the embedded [`JsonCache`].  Used by the retention sweeper
+    /// to invalidate entries whose `(_, timestamp)` falls in an evicted
+    /// shard's window.
+    pub fn jsoncache(&self) -> &JsonCache {
+        &self.jsoncache
+    }
+
+    /// Re-seed the in-memory drain parser from the templates currently
+    /// stored across surviving shards.  Called after a retention sweep
+    /// that touched any shard inside the configured `drain_load_duration`
+    /// window — without this, the parser holds in-memory cluster IDs
+    /// whose backing template UUIDs have been deleted from disk.
+    ///
+    /// No-op when drain is disabled (`drain_enabled = false`) or when
+    /// the lock has been poisoned by a panic elsewhere.  Returns the
+    /// number of clusters the fresh parser was seeded with.
+    pub fn drain_reload(&self, duration: &str) -> Result<usize> {
+        let Some(drain_arc) = self.drain.as_ref() else {
+            return Ok(0);  // drain disabled — nothing to reseed
+        };
+        let (fresh_parser, fresh_cluster_map) = self.drain_load(duration)?;
+        let n = fresh_parser.clusters().len();
+        if let Ok(mut g) = drain_arc.lock() {
+            *g = fresh_parser;
+        }
+        if let Ok(mut g) = self.drain_cluster_map.lock() {
+            *g = fresh_cluster_map;
+        }
+        Ok(n)
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].
@@ -1121,5 +1311,27 @@ impl ShardsManager {
     pub fn cluster(&self) -> Option<&Arc<Cluster>> {
         self.cluster.as_ref()
     }
+}
+
+/// Best-effort `du -sb`-style recursive size for a path.  Returns 0 on
+/// any I/O error — this is reporting-only telemetry, never load-bearing.
+/// Used by `evict_shard` to populate `EvictionOutcome::freed_bytes` so
+/// `v2/status` can show how much disk the last sweep reclaimed.
+fn du_secs(path: &str) -> Option<u64> {
+    fn walk(p: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
+        let md = std::fs::symlink_metadata(p)?;
+        if md.file_type().is_dir() {
+            for entry in std::fs::read_dir(p)? {
+                let entry = entry?;
+                walk(&entry.path(), total)?;
+            }
+        } else {
+            *total += md.len();
+        }
+        Ok(())
+    }
+    let mut total = 0u64;
+    walk(std::path::Path::new(path), &mut total).ok()?;
+    Some(total)
 }
 

@@ -74,7 +74,7 @@ output suitable for piping into `jq`.
     - [eval](#141-eval)
     - [Shebang scripts](#142-shebang-scripts)
 14b. [Commands — Cluster](#14b-commands--cluster)
-    - [cluster status / peers / sync / hints](#cluster-status)
+    - [cluster status / peers / sync / hints / retention-status](#cluster-status)
     - [cluster timeline / count / search / search-get](#cluster-timeline)
     - [cluster knn / anomaly / denoise](#cluster-knn)
     - [cluster add / add-batch / add-file / add-file-syslog](#cluster-add)
@@ -92,6 +92,7 @@ output suitable for piping into `jq`.
 14e. [llm — drive the v4/llm.* surface](#14e-llm--drive-the-v4llm-surface)
 14f. [to-bund — English → Bund translator](#14f-to-bund--english--bund-translator)
 14g. [ask — Docstore-backed Q&A (`v3/help`)](#14g-ask--docstore-backed-qa-v3help)
+14h. [retention-sweep / retention-settings — Shard retention](#14h-retention-sweep--retention-settings--shard-retention)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -2414,6 +2415,33 @@ hint backlog, AE/hint-tick telemetry, and replication health.
 bdscmd --address http://10.0.0.7:9000 cluster hints
 ```
 
+### `cluster retention-status`
+
+Calls [`v3/cluster.retention.status`](../jsonrpc_api/v3_cluster_retention.md)
+— read-only fan-out that returns each Alive peer's effective
+retention configuration plus a `summary` block flagging policy
+drift.  No secret needed.
+
+```bash
+bdscmd --address http://10.0.0.7:9000 cluster retention-status
+```
+
+The most operationally useful field is `summary.consistent`:
+
+```bash
+bdscmd cluster retention-status \
+  | jq -r '
+      if .summary.consistent
+      then "OK — every peer agrees on retention.duration"
+      else "DRIFT: " + (.summary.distinct_durations | join(", "))
+      end'
+```
+
+See [`RETENTION.md`](RETENTION.md) § Auditing cluster-wide policy
+alignment.  This RPC does NOT trigger sweeps cluster-wide; mass
+eviction is deliberately gated behind per-node
+`bdscmd retention-sweep` to prevent accidents.
+
 ### Phase 6 — replicated file ingest
 
 #### `cluster add-file`
@@ -3130,6 +3158,83 @@ default mode.
 
 ---
 
+## 14h. `retention-sweep` / `retention-settings` — Shard retention
+
+Drive the operator-facing surface of time-based shard retention.
+The full design + cluster semantics are in
+[`RETENTION.md`](RETENTION.md).
+
+### `retention-sweep`
+
+Trigger one shard-eviction sweep.  Reuses the same code path the
+background tokio task drives — same evictions, same cache
+invalidation.
+
+```bash
+bdscmd retention-sweep [OPTIONS]
+```
+
+| Flag                                  | Purpose                                                                                |
+|---------------------------------------|----------------------------------------------------------------------------------------|
+| `--duration <humantime>`              | Override `retention.duration` for this call (`"7days"`, `"6h"`, …).  Must be > 0.     |
+| `--max-evictions-per-run <n>`         | Override the per-call cap.  `0` = no cap.                                              |
+| `--dry-run`                           | Log what would be evicted without acting.                                              |
+| `--force`                             | Force-enable for this call even when `retention.enabled = false` in `bds.hjson`.       |
+
+Output (JSON envelope):
+
+```json
+{
+  "enabled":      true,
+  "duration_secs": 604800,
+  "dry_run":      false,
+  "disabled":     false,
+  "evicted":      3,
+  "errors":       0,
+  "freed_bytes":  4567890,
+  "cutoff_ts":    1715712100,
+  "took_ms":      24,
+  "min_start_ts": 1700000000,
+  "max_end_ts":   1700700000
+}
+```
+
+`disabled: true` is the distinguishing flag for the "policy off and
+you didn't pass `--force`" case (`evicted` is always `0` then).
+
+### `retention-settings`
+
+Echo the live retention configuration plus lifetime counters.  No
+flags.
+
+```bash
+bdscmd retention-settings
+```
+
+Output includes the parsed config (`enabled`, `duration`,
+`interval_secs`, `max_evictions_per_run`, `dry_run`,
+`reload_drain_after_evict`, `drain_load_duration`) and the
+`stats` block — same atomic counters surfaced under
+`v2/status.retention`.
+
+### Examples
+
+```bash
+# Preview a 7-day policy against a node currently keeping 30 days.
+bdscmd retention-sweep --duration 7d --dry-run
+
+# Reclaim immediately on a node where retention.enabled=false.
+bdscmd retention-sweep --duration 30d --force
+
+# Lift the per-call cap for a one-off bulk cleanup.
+bdscmd retention-sweep --max-evictions-per-run 0
+
+# Confirm what bdsnode is running with.
+bdscmd retention-settings | jq '.enabled, .duration, .interval_secs'
+```
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -3201,6 +3306,8 @@ default mode.
 | `llm cache purge`   | `v4/llm.cache.purge`   | `[--provider]`, `[--kind]`, `[--older-than-secs]`, parent `-s` |
 | `to-bund`           | `v2/to.bund`           | `MESSAGE` / `--message-file`, `[--provider]`, `[--model]`, `[--max-retries]`, generation opts, `[--script-only]` |
 | `ask`               | `v3/help`              | `MESSAGE` / `--message-file`, `[--internal-only]`, `[-l/--limit]`, `[--provider]`, `[--model]`, generation opts, `[--answer-only]` |
+| `retention-sweep`   | `v2/retention.sweep`   | `[--duration]`, `[--max-evictions-per-run]`, `[--dry-run]`, `[--force]` |
+| `retention-settings`| `v2/retention.settings`| _none_ |
 
 ---
 

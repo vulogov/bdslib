@@ -68,6 +68,11 @@ enum Sub {
     Sync,
     /// (read) Per-peer hint backlog from `v2/cluster.peers` — no secret needed
     Hints,
+    /// (read) Cluster-wide retention introspection — fan-out of
+    /// `v2/retention.settings` across every Alive peer plus this node,
+    /// merged with a summary block that surfaces policy drift.
+    /// See `v3/cluster.retention.status` reference.
+    RetentionStatus,
 
     // ── Phase 6: replicated file ingest ──────────────────────────────────
     /// (replicated write) `v3/add.file` — read NDJSON file + replicate via v3/add.batch
@@ -371,6 +376,9 @@ pub fn run(url: &str, _session: &str, args: Cmd) -> Result<Value> {
             signed_call(url, method, &args.secret, Map::new())
         }
         Sub::Hints => crate::client::call(url, "v2/cluster.peers", json!({})),
+
+        Sub::RetentionStatus =>
+            crate::client::call(url, "v3/cluster.retention.status", json!({})),
 
         // Distributed reads — no secret needed; v3/* methods are
         // client-to-coordinator (same trust boundary as v2/*).

@@ -18,7 +18,7 @@
   // ── Background tasks ──
   drain_enabled:        true
   scheduler_interval_secs: 60   // fire stored BUND scripts whose crontab matches the current minute
-  sync_interval_secs:      0    // periodic global sync still disabled for the test cluster
+  sync_interval_secs:      60    // periodic global sync still disabled for the test cluster
   n_workers:            2
 
   // ── Cluster ──

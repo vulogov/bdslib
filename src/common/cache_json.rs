@@ -191,6 +191,26 @@ impl JsonCache {
         }
     }
 
+    /// Drop every entry whose `timestamp` falls in the half-open window
+    /// `[start_ts, end_ts)`.  Returns the number of entries removed.
+    ///
+    /// Called by the retention sweeper after a shard is evicted to
+    /// invalidate any rows the cache might still hold from that shard's
+    /// time range.  Without this step, a `get_by_id` issued moments
+    /// after eviction could surface a stale row that no longer exists
+    /// on disk.
+    ///
+    /// `start_ts` and `end_ts` are Unix seconds (matching the
+    /// `(id, timestamp)` key convention).  When `start_ts >= end_ts`
+    /// the call is a no-op and returns 0.
+    pub fn drop_window(&self, start_ts: u64, end_ts: u64) -> usize {
+        if start_ts >= end_ts { return 0; }
+        let Ok(mut g) = self.inner.lock() else { return 0 };
+        let before = g.entries.len();
+        g.entries.retain(|(_id, ts), _| !(*ts >= start_ts && *ts < end_ts));
+        before - g.entries.len()
+    }
+
     // ── reads ─────────────────────────────────────────────────────────────────
 
     /// Return a clone of the value stored under `(id, timestamp)`.

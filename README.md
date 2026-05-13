@@ -17,6 +17,7 @@ runtime into a single cohesive system backed by DuckDB.
 | Capability | Description |
 |---|---|
 | **Time-series shards** | DuckDB partitioned by configurable time windows; LRU shard cache; R2D2 connection pool |
+| **Shard retention** | Optional online time-based eviction — drops shards whose `end_ts` is older than `retention.duration`.  Per-node, opt-in; tokio sweeper + manual `v2/retention.sweep` RPC; cache invalidation (`JsonCache::drop_window`) + drain re-seed after each sweep.  Cluster-wide policy auditing via `v3/cluster.retention.status` surfaces drift between peers.  Phase 3 quorum (`retention.quorum_check_enabled`, opt-in) refuses to evict shards whose interval isn't held by enough other peers.  See [`Documentation/RETENTION.md`](Documentation/RETENTION.md). |
 | **Observability records** | Primary / secondary record model with redb-backed deduplication fingerprinting |
 | **Document knowledge base** | Metadata (JSON) + raw content (BLOB) + per-document HNSW vector index; chunked file ingestion |
 | **Frequency tracking** | `(timestamp, id)` observation store for event-rate analysis over time |

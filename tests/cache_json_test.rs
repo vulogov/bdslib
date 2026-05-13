@@ -425,3 +425,42 @@ fn test_background_thread_exits_when_all_clones_dropped() {
     std::thread::sleep(Duration::from_millis(200));
     // No assertion needed — reaching here without a panic is the success criterion.
 }
+
+// ── drop_window — Phase 1 retention-driven invalidation ──────────────────────
+
+#[test]
+fn drop_window_removes_only_entries_in_range() {
+    let cache = big_cache();
+    cache.insert("a", 1_000, json!("alpha"));
+    cache.insert("b", 1_500, json!("beta"));
+    cache.insert("c", 2_000, json!("gamma"));
+    cache.insert("d", 2_500, json!("delta"));
+    cache.insert("e", 3_000, json!("epsilon"));
+
+    // Half-open [1_500, 2_500) covers b + c but NOT a, d, or e.
+    let removed = cache.drop_window(1_500, 2_500);
+    assert_eq!(removed, 2);
+    assert_eq!(cache.len(), 3);
+
+    assert!(cache.get("a", 1_000).is_some());
+    assert!(cache.get("b", 1_500).is_none());  // dropped — at the inclusive start
+    assert!(cache.get("c", 2_000).is_none());  // dropped — in the middle
+    assert!(cache.get("d", 2_500).is_some());  // kept — at the exclusive end
+    assert!(cache.get("e", 3_000).is_some());
+}
+
+#[test]
+fn drop_window_empty_cache_returns_zero() {
+    let cache = big_cache();
+    assert_eq!(cache.drop_window(0, 999_999), 0);
+}
+
+#[test]
+fn drop_window_inverted_range_is_no_op() {
+    let cache = big_cache();
+    cache.insert("a", 1_000, json!("alpha"));
+    // start >= end — must do nothing.
+    assert_eq!(cache.drop_window(2_000, 1_000), 0);
+    assert_eq!(cache.drop_window(1_000, 1_000), 0);
+    assert!(cache.get("a", 1_000).is_some());
+}

@@ -35,6 +35,7 @@ cross-reference it rather than duplicating tuning advice.
    - 5.2 [Periodic global sync](#52-periodic-global-sync)
    - 5.3 [Result-queue sweeper](#53-result-queue-sweeper)
    - 5.4 [BUND VM cleanup](#54-bund-vm-cleanup)
+   - 5.5 [Shard retention](#55-shard-retention-retention-block)
 6. [`cluster:` block](#6-cluster-block)
    - 6.1 [Membership](#61-membership)
    - 6.2 [Gossip cadence](#62-gossip-cadence)
@@ -587,6 +588,58 @@ evicts every named VM context whose idle time exceeds
 `bund_ttl_secs` (§ 4).  Pair the two values — sweep interval
 should be ≤ the TTL so a stale VM doesn't linger past its
 deadline by more than one tick.
+
+### 5.5 Shard retention (`retention:` block)
+
+Optional time-based shard eviction.  See
+[`RETENTION.md`](RETENTION.md) for the design overview, the 5-step
+eviction procedure, cache invalidation, and the operator playbook.
+
+```hjson
+retention: {
+  enabled:               false       // master switch — opt-in
+  duration:              "30days"    // humantime; shards with end_ts < now - duration are evictable
+  interval_secs:         300         // sweep cadence (clamped [60, 86400]; 0 = no background task)
+  max_evictions_per_run: 50          // per-call cap; 0 = unbounded
+  dry_run:               false       // log evictions but don't act
+  reload_drain_after_evict: true     // re-seed in-memory drain parser after each sweep
+
+  // Phase 3 — cluster-aware quorum (opt-in safety net).
+  // Default false.  When true, an eviction is only allowed when at
+  // least `quorum_min_peers` OTHER Alive peers hold a copy of the
+  // same (start_ts, end_ts) interval.  Fail-safe: when the cluster
+  // is unreachable, every candidate is skipped.  See RETENTION.md.
+  quorum_check_enabled:  false
+  quorum_min_peers:      1
+}
+```
+
+| Field                          | Type    | Default   | Clamp / range |
+|--------------------------------|---------|-----------|---------------|
+| `retention.enabled`            | bool    | `false`   | —             |
+| `retention.duration`           | string  | `"30days"`| humantime; must be > 0 |
+| `retention.interval_secs`      | integer | `300`     | clamped to [60, 86400]; 0 disables the background task |
+| `retention.max_evictions_per_run` | integer | `50`   | 0 = no cap    |
+| `retention.dry_run`            | bool    | `false`   | —             |
+| `retention.reload_drain_after_evict` | bool | `true` | —          |
+| `retention.quorum_check_enabled` | bool  | `false`   | strictly opt-in; needs cluster mode + uniform `shard_duration` |
+| `retention.quorum_min_peers`   | integer | `1`       | floor 1; ignored when `quorum_check_enabled=false` |
+
+Retention is **per-node** — no cluster coordination.  When running
+with `cluster.replication_factor = 1` AND `retention.enabled = true`,
+bdsnode emits a startup WARN because evicted data has no peer copy.
+For correctness, pick `retention.duration` ≥ the longest expected
+read window AND run with `replication_factor ≥ 2`.
+
+Companion JSON-RPC surface:
+
+- [`v2/retention.sweep`](jsonrpc_api/v2_retention.md) — operator-triggered sweep with per-call overrides.
+- `v2/retention.settings` — echoes the active config + lifetime stats.
+- `v2/status` — adds a `retention` block built from the same atomic counters.
+- [`v3/cluster.retention.status`](jsonrpc_api/v3_cluster_retention.md) — cluster-wide audit (Phase 2).
+- [`v2/cluster.shards.list`](jsonrpc_api/v2_cluster_shards_list.md) — Phase 3 helper used by quorum probes.
+
+bdscmd CLI: `bdscmd retention-sweep [--duration H] [--dry-run] [--force]` and `bdscmd retention-settings`.
 
 ---
 

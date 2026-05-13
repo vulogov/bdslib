@@ -363,6 +363,23 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to read sync config")?;
     let sync_handle = server::sync::start(sync_cfg);
 
+    // Phase 1 shard retention — sweeper that drops shards whose end_ts
+    // is older than `retention.duration`.  Off by default (opt-in
+    // feature).  Crash-recovery for half-completed evictions runs once
+    // here, before the background task spawns and before the JSON-RPC
+    // listener binds (so a racing ingest can't pick up an `evicting=true`
+    // catalog row).
+    if let Ok(db) = bdslib::get_db() {
+        match db.cleanup_orphan_evicting() {
+            Ok(0) => {}
+            Ok(n) => log::info!("[retention] startup: cleaned {n} orphan shard(s) from a previous crashed sweep"),
+            Err(e) => log::warn!("[retention] startup orphan cleanup failed: {e}"),
+        }
+    }
+    let retention_cfg = server::retention::Config::from_config(cli.config.as_deref())
+        .context("failed to read retention config")?;
+    let retention_handle = server::retention::start(retention_cfg);
+
     // Cluster gossip task — bootstraps against `cluster.bootstrap` (if set)
     // then runs a periodic ping/peers exchange + liveness sweep.  No-op when
     // `cluster.enabled = false` in bds.hjson.
@@ -419,6 +436,7 @@ async fn main() -> anyhow::Result<()> {
     scheduler_handle.stop().await;
     llm_runner_handle.stop().await;
     sync_handle.stop().await;
+    retention_handle.stop().await;
     cluster_handle.stop().await;
 
     // Drain ingest channels and join batch threads before checkpointing so

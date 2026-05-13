@@ -75,6 +75,26 @@ pub fn register(module: &mut RpcModule<()>) {
                 }))
                 .collect();
 
+            // Retention sweeper stats — always present so operators
+            // can tell at a glance whether retention is running or
+            // turned off.  Values are atomic counters maintained by
+            // `bdslib::retention::record_run` after every sweep.
+            let retention_block = {
+                use std::sync::atomic::Ordering;
+                let s = bdslib::retention::stats();
+                serde_json::json!({
+                    "evicted_lifetime":        s.evicted_lifetime.load(Ordering::Relaxed),
+                    "evicted_last_run":        s.evicted_last_run.load(Ordering::Relaxed),
+                    "freed_lifetime_bytes":    s.freed_lifetime_bytes.load(Ordering::Relaxed),
+                    "freed_last_run_bytes":    s.freed_last_run_bytes.load(Ordering::Relaxed),
+                    "last_run_ts":             s.last_run_ts.load(Ordering::Relaxed),
+                    "last_run_ms":             s.last_run_ms.load(Ordering::Relaxed),
+                    "errors_lifetime":         s.errors_lifetime.load(Ordering::Relaxed),
+                    "quorum_skipped_lifetime": s.quorum_skipped_lifetime.load(Ordering::Relaxed),
+                    "quorum_skipped_last_run": s.quorum_skipped_last_run.load(Ordering::Relaxed),
+                })
+            };
+
             let value = serde_json::json!({
                 "node_id":           state.node_id,
                 "hostname":          state.hostname,
@@ -95,6 +115,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 "recent_scripts":     recent_scripts,
                 "running_scripts":    running_scripts,
                 "cluster":            cluster_info,
+                "retention":          retention_block,
             });
 
             log::debug!("v2/status: done");

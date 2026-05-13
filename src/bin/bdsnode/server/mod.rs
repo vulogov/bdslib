@@ -5,5 +5,6 @@ pub mod bundcleanup;
 pub mod cluster;
 pub mod llm_jobs;
 pub mod results_sweeper;
+pub mod retention;
 pub mod scheduler;
 pub mod sync;

@@ -71,3 +71,4 @@ pub mod user;
 pub mod llm;
 pub mod to_bund;
 pub mod ask;
+pub mod retention;

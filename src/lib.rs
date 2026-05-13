@@ -12,6 +12,7 @@ pub mod fts;
 pub mod globals;
 pub mod llm;
 pub mod observability;
+pub mod retention;
 pub mod scheduler;
 pub mod shard;
 pub mod shardscache;

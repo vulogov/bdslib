@@ -275,6 +275,15 @@ enum Commands {
     /// (Named `ask` rather than `help` because clap reserves `help`
     /// for its auto-generated subcommand-help surface.)
     Ask(cmd::ask::Cmd),
+
+    /// Trigger a one-shot shard retention sweep (`v2/retention.sweep`).
+    /// Drops shards whose `end_ts` is older than the active retention
+    /// window.  Use `--dry-run` to preview without acting.
+    RetentionSweep(cmd::retention::SweepCmd),
+
+    /// Echo the effective retention configuration + lifetime stats
+    /// (`v2/retention.settings`).
+    RetentionSettings(cmd::retention::SettingsCmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -372,6 +381,8 @@ fn main() -> Result<()> {
         Commands::Llm(a)                      => cmd::llm::run(&url, &session, a),
         Commands::ToBund(a)                   => cmd::to_bund::run(&url, &session, a),
         Commands::Ask(a)                      => cmd::ask::run(&url, &session, a),
+        Commands::RetentionSweep(a)           => cmd::retention::sweep(&url, &session, a),
+        Commands::RetentionSettings(a)        => cmd::retention::settings(&url, &session, a),
     }?;
 
     if cli.raw {
