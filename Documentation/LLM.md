@@ -11,6 +11,10 @@ user-facing surfaces:
 | Shell    | `bdscmd llm <subcommand>` ([§ 7](#7--bdscmd-llm-subcommand))                          |
 | Scripts  | `cls.llm.*` Bund words ([§ 8](#8--bund-clsllm-words))                                 |
 
+A separate, lighter-weight surface — `v2/to.bund` — uses the same
+`Provider` abstraction to translate English into syntax-validated
+Bund scripts ([§ 13](#13--english--bund-translator-v2tobund)).
+
 This document is the canonical reference.  Specifics that already live
 elsewhere are cross-linked rather than duplicated:
 
@@ -37,6 +41,7 @@ elsewhere are cross-linked rather than duplicated:
 10. [JSON-RPC surface (`v4/llm.*` + `v2/llm.*`)](#10--json-rpc-surface)
 11. [Diagnostics — `?llm.meta` + log lines](#11--diagnostics)
 12. [Operational gotchas](#12--operational-gotchas)
+13. [English → Bund translator (`v2/to.bund`)](#13--english--bund-translator-v2tobund)
 
 ---
 
@@ -589,3 +594,212 @@ A `bds-chat-session` cookie can outlive the docstore.  `v4/llm.chat`
 silently re-opens a new session in that case (the response carries
 the fresh `chat_id` and the cookie auto-updates on the next turn)
 rather than surfacing "session not found".
+
+---
+
+## 13 · English → Bund translator (`v2/to.bund`)
+
+A lighter-weight surface on top of the same `Provider` abstraction
+the v4/llm.* family uses: hand the LLM a natural-language request,
+get back a syntax-validated Bund script.  The endpoint **returns**
+the script; it does **not** execute it — consumers (chat, bdscmd,
+bdsweb) decide whether to run.
+
+Library source: `src/llm/to_bund.rs` + `src/llm/to_bund_prompt.rs`.
+RPC wire reference: [`jsonrpc_api/v2_to_bund.md`](jsonrpc_api/v2_to_bund.md).
+Config: `llm.to_bund.*` ([`BDSCONFIG.md`](BDSCONFIG.md) § 7.4).
+
+### Why a separate surface
+
+`v4/llm.complete` returns whatever text the model emits.  For Bund
+generation that's not enough — the consumer wants a high-confidence
+guarantee that the result is at least syntactically valid and only
+references real stdlib words.  `v2/to.bund` wraps `complete` with:
+
+- A baked system prompt (~15 k chars) carrying the language primer,
+  type system, stdlib catalogue, output contract, and 8 curated
+  few-shot examples.
+- A two-layer validator (syntax + undefined-word dry-run) that fails
+  closed and triggers a corrective retry.
+- A policy-aware splice that hides sandbox-disabled words from the
+  model so it can't generate something that would die at runtime.
+
+It deliberately does NOT cache (translations are creative outputs,
+non-deterministic enough to be poor cache candidates) and does NOT
+need cluster fan-out (the call is single-node by construction — the
+translator picks one provider, runs one or more turns, returns).
+
+### Architecture
+
+```
+       v2/to.bund                       v2/to.bund.settings
+              │                                 │
+              ▼                                 ▼
+    ┌─────────────────────┐         ┌────────────────────────┐
+    │ llm::to_bund        │         │ echo:                  │
+    │  · translate()      │         │  enabled / timeouts    │
+    │  · ToBundSettings   │         │  provider / model      │
+    │  · Translation      │         │  disabled_groups[]     │
+    └──────────┬──────────┘         └────────────────────────┘
+               │
+   ┌───────────┴──────────────────────────────────────────┐
+   │  Per call:                                           │
+   │   1. assemble_system_prompt_with_policy(extra, …)    │
+   │   2. snapshot known words from Adam VM               │
+   │   3. loop 0..=max_retries:                           │
+   │        Provider.complete() → fenced block →          │
+   │        bund_parse → undefined_words(known)           │
+   │   4. return Translation { script, valid, … }         │
+   └──────────────────────────────────────────────────────┘
+```
+
+The `Provider` lookup goes through the existing `ProviderManager`,
+so every provider that works for `v4/llm.complete` works for
+`v2/to.bund` — per-call overrides (`provider`, `model`, sampling
+options) work identically.
+
+### System prompt assembly
+
+`llm::to_bund_prompt::assemble_system_prompt_with_policy(extra,
+disabled_groups)` joins, in order:
+
+1. **Role** — "You are a Bund-language code generator…"
+2. **Language primer** — tokens, control flow, the `.` workbench
+   mechanic, function definition.
+3. **Type system** — `rust_dynamic` variants, map construction via
+   `dict … set`, type predicates.
+4. **Stdlib catalogue** — ~200 user-facing words grouped by domain
+   (output, arithmetic, stack, conditionals, loops, lists, maps,
+   strings, type conversion, lambdas, variables, time, JSON, IDs,
+   local-DB writes, local-DB reads, cluster reads/writes, cluster
+   LLM, filesystem/system, sandbox).
+5. **Output contract** — fence the script in ```` ```bund ```` ;
+   prefer `cls.*` over `db.*`; durations as humantime strings.
+6. **Disabled words (sandbox policy)** — only emitted when the
+   active policy is non-empty (see § _Policy-aware prompt_ below).
+7. **Operator-supplied guidance** — `llm.to_bund.extra_system_prompt`
+   verbatim; omitted when empty/whitespace.
+8. **Few-shot examples** — 8 curated `request → script` pairs
+   covering list-keys, fulltext search, k-NN + anomalies, RCA,
+   telemetry add via `dict … set`, textrank + topics, map
+   transform, conditional with `dup`/`ifthenelse`.
+
+`baked_prompt_len()` is exposed for telemetry / startup logging so
+operators can sanity-check the prompt-cost budget.
+
+### Retry loop
+
+`llm::to_bund::translate(message, req_extra)` runs `0..=max_retries`
+turns.  Each iteration:
+
+1. Build the conversation: `[system, user, (assistant, user)*]`
+   where the extra `assistant + user` pairs carry past attempts +
+   their validation errors.
+2. Call `Provider.complete(rq)` (auto-bumps `num_ctx` to 16k/32k/64k
+   based on prompt size when the caller didn't pin it).
+3. Run `extract_bund_block(resp.text)`:
+   - prefer a tagged ```` ```bund ```` fence (case-insensitive)
+   - else any ``` `````` ``` fence
+   - else trimmed raw text (some models drop the fence)
+4. Run `bund_parse(script + "\n")` — syntax check.
+5. On parse success, run the undefined-word dry-run (see below).
+6. On any failure, append `assistant(raw_text)` +
+   `user("Your previous output failed to validate … fix … reply
+   with a single fenced ```bund``` block")` and loop.
+7. After `max_retries` exhausts, return `valid=false` with the
+   last error in `parse_error` and the last attempted body in
+   `script`.
+
+### Undefined-word dry-run
+
+`bund_parse` happily accepts any identifier — the runtime is where
+"word not registered" errors fire.  `v2/to.bund` shifts that check
+to translation time so the model can fix it before the script
+reaches a human.
+
+`vm::registered_word_names()` snapshots every key in the Adam VM's
+`inline_fun` / `command_fun` / `methods_fun` / `lambdas` / `classes`
+/ `name_mapping` maps (the inline-key `_inline` suffix is stripped
+back to the user-facing form).  `to_bund::undefined_words(ast,
+&known)` walks the parsed Bund AST recursively — descending into
+`Lambda`/`List`/`Map`/`ValueMap`/`Matrix`/`Queue`/`Call.attr` —
+collecting every `CALL` value whose name isn't in the known set.
+
+A non-empty result is rendered as
+
+```
+The script references N word(s) that are not registered in this Bund VM: foo.bar, baz, … (and M more).  Use only words listed in the stdlib catalogue from the system prompt, or define new words inline via `:name { body } register`.
+```
+
+and fed back into the retry loop exactly like a syntax error.
+
+When the known set is empty (Adam not initialised — e.g. a library
+test that skipped `init_adam`), the dry-run degrades to a no-op so
+the rest of the translator still works.
+
+### Policy-aware prompt
+
+When `bund.disabled_categories` / `bund.disabled_words` is set
+(see [`BDSCONFIG.md`](BDSCONFIG.md) § 4.1), the active policy is
+spliced into the system prompt under a **Disabled words (sandbox
+policy)** section so the model can avoid words that would be denied
+at runtime.
+
+The list comes from `bund_policy::effective_disabled_by_category()`,
+which groups the static `WORD_CATEGORY` table by category and
+appends any explicit `disabled_words` under the synthetic key
+`"explicit"`.  When the policy is empty the section is omitted
+entirely.
+
+The full effective blocklist is also returned by
+`v2/to.bund.settings` under `disabled_groups`, so operators can
+audit what the model is being told.
+
+Note that the disabled words are still **registered** in Adam (as
+denied stubs), so the undefined-word dry-run lets them through; the
+prompt is the only line of defence against the model generating
+them.  This is intentional — a separate runtime denial gives the
+caller a clear error if they bypass `to.bund` and run a hand-written
+script that uses a banned word.
+
+### Consumers
+
+| Surface  | How                                                                                          |
+|----------|----------------------------------------------------------------------------------------------|
+| Shell    | `bdscmd to-bund "<english>"` ([`BDSCMD.md`](BDSCMD.md) § _to-bund_).  `--script-only` prints just the script to stdout for piping into `bdscmd eval -`. |
+| Web UI   | `/bund` page → **Translate from English** collapsible panel.  Click *Translate* → review → *Use as script* drops the result into the CodeMirror editor.  See [`BDSWEB.md`](BDSWEB.md) § _Bund Workbench_. |
+| Library  | `bdslib::llm::to_bund::translate(message, req_extra)` from any Rust caller running on the same bdsnode. |
+
+### Configuration
+
+```hjson
+llm: {
+  // … providers / cache / dedup / runner as above …
+
+  to_bund: {
+    enabled:             true    // master switch; false → -32004
+    timeout_secs:        120     // clamped [10, 600]
+    max_retries:         2       // clamped [0, 5]
+    provider:            ""      // "" = use llm.default
+    model:               ""      // "" = use provider's default_model
+    extra_system_prompt: ""      // appended to baked prompt
+  }
+}
+```
+
+Defaults are sane for a dev cluster; production deployments with a
+sandbox policy should leave `enabled = true` and let the policy
+splice handle the rest.
+
+### Differences vs `v4/llm.complete`
+
+| Aspect               | `v4/llm.complete`                          | `v2/to.bund`                               |
+|----------------------|---------------------------------------------|---------------------------------------------|
+| HMAC                 | Required (`cluster.shared_secret`)         | Unauthenticated v2/ surface                |
+| System prompt        | Caller-supplied                             | Baked + policy-spliced + operator extras    |
+| Validation           | None                                        | `bund_parse` + undefined-word dry-run       |
+| Retry on bad output  | None                                        | Up to `max_retries` corrective turns        |
+| Inference cache      | Yes (5th replicated store)                  | No — translations are creative, low reuse   |
+| Cluster fan-out      | Via `dispatch::read` for analyze etc.       | No — single-node by construction            |
+| Async variant        | `v4/llm.complete_async`                     | None — synchronous only                     |
+| Response shape       | `{response, provider, model, cache, …}`     | `{script, valid, parse_attempts, …}`        |

@@ -90,6 +90,7 @@ output suitable for piping into `jq`.
 14c. [scheduler-last-seen](#14c-scheduler-last-seen--cluster-scheduler-introspection)
 14d. [user — cluster-replicated user management](#14d-user--cluster-replicated-user-management)
 14e. [llm — drive the v4/llm.* surface](#14e-llm--drive-the-v4llm-surface)
+14f. [to-bund — English → Bund translator](#14f-to-bund--english--bund-translator)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -2922,6 +2923,100 @@ map onto `options.*` in the request.  `--no-cache` forces `cache: false`.
 
 ---
 
+## 14f. `to-bund` — English → Bund translator
+
+Hand an English request to the cluster's default LLM provider, get
+back a syntax-validated Bund script.  Wraps
+[`v2/to.bund`](../jsonrpc_api/v2_to_bund.md) — see
+[`LLM.md`](LLM.md) § _English → Bund translator_ for the design
+overview and [`BDSCONFIG.md`](BDSCONFIG.md) § 7.4 for the
+`llm.to_bund.*` config block.
+
+This is a **v2/** surface — no HMAC required (the bdsnode RPC port
+is the trust boundary).  The endpoint **returns** the script; it
+does **not** execute it.  Pipe the output into `bdscmd eval -`
+when you've reviewed it.
+
+### Usage
+
+```bash
+bdscmd to-bund [OPTIONS] [MESSAGE]
+```
+
+Input precedence — first non-empty wins:
+
+1. positional `MESSAGE`
+2. `--message-file <path>` (use `-` for stdin)
+3. stdin (default when neither is set)
+
+### Flags
+
+| Flag                      | Purpose                                                                 |
+|---------------------------|-------------------------------------------------------------------------|
+| `--message-file <path>`   | Read English from a file (`-` = stdin).  Mutually exclusive with positional `MESSAGE`. |
+| `--provider <name>`       | Override `llm.default` (`""` / omitted → cluster default).              |
+| `--model <name>`          | Override the provider's `default_model`.                                |
+| `--max-retries <n>`       | Override `llm.to_bund.max_retries`.  Server clamps to `[0, 5]`.        |
+| `--temperature <f>`       | Sampling temperature passed through as `options.temperature`.           |
+| `--max-tokens <n>`        | Hard cap on output tokens.                                              |
+| `--top-p <f>`             | Nucleus-sampling top-p.                                                 |
+| `--seed <n>`              | Deterministic seed (Ollama / OpenAI only).                              |
+| `--num-ctx <n>`           | Override the auto-bucketed context window (16k / 32k / 64k).            |
+| `--script-only`           | Print just the Bund script to stdout; one-line summary on stderr; exit code reflects `valid`. |
+
+### Output modes
+
+**Default** — full Translation JSON pretty-printed (matches every
+other `bdscmd` subcommand).  Use `| jq -r .script` to extract the
+body for piping.
+
+**`--script-only`** — pipeline-friendly mode:
+
+- **stdout** — just the Bund body (trailing newline normalised).
+- **stderr** — one line:
+  `[to-bund] ok · ollama/llama3.2 · attempts=1 · 1842ms`
+  (or `FAILED` + a second line with the parse error when invalid).
+- **exit code** — `0` on `valid: true`, `2` on `valid: false`.
+
+### Examples
+
+```bash
+# Quick translate, full JSON
+bdscmd to-bund "list all telemetry keys observed in the last hour"
+
+# Pipe the generated script straight into eval
+bdscmd to-bund --script-only "print 42" | bdscmd eval -
+
+# Long request from a file, custom provider
+bdscmd to-bund \
+  --provider anthropic \
+  --model claude-sonnet-4-5 \
+  --temperature 0.1 \
+  --message-file ./prompts/rca-request.txt
+
+# Read English from stdin (heredoc)
+bdscmd to-bund <<'EOF'
+For every distinct key in the last hour, emit a signal with
+severity "info" carrying the count of records.
+EOF
+
+# Save just the script to a file
+bdscmd to-bund --script-only "..." > /tmp/x.bund
+```
+
+### Exit codes (in addition to § 16)
+
+| Code | Meaning                                                                 |
+|------|-------------------------------------------------------------------------|
+| `0`  | `--script-only` and the translation came back `valid: true`             |
+| `2`  | `--script-only` and the translation came back `valid: false` (retries exhausted) — `script` and `parse_error` still print to stdout / stderr |
+
+Without `--script-only` the exit code is the standard bdscmd code
+(0 on RPC success regardless of `valid`).  Inspect `.valid` in the
+JSON envelope when scripting against the default mode.
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -2991,6 +3086,7 @@ map onto `options.*` in the request.  `--no-cache` forces `cache: false`.
 | `llm jobs`          | `v4/llm.jobs.list`     | `[--state]`, `[--limit]`, parent `-s` |
 | `llm cache stats`   | `v4/llm.cache.stats`   | parent `-s` |
 | `llm cache purge`   | `v4/llm.cache.purge`   | `[--provider]`, `[--kind]`, `[--older-than-secs]`, parent `-s` |
+| `to-bund`           | `v2/to.bund`           | `MESSAGE` / `--message-file`, `[--provider]`, `[--model]`, `[--max-retries]`, generation opts, `[--script-only]` |
 
 ---
 

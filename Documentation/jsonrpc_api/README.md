@@ -228,3 +228,4 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v4/llm.cache.purge`](v4_llm_cache_purge.md) | Drop matching cache rows (provider / kind / older-than filters; empty = drop all) |
 | [`v2/llm.cache.{get,get.by_id,put,list_ids,delete}`](v2_llm_cache.md) | Unauthenticated receivers used by `replicate_to_all`, anti-entropy, and (future) cluster-wide cache reads |
 | [`v2/llm.last_executed`](v2_llm_last_executed.md) | Most-recent inference-log row for a `cache_key` — peer of `v2/scheduler.last_seen`; used by the dedup fan-out |
+| [`v2/to.bund`](v2_to_bund.md) | LLM-based English → Bund translator.  Parses + dry-runs the returned ```` ```bund```` block; retries on validation failure up to `llm.to_bund.max_retries`.  Companion `v2/to.bund.settings` echoes the effective config + active sandbox blocklist.  See [`../LLM.md`](../LLM.md). |

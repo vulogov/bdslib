@@ -79,7 +79,8 @@ single-execution dedup, and async jobs.  Full reference:
 | **Cluster-wide single-execution** | `InferenceLog` + `v2/llm.last_executed` fan-out — peer of the cluster-aware Scheduler dedup; prevents two coordinators running the same inference concurrently |
 | **Async jobs** | `v4/llm.complete_async` / `analyze_async` enqueue work; background runner per node drives them through the same sync helpers, delivers results via the existing `ResultQueue` (same path `v2/eval.queued` uses) |
 | **Diagnostics** | `?llm.meta` Bund word, response carries `cache` (hit / miss / disabled) + `dedup` (ran / waited / disabled) + `prompt_chars` + `num_ctx` (auto-bumped past Ollama's 2048-token default to prevent silent RAG truncation) |
-| **Driver surfaces** | bdsweb `/chat` (provider picker, sticky cookie) + `/admin/llm` (providers / cache / jobs admin); `bdscmd llm <subcommand>` family; `cls.llm.*` Bund words |
+| **English → Bund translator** | `v2/to.bund` — natural-language requests → syntax-validated Bund scripts.  Baked system prompt + few-shot examples, parse-failure retry loop, undefined-word dry-run against the live VM, sandbox-policy-aware prompt splice.  Consumed by `bdscmd to-bund` and the bdsweb `/bund` page's *Translate from English* panel.  See [`Documentation/LLM.md`](Documentation/LLM.md) § 13. |
+| **Driver surfaces** | bdsweb `/chat` (provider picker, sticky cookie) + `/admin/llm` (providers / cache / jobs admin) + `/bund` *Translate from English* panel; `bdscmd llm <subcommand>` family + `bdscmd to-bund`; `cls.llm.*` Bund words |
 | **Legacy compatibility** | `v2/chat.ollama` still ships for back-compat; new deployments should use `v4/llm.chat` (same response shape, HMAC-signed) |
 
 ### Cluster mode
@@ -169,7 +170,7 @@ HTMX partial updates. No JavaScript framework required.
 | **RCA** | Telemetry RCA, Template RCA |
 | Signals | Signal timeline and semantic search |
 | Chat | Provider-aware RAG chat (`v4/llm.chat`) — Ollama / Anthropic / OpenAI picker |
-| Bund | Interactive BUND scripting workbench |
+| Bund | Interactive BUND scripting workbench, with a *Translate from English* panel that calls `v2/to.bund` |
 | **Administration** | User management (`/admin/users`), LLM (`/admin/llm` — providers + cache + jobs) |
 
 ---
@@ -313,15 +314,35 @@ bdscmd --secret "$BDSCMD_CLUSTER_SECRET" llm async -k complete -p "long-running 
 bdscmd results-pull --id <result-uuid>
 ```
 
-**9. Open the web UI**
+**9. Translate English into Bund**
+
+```bash
+# Full Translation JSON (default)
+bdscmd to-bund "list every key observed in the last hour"
+
+# Script-only mode pipes straight into eval
+bdscmd to-bund --script-only "print the count of records" \
+  | bdscmd eval -
+```
+
+The endpoint validates the generated script through `bund_parse`
+and an undefined-word dry-run, retrying up to `llm.to_bund.max_retries`
+times when the model emits something the parser rejects.  See
+[`Documentation/LLM.md`](Documentation/LLM.md) § 13 for the full
+design and [`Documentation/BDSCONFIG.md`](Documentation/BDSCONFIG.md)
+§ 7.4 for the `llm.to_bund.*` config block.
+
+**10. Open the web UI**
 
 ```bash
 bdsweb --node http://127.0.0.1:9000
 # → http://127.0.0.1:8080
 ```
 
-Visit `/chat` for the provider-aware RAG chat and `/admin/llm` for
-provider / cache / async-job admin.
+Visit `/chat` for the provider-aware RAG chat, `/admin/llm` for
+provider / cache / async-job admin, and `/bund` for the scripting
+workbench — including the **Translate from English** panel that
+calls `v2/to.bund` and drops the result into the CodeMirror editor.
 
 ---
 
@@ -350,6 +371,7 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | **LLM (sync)** | `v4/llm.complete` · `v4/llm.chat` · `v4/llm.analyze` · `v4/llm.embed` · `v4/llm.providers.list` |
 | **LLM (async + jobs)** | `v4/llm.complete_async` · `v4/llm.analyze_async` · `v4/llm.jobs.list` · `v4/llm.jobs.status` · `v4/llm.jobs.cancel` |
 | **LLM (cache admin)** | `v4/llm.cache.stats` · `v4/llm.cache.purge` |
+| **LLM (English → Bund)** | `v2/to.bund` · `v2/to.bund.settings` — natural-language requests → syntax-validated Bund scripts; companion settings echo for the active policy / provider |
 | **LLM (receivers)** | `v2/llm.cache.{get,get.by_id,put,list_ids,delete}` · `v2/llm.last_executed` — internal, used by replicate_to_all + anti-entropy + dedup fan-out |
 
 ---

@@ -479,11 +479,44 @@ Contexts are evicted server-side after a configurable idle timeout
 [ 1 2 3 4 5 ] dup len swap
 ```
 
+### Translate from English (`v2/to.bund`)
+
+A collapsible **Translate from English** card sits above the
+CodeMirror editor.  Click to expand, type an English request, click
+**Translate** — bdsweb posts the message to `/bund/translate` (which
+forwards to [`v2/to.bund`](../jsonrpc_api/v2_to_bund.md)) and renders
+the result inline:
+
+| Element                | Source                                  |
+|------------------------|-----------------------------------------|
+| Validity badge         | `valid` — green ✓ or amber ⚠            |
+| Attempt counter        | `parse_attempts` (1 = first-try success)|
+| Provider / model       | `provider` + `model`                    |
+| Wall-clock cost        | `ms`                                    |
+| Script body            | `script` (scrollable `<pre>`)           |
+| "Use as script" button | Drops `script` into the CodeMirror editor below |
+| "last validation error"| Collapsible `<details>` with `parse_error`; only present when `valid=false` |
+
+Workflow: **English → Translate → review → Use as script → Run**.
+The CodeMirror editor stays untouched until you click **Use as
+script**, so you can experiment with different prompts without
+losing whatever's already in the editor.
+
+The card is closed by default — no extra render cost on page load.
+When the v2/to.bund endpoint is disabled (`llm.to_bund.enabled =
+false`) or the cluster has no LLM provider registered, the panel
+renders the RPC error inline (red bar) instead of a script.
+
+See [`BDSCMD.md`](BDSCMD.md) § _to-bund_ for the same surface in
+shell form, and [`LLM.md`](LLM.md) § _English → Bund translator_
+for the prompt assembly + retry semantics.
+
 ### JSON-RPC calls made
 
 | Method | Trigger |
 |--------|---------|
 | `v2/eval` | Run button / ⌘↵ |
+| `v2/to.bund` | Translate-from-English **Translate** button |
 
 ---
 

@@ -863,6 +863,35 @@ Severities are colour-coded: green / yellow / orange / red.
 The **live scripting workbench**. Type BUND code, click Run, see the
 workbench stack output. Fast feedback loop, no save required.
 
+### Don't know Bund? Translate from English
+
+The page has a collapsible **Translate from English** card above the
+editor. Click it open, type plain English ("list every key observed
+in the last hour", "k-NN cluster the last 10 minutes and signal
+outliers"), click **Translate**.
+
+bdsweb hands the request to the cluster's default LLM, validates
+the returned Bund script for syntax and undefined words, and shows
+you:
+
+- a green ✓ badge if the script is valid (or an amber ⚠ if the LLM
+  couldn't produce something the parser accepts after retries),
+- which provider and model answered,
+- how many attempts the model needed,
+- the generated script in a scrollable preview.
+
+If the result looks good, click **Use as script** — the script
+drops into the CodeMirror editor below, ready to **Run**. The
+existing editor contents are replaced, so save anything important
+first (or open a fresh context with ↺).
+
+The translator is for getting started and exploring; expect to edit
+the result before running it on production data. The model never
+runs scripts on its own — *you* press **Run**.
+
+If you see a red bar instead of a script, the LLM endpoint is
+disabled or no provider is configured — ask your operator.
+
 ### Controls
 
 - **Context** — name of the named VM to use. Defaults to `default`.
@@ -873,6 +902,8 @@ workbench stack output. Fast feedback loop, no save required.
 - **CodeMirror editor** — BUND source with syntax highlighting.
 - **Run** button (or `⌘↵` / `Ctrl↵`) — submits the script for
   evaluation in the named context.
+- **Translate from English** card — collapsible LLM helper. See
+  above.
 
 ### Why named contexts?
 

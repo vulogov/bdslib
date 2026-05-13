@@ -146,6 +146,35 @@ A 4th fully-replicated cluster store backs bdsweb's session-cookie auth.
 
 **bdscmd**: `bdscmd user` subcommand group with `add`/`modify`/`delete`/`list`/`authenticate`/`whoami` (the last is fully offline — verifies the session token's HMAC locally).
 
+### English → Bund translator (`src/llm/to_bund.rs`, `src/llm/to_bund_prompt.rs`)
+
+`v2/to.bund` — LLM-based natural-language → Bund translator built
+on the same `Provider` abstraction the `v4/llm.*` surface uses,
+but stripped down: no HMAC, no cluster fan-out, no inference cache.
+
+**Library**:
+- `llm::to_bund::translate(message, req_extra)` returns `Translation { script, valid, parse_attempts, parse_error, provider, model, ms, tokens_in?, tokens_out? }`.  Loops `0..=max_retries`: extract `bund` fence → `bund_parse` → undefined-word dry-run against `vm::registered_word_names()`.  On any failure, appends the bad assistant turn + a user turn carrying the validation error, then re-prompts.
+- `llm::to_bund_prompt::assemble_system_prompt_with_policy(extra, disabled_groups)` joins ROLE / LANG_PRIMER / TYPE_SYSTEM / STDLIB_CATALOGUE / OUTPUT_CONTRACT / DISABLED_WORDS (when policy is non-empty) / operator extras / FEW_SHOT_EXAMPLES.  `baked_prompt_len()` for telemetry.
+- `ToBundSettings { enabled, timeout_secs, max_retries, provider, model, extra_system_prompt }` lives in a process-wide `OnceLock`; initialised by bdsnode main from the `llm.to_bund.*` hjson block (`manager::ToBundConfig`).
+
+**Sandbox-policy bridge**:
+- `vm::policy::effective_disabled_by_category()` groups the active policy's blocked words by category for the prompt splice.
+- `vm::policy::effective_disabled_words()` is the flat enumeration.
+- The disabled words are still registered in Adam (as denied stubs) so the undefined-word dry-run lets them through; the prompt is the only line of defence at translation time.
+
+**Adam introspection**:
+- `vm::registered_word_names() -> BTreeSet<String>` snapshots every key in Adam's `inline_fun`/`command_fun`/`methods_fun`/`lambdas`/`classes`/`name_mapping` maps, stripping the internal `_inline` suffix.  Returns an empty set when `init_adam` hasn't run — the dry-run degrades to a no-op in that case.
+
+**Consumers**:
+- JSON-RPC: `v2/to.bund` (translate) + `v2/to.bund.settings` (echo active config + `disabled_groups`).  Both in `src/bin/bdsnode/jsonrpc/v2_to_bund.rs`.
+- CLI: `bdscmd to-bund` (`src/bin/bdscmd/cmd/to_bund.rs`).  Default returns the full Translation JSON; `--script-only` prints just the script to stdout (one-line summary on stderr) and exits non-zero on `valid=false` — designed for piping into `bdscmd eval -`.
+- Web: bdsweb `/bund` page has a collapsible *Translate from English* panel.  HTMX form posts to `/bund/translate` (`src/bin/bdsweb/routes/bund.rs::translate`), partial template at `templates/partials/bund_translate.html`.  *Use as script* button drops the result into the CodeMirror editor via a hidden `#translate-script-payload` textarea + `window.useTranslatedScript()`.
+
+**Tests**:
+- 11 unit tests in `src/llm/to_bund.rs` (extract / parse_options / translation_to_json / undefined_words / format_unknown_words_error).
+- 4 unit tests in `src/llm/to_bund_prompt.rs` (length sanity, extra splicing, disabled-groups rendering, essentials present).
+- 6 integration tests in `tests/llm_to_bund_test.rs` using a `ScriptedProvider` impl (no HTTP) — round-trip success, parse-error retry, retries exhausted, per-call provider override, undefined-word retry, undefined-word retries exhausted.
+
 ## Integration Tests
 
 Tests live in `tests/storageengine_test.rs`. Each test creates its own DuckDB instance (`:memory:` or `tempfile`):
