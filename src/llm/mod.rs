@@ -16,6 +16,8 @@ pub mod jobs;
 pub mod manager;
 pub mod providers;
 pub mod snippet;
+pub mod to_bund;
+pub mod to_bund_prompt;
 pub mod types;
 
 pub use manager::{LlmConfig, ProviderManager};

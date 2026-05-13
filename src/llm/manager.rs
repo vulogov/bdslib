@@ -139,6 +139,39 @@ pub struct ChatConfig {
     pub bund: ChatBundConfig,
 }
 
+/// `llm.to_bund.*` — controls the v2/to.bund English → Bund
+/// translator.  See [`crate::llm::to_bund`].
+///
+/// `enabled` defaults to `true` (the feature ships on); operators
+/// disable it when they don't want users to spend tokens on
+/// translation.  `timeout_secs` is the per-request reqwest timeout
+/// passed through to the provider — bigger than `llm.chat.bund`
+/// because the system prompt alone is ~15k chars.  `max_retries`
+/// is the number of additional parse-fix turns after the first
+/// attempt fails to parse; ceiling 5.
+#[derive(Debug, Clone)]
+pub struct ToBundConfig {
+    pub enabled:             bool,
+    pub timeout_secs:        u64,
+    pub max_retries:         usize,
+    pub provider:            String,
+    pub model:               String,
+    pub extra_system_prompt: String,
+}
+
+impl Default for ToBundConfig {
+    fn default() -> Self {
+        Self {
+            enabled:             true,
+            timeout_secs:        120,
+            max_retries:         2,
+            provider:            String::new(),
+            model:               String::new(),
+            extra_system_prompt: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
     pub default:   Option<String>,
@@ -149,6 +182,7 @@ pub struct LlmConfig {
     pub cache:     CacheConfig,
     pub dedup:     DedupConfig,
     pub chat:      ChatConfig,
+    pub to_bund:   ToBundConfig,
 }
 
 impl LlmConfig {
@@ -276,7 +310,38 @@ impl LlmConfig {
             })
             .unwrap_or_default();
 
-        Self { default, ollama, anthropic, openai, deepseek, cache, dedup, chat }
+        let to_bund = llm.get("to_bund").and_then(|v| v.as_object())
+            .map(|t| {
+                let d = ToBundConfig::default();
+                ToBundConfig {
+                    enabled:             t.get("enabled").and_then(|v| v.as_bool())
+                                            .unwrap_or(d.enabled),
+                    // Clamp to [10, 600] — translator prompts are
+                    // large; sub-10s timeouts almost always fail
+                    // mid-stream, sub-10-minute is plenty.
+                    timeout_secs:        t.get("timeout_secs").and_then(|v| v.as_f64())
+                                            .map(|n| n as u64)
+                                            .unwrap_or(d.timeout_secs)
+                                            .clamp(10, 600),
+                    // Ceiling 5 — the model rarely converges after
+                    // more than 2-3 corrective turns.
+                    max_retries:         t.get("max_retries").and_then(|v| v.as_f64())
+                                            .map(|n| (n as usize).min(5))
+                                            .unwrap_or(d.max_retries),
+                    provider:            t.get("provider").and_then(|v| v.as_str())
+                                            .map(str::to_owned)
+                                            .unwrap_or(d.provider.clone()),
+                    model:               t.get("model").and_then(|v| v.as_str())
+                                            .map(str::to_owned)
+                                            .unwrap_or(d.model.clone()),
+                    extra_system_prompt: t.get("extra_system_prompt").and_then(|v| v.as_str())
+                                            .map(str::to_owned)
+                                            .unwrap_or(d.extra_system_prompt.clone()),
+                }
+            })
+            .unwrap_or_default();
+
+        Self { default, ollama, anthropic, openai, deepseek, cache, dedup, chat, to_bund }
     }
 }
 

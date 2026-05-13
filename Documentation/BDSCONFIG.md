@@ -46,7 +46,8 @@ cross-reference it rather than duplicating tuning advice.
    - 7.1 [Provider registration](#71-provider-registration)
    - 7.2 [`llm.cache`](#72-llmcache)
    - 7.3 [`llm.dedup`](#73-llmdedup)
-   - 7.4 [`llm.runner`](#74-llmrunner)
+   - 7.4 [`llm.to_bund`](#74-llmto_bund--english--bund-translator-v2tobund)
+   - 7.5 [`llm.runner`](#75-llmrunner)
 8. [bdsweb-specific keys](#8-bdsweb-specific-keys)
    - 8.1 [`web.analyze.*` — "Analyze this!" buttons](#81-webanalyze--analyze-this-buttons)
 9. [Legacy `v2/chat.ollama` keys](#9-legacy-v2chatollama-keys)
@@ -927,7 +928,97 @@ Standalone mode (no cluster) means `dedup` falls through to
 `disabled` regardless of this setting — there's no peer to dedup
 against.
 
-### 7.4 `llm.runner`
+### 7.4 `llm.to_bund` — English → Bund translator (`v2/to.bund`)
+
+| Field                                | Type    | Default | Clamp / range |
+|--------------------------------------|---------|---------|---------------|
+| `llm.to_bund.enabled`                | bool    | `true`  | —             |
+| `llm.to_bund.timeout_secs`           | integer | `120`   | 10–600        |
+| `llm.to_bund.max_retries`            | integer | `2`     | 0–5           |
+| `llm.to_bund.provider`               | string  | `""`    | `""` = use `llm.default` |
+| `llm.to_bund.model`                  | string  | `""`    | `""` = use provider's `default_model` |
+| `llm.to_bund.extra_system_prompt`    | string  | `""`    | appended to the baked system prompt |
+
+`v2/to.bund` hands a natural-language request to the default LLM
+provider, parses the returned ```` ```bund```` block through
+`bund_language_parser::bund_parse`, and retries up to `max_retries`
+times when validation fails (each retry feeds the error back to the
+model with "fix the issue, keep the intent" instructions).  The
+endpoint **returns** the script; it does **not** execute it.
+Consumers (chat, bdscmd, bdsweb) decide whether to run.
+
+Two layers of validation run on every attempt:
+
+1. **Syntax** — `bund_parse` rejects malformed tokens.
+2. **Undefined-word dry-run** — every word reference in the parsed
+   AST (including those nested in lambdas, lists, and contexts) is
+   checked against the Adam VM's registered-word set.  A reference
+   to a word the VM has never heard of fails the dry-run with a
+   "not registered" error that names the offending word(s) in the
+   retry user-turn.
+
+The active `bund.disabled_categories` / `bund.disabled_words`
+sandbox is also spliced into the system prompt so the model can
+avoid words that would be denied at runtime (see § 4.1).  The
+`v2/to.bund.settings` RPC echoes the effective blocklist under a
+`disabled_groups` key for operators who want to confirm what the
+model is being told.
+
+Request wire format:
+
+```json
+{ "jsonrpc": "2.0", "method": "v2/to.bund", "id": 1,
+  "params": {
+    "message":     "find all records with severity ERROR in the last hour",
+    "provider":    "anthropic",          // optional override
+    "model":       "claude-sonnet-4-5",  // optional override
+    "max_retries": 3,                    // optional override (capped at 5)
+    "options":     { "temperature": 0.1, "num_ctx": 32768 }
+  } }
+```
+
+Response:
+
+```json
+{ "result": {
+    "script":         "...\n",
+    "valid":          true,
+    "parse_attempts": 1,
+    "provider":       "anthropic",
+    "model":          "claude-sonnet-4-5",
+    "ms":             1843,
+    "tokens_in":      4120,
+    "tokens_out":     78
+  } }
+```
+
+On final failure `valid` is `false`, `parse_error` carries the last
+parser message, and `script` holds the last attempted body for
+debugging.
+
+The companion `v2/to.bund.settings` returns the effective runtime
+config (operators use this to confirm the right provider/model
+defaults are in play after a reload).
+
+`extra_system_prompt` is the cleanest place to layer site-specific
+guidance ("always use 1h durations", "tag every record env=prod")
+without forking the baked prompt — the string is appended verbatim
+to the system prompt at the call site.
+
+#### Consumers
+
+- **bdscmd**: `bdscmd to-bund "<english>"` returns the full
+  Translation JSON by default; `--script-only` prints just the
+  script to stdout (one-line summary on stderr) so it pipes
+  cleanly into `bdscmd eval -`.  All standard provider /
+  sampling overrides are exposed as flags.
+- **bdsweb**: the `/bund` page has a collapsible **Translate from
+  English** panel above the editor.  POST to `/bund/translate`
+  returns an HTML fragment with the script, validity badge,
+  attempt count, and a "Use as script" button that drops the
+  generated Bund into the CodeMirror editor below.
+
+### 7.5 `llm.runner`
 
 | Field                            | Type    | Default | Required |
 |----------------------------------|---------|---------|----------|

@@ -449,6 +449,7 @@ async fn main() {
         .route("/chat/reset",     get(routes::chat::reset))
         .route("/bund",           get(routes::bund::page))
         .route("/bund/eval",      post(routes::bund::eval))
+        .route("/bund/translate", post(routes::bund::translate))
         .route("/scripts",                get(routes::scripts::page))
         .route("/scripts/list",           get(routes::scripts::list))
         .route("/scripts/editor",         get(routes::scripts::editor_new))

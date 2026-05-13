@@ -263,6 +263,31 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // English → Bund translator (llm.to_bund.*) — defaults ON.  The
+    // RPC itself does NOT execute the generated script; consumers
+    // (chat, bdscmd, bdsweb) decide whether to run it.  See
+    // src/llm/to_bund.rs.
+    {
+        let t = &llm_cfg.to_bund;
+        bdslib::llm::to_bund::init_settings(bdslib::llm::to_bund::ToBundSettings {
+            enabled:             t.enabled,
+            timeout_secs:        t.timeout_secs,
+            max_retries:         t.max_retries,
+            provider:            t.provider.clone(),
+            model:               t.model.clone(),
+            extra_system_prompt: t.extra_system_prompt.clone(),
+        });
+        if t.enabled {
+            log::info!("[llm] to_bund: enabled (timeout={}s, max_retries={}, provider={:?}, model={:?}, extra_prompt_len={})",
+                t.timeout_secs, t.max_retries,
+                if t.provider.is_empty() { "<default>" } else { t.provider.as_str() },
+                if t.model.is_empty()    { "<provider-default>" } else { t.model.as_str() },
+                t.extra_system_prompt.len());
+        } else {
+            log::warn!("[llm] to_bund: disabled (llm.to_bund.enabled = false) — v2/to.bund will return errors");
+        }
+    }
+
     // BUND sandbox — gates dangerous words (shell, FS write, cluster
     // admin, etc.) per the `bund.disabled_categories` /
     // `bund.disabled_words` block in bds.hjson.  Defaults to no

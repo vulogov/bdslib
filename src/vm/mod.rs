@@ -27,7 +27,7 @@ pub mod stdlib;
 pub mod vm;
 pub mod workers;
 
-pub use vm::init_adam;
+pub use vm::{init_adam, registered_word_names};
 
 /// Initialise the BUND VM (if not already done) and evaluate `code`.
 ///

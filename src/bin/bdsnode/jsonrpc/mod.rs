@@ -116,6 +116,7 @@ mod v3_topics;
 mod v3_tpl;
 mod v2_llm_cache;
 mod v2_llm_last_executed;
+mod v2_to_bund;
 mod v3_trends;
 mod v4_llm;
 
@@ -232,6 +233,7 @@ pub fn build_module() -> RpcModule<()> {
     v3_summaries::register(&mut module);
     v2_llm_cache::register(&mut module);
     v2_llm_last_executed::register(&mut module);
+    v2_to_bund::register(&mut module);
     v4_llm::register(&mut module);
     scheduler_last_seen::register(&mut module);
     v2_user::register(&mut module);

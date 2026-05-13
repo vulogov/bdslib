@@ -256,6 +256,14 @@ enum Commands {
     /// HMAC-signed under `--secret` matching `cluster.shared_secret`
     /// from bds.hjson — v4/* refuses unsigned requests.
     Llm(cmd::llm::Cmd),
+
+    /// Translate an English request into a Bund script via
+    /// `v2/to.bund`.  Default output is the full Translation JSON
+    /// (script, valid, parse_attempts, provider, model, ms, …);
+    /// pass `--script-only` to print just the script to stdout
+    /// and a one-line summary to stderr — ideal for piping into
+    /// `bdscmd eval -`.
+    ToBund(cmd::to_bund::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -351,6 +359,7 @@ fn main() -> Result<()> {
         Commands::SchedulerLastSeen(a)        => cmd::scheduler_last_seen::run(&url, &session, a),
         Commands::User(a)                     => cmd::user::run(&url, &session, a),
         Commands::Llm(a)                      => cmd::llm::run(&url, &session, a),
+        Commands::ToBund(a)                   => cmd::to_bund::run(&url, &session, a),
     }?;
 
     if cli.raw {

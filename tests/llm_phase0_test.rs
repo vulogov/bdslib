@@ -410,9 +410,10 @@ fn manager_from_config_skips_api_key_providers_when_env_unset() {
         }),
         openai: None,
         deepseek: None,
-        cache: Default::default(),
-        dedup: Default::default(),
-        chat:  Default::default(),
+        cache:   Default::default(),
+        dedup:   Default::default(),
+        chat:    Default::default(),
+        to_bund: Default::default(),
     };
     let mgr = ProviderManager::from_config(cfg);
     let names = mgr.registered();
@@ -432,9 +433,10 @@ fn manager_from_config_falls_back_when_default_unregistered() {
         anthropic: None,
         openai: None,
         deepseek: None,
-        cache: Default::default(),
-        dedup: Default::default(),
-        chat:  Default::default(),
+        cache:   Default::default(),
+        dedup:   Default::default(),
+        chat:    Default::default(),
+        to_bund: Default::default(),
     };
     let mgr = ProviderManager::from_config(cfg);
     // ollama is the only registered provider, so resolve(None) must

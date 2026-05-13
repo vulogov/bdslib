@@ -102,6 +102,27 @@
         enabled: true
       }
     }
+
+    // ── English → Bund translator (v2/to.bund) ──
+    // Lets callers ask the default LLM to draft a Bund script from
+    // a natural-language request.  The RPC parses the result with
+    // `bund_language_parser::bund_parse` and retries up to
+    // `max_retries` times on parse failure.  It does NOT execute
+    // the generated script — consumers (chat, bdscmd, bdsweb)
+    // decide whether to run it.
+    //
+    //   enabled              — master switch (default true)
+    //   timeout_secs         — provider HTTP timeout (10–600, default 120)
+    //   max_retries          — corrective turns after first failure (0–5, default 2)
+    //   provider             — "" = use llm.default; "ollama"/"anthropic"/…
+    //   model                — "" = use that provider's default_model
+    //   extra_system_prompt  — appended to the baked system prompt
+    //                          (site-specific style/policy guidance)
+    to_bund: {
+      enabled:      true
+      timeout_secs: 120
+      max_retries:  2
+    }
   }
 
   // ── bdsweb "Analyze this!" buttons (under web.analyze.<target>) ──

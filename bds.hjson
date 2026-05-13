@@ -239,6 +239,31 @@
   //       default_model: "deepseek-chat"    // or "deepseek-reasoner"
   //     }
   //   }
+  //
+  //   // ── In-chat Bund snippet execution (llm.chat.bund.*) ──
+  //   // chat: {
+  //   //   bund: { enabled: false }         // privileged — see Documentation/LLM.md
+  //   // }
+  //
+  //   // ── English → Bund translator (llm.to_bund.*) ──
+  //   // v2/to.bund hands a natural-language request to the
+  //   // default provider, parses the returned ```bund block
+  //   // through bund_language_parser, and retries up to
+  //   // `max_retries` times if the parse fails.  The endpoint
+  //   // returns the script; it does NOT execute it.
+  //   //
+  //   //   enabled              — master switch (default true)
+  //   //   timeout_secs         — provider HTTP timeout (10–600, default 120)
+  //   //   max_retries          — corrective turns (0–5, default 2)
+  //   //   provider             — override llm.default ("" = use it)
+  //   //   model                — override provider default ("" = use it)
+  //   //   extra_system_prompt  — appended to the baked system prompt
+  //   //                          for site-specific guidance
+  //   to_bund: {
+  //     enabled:      true
+  //     timeout_secs: 120
+  //     max_retries:  2
+  //   }
   // }
 
   // ── Result queues (v2/results.*) ────────────────────────────────────────────

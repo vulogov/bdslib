@@ -1,7 +1,7 @@
 use askama::Template;
 use axum::{extract::State, response::Html, Form};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{client::{rpc, ModeBadge}, error::AppError,
             error_pretty::{parse_bund_error, ErrorSegment},
@@ -103,4 +103,75 @@ pub async fn eval(
         }
         Err(e) => Err(e),
     }
+}
+
+// ── English → Bund translate POST ────────────────────────────────────────────
+//
+// Posts a plain English message to `v2/to.bund` and renders the
+// returned script + metadata so the page can offer "Use as script"
+// to drop it into the CodeMirror editor.
+
+#[derive(Deserialize)]
+pub struct TranslateForm {
+    #[serde(default)]
+    pub message: String,
+}
+
+#[derive(Template)]
+#[template(path = "partials/bund_translate.html")]
+struct BundTranslate {
+    script:         String,
+    valid:          bool,
+    parse_attempts: u64,
+    parse_error:    String,
+    provider:       String,
+    model:          String,
+    ms:             u64,
+    has_error:      bool,
+    error_msg:      String,
+}
+
+pub async fn translate(
+    State(state): State<AppState>,
+    Form(form): Form<TranslateForm>,
+) -> Result<Html<String>, AppError> {
+    let message = form.message.trim();
+    if message.is_empty() {
+        return Ok(Html(BundTranslate {
+            script: String::new(), valid: false, parse_attempts: 0,
+            parse_error: String::new(),
+            provider: String::new(), model: String::new(), ms: 0,
+            has_error: true,
+            error_msg: "Enter an English request first.".into(),
+        }.render()?));
+    }
+
+    match rpc(&state, "v2/to.bund", json!({ "message": message })).await {
+        Ok(v) => {
+            let script         = string_field(&v, "script");
+            let parse_error    = string_field(&v, "parse_error");
+            let provider       = string_field(&v, "provider");
+            let model          = string_field(&v, "model");
+            let valid          = v.get("valid").and_then(|x| x.as_bool()).unwrap_or(false);
+            let parse_attempts = v.get("parse_attempts").and_then(|x| x.as_u64()).unwrap_or(0);
+            let ms             = v.get("ms").and_then(|x| x.as_u64()).unwrap_or(0);
+            Ok(Html(BundTranslate {
+                script, valid, parse_attempts, parse_error,
+                provider, model, ms,
+                has_error: false, error_msg: String::new(),
+            }.render()?))
+        }
+        Err(AppError::Rpc(msg)) => Ok(Html(BundTranslate {
+            script: String::new(), valid: false, parse_attempts: 0,
+            parse_error: String::new(),
+            provider: String::new(), model: String::new(), ms: 0,
+            has_error: true,
+            error_msg: msg,
+        }.render()?)),
+        Err(e) => Err(e),
+    }
+}
+
+fn string_field(v: &Value, k: &str) -> String {
+    v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_owned()
 }

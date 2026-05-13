@@ -357,6 +357,55 @@ pub fn category_of(word: &str) -> Option<Category> {
     WORD_CATEGORY.iter().find(|(n, _)| *n == word).map(|(_, c)| *c)
 }
 
+/// List every Bund word that the active policy currently denies
+/// (category-disabled words ∪ explicitly-listed words).  Order is
+/// alphabetical so the output is stable for diffing / hashing.
+///
+/// Used by the v2/to.bund translator to splice a "DO NOT use these
+/// words" section into the system prompt, and by introspection RPCs
+/// that want to show the operator-active blocklist.
+pub fn effective_disabled_words() -> Vec<String> {
+    let p = policy();
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for (word, cat) in WORD_CATEGORY {
+        if p.disabled_categories.contains(cat) {
+            out.insert((*word).to_owned());
+        }
+    }
+    for w in &p.disabled_words {
+        out.insert(w.clone());
+    }
+    out.into_iter().collect()
+}
+
+/// Group the active policy's denied words by category for prompt
+/// rendering / log output.  Words listed in `disabled_words` but not
+/// present in the static `WORD_CATEGORY` table appear under the
+/// synthetic key `"explicit"`.
+///
+/// Each inner Vec is sorted; the outer Vec is sorted by wire-name of
+/// the category (or `"explicit"` last).
+pub fn effective_disabled_by_category() -> Vec<(String, Vec<String>)> {
+    use std::collections::BTreeMap;
+    let p = policy();
+    let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (word, cat) in WORD_CATEGORY {
+        if p.disabled_categories.contains(cat) {
+            groups.entry(cat.as_wire().to_owned())
+                .or_default()
+                .insert((*word).to_owned());
+        }
+    }
+    for w in &p.disabled_words {
+        let key = category_of(w).map(|c| c.as_wire().to_owned())
+            .unwrap_or_else(|| "explicit".to_owned());
+        groups.entry(key).or_default().insert(w.clone());
+    }
+    groups.into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect::<Vec<_>>()))
+        .collect()
+}
+
 /// Stub that all disabled words are re-registered as.  Returns a
 /// clear error message pointing the operator at the config knob.
 /// The function does not know its own name (`VMInlineFn` is a bare
