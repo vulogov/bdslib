@@ -120,6 +120,15 @@ struct Cli {
     /// proceeds with normal initialisation. Use with care — all data is lost.
     #[arg(long, default_value_t = false)]
     new: bool,
+
+    /// **Dev/demo only.**  Enable the synthetic-data generator
+    /// regardless of `generate_realistic_data.enabled` in bds.hjson.
+    /// The node emits a loud startup banner and every status surface
+    /// flags the data as artificial.  Other knobs (interval, total,
+    /// scenarios, ratios) still come from the hjson
+    /// `generate_realistic_data:` block.
+    #[arg(long = "generate_realistic_data", default_value_t = false)]
+    generate_realistic_data: bool,
 }
 
 #[tokio::main]
@@ -385,6 +394,18 @@ async fn main() -> anyhow::Result<()> {
     // `cluster.enabled = false` in bds.hjson.
     let cluster_handle = server::cluster::start();
 
+    // Dev/demo synthetic-data generator — gated behind hjson
+    // `generate_realistic_data.enabled` OR the `--generate_realistic_data`
+    // CLI flag.  When armed, emits a loud multi-line banner via
+    // log::warn so operators can't mistake a demo node for prod, and
+    // pushes one batch of fake telemetry through the `ingest` pipe
+    // every `interval_secs` seconds.  No-op otherwise.
+    let dev_data_cfg = server::dev_data::Config::from_config(
+        cli.config.as_deref(),
+        cli.generate_realistic_data,
+    ).context("failed to read generate_realistic_data config")?;
+    let dev_data_handle = server::dev_data::start(dev_data_cfg);
+
     let add_handle = if let Some(cfg) = server::add::Config::from_config(cli.config.as_deref())
         .context("failed to read ingest config")?
     {
@@ -437,6 +458,7 @@ async fn main() -> anyhow::Result<()> {
     llm_runner_handle.stop().await;
     sync_handle.stop().await;
     retention_handle.stop().await;
+    dev_data_handle.stop().await;
     cluster_handle.stop().await;
 
     // Drain ingest channels and join batch threads before checkpointing so

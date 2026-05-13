@@ -75,6 +75,40 @@ pub fn register(module: &mut RpcModule<()>) {
                 }))
                 .collect();
 
+            // Dev/demo synthetic-data generator state.  Always
+            // emitted — callers branch on `enabled` to render the
+            // "SYNTHETIC DATA" warning banner.  Atomic loads, no
+            // lock contention with the live generator.
+            let dev_data_block = {
+                use std::sync::atomic::Ordering;
+                let s = bdslib::dev_data::stats();
+                let mut o = serde_json::json!({
+                    "enabled":            s.enabled.load(Ordering::Relaxed),
+                    "records_lifetime":   s.records_lifetime.load(Ordering::Relaxed),
+                    "records_last_batch": s.records_last_batch.load(Ordering::Relaxed),
+                    "batches_emitted":    s.batches_emitted.load(Ordering::Relaxed),
+                    "last_run_ts":        s.last_run_ts.load(Ordering::Relaxed),
+                    "last_run_ms":        s.last_run_ms.load(Ordering::Relaxed),
+                    "errors_lifetime":    s.errors_lifetime.load(Ordering::Relaxed),
+                });
+                // When the active config is installed echo the knobs
+                // so dashboards can render "Generating N records every
+                // Ms covering D" without re-reading hjson.
+                if let Some(a) = crate::server::dev_data::active() {
+                    if let Some(obj) = o.as_object_mut() {
+                        obj.insert("config_enabled".to_owned(),  serde_json::json!(a.enabled));
+                        obj.insert("interval_secs".to_owned(),   serde_json::json!(a.interval_secs));
+                        obj.insert("duration".to_owned(),        serde_json::json!(a.duration));
+                        obj.insert("total_per_batch".to_owned(), serde_json::json!(a.total));
+                        obj.insert("scenarios".to_owned(),       serde_json::json!(a.scenarios));
+                        obj.insert("noise_ratio".to_owned(),     serde_json::json!(a.noise_ratio));
+                        obj.insert("anomaly_ratio".to_owned(),   serde_json::json!(a.anomaly_ratio));
+                        obj.insert("seed".to_owned(),            serde_json::json!(a.seed));
+                    }
+                }
+                o
+            };
+
             // Retention sweeper stats — always present so operators
             // can tell at a glance whether retention is running or
             // turned off.  Values are atomic counters maintained by
@@ -116,6 +150,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 "running_scripts":    running_scripts,
                 "cluster":            cluster_info,
                 "retention":          retention_block,
+                "dev_data":           dev_data_block,
             });
 
             log::debug!("v2/status: done");

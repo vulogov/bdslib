@@ -23,6 +23,7 @@ runtime into a single cohesive system backed by DuckDB.
 | **Frequency tracking** | `(timestamp, id)` observation store for event-rate analysis over time |
 | **Signal store** | Named severity signals with arbitrary metadata and semantic search |
 | **Result queues** | Per-id FIFO queues of `rust_dynamic` values with TTL eviction; backs async BUND job results |
+| **Synthetic data generator** (dev/demo) | Optional tokio task that periodically injects fake telemetry + logs + incident scenarios via `bdslib::common::realistic::generate` for demos and feature testing.  Off by default; enable via `generate_realistic_data.enabled = true` or `--generate_realistic_data`.  When armed, bdsnode prints a loud startup banner, `v2/status.dev_data.enabled` flips to `true`, and the bdsweb dashboard prepends a red "SYNTHETIC DATA" banner.  See [`Documentation/DEV_DATA.md`](Documentation/DEV_DATA.md). |
 
 ### Search
 

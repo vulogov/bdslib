@@ -11,6 +11,7 @@ pub mod frequencytrackingstorage;
 pub mod fts;
 pub mod globals;
 pub mod llm;
+pub mod dev_data;
 pub mod observability;
 pub mod retention;
 pub mod scheduler;

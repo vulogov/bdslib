@@ -2,6 +2,40 @@
   Cached snapshot · auto-refreshes every {{ refresh_secs }}s
 </div>
 
+{% if dev_data_enabled %}
+<!-- Synthetic-data warning banner.  Renders ONLY when the node has
+     `generate_realistic_data` armed (hjson `enabled=true` or the
+     bdsnode `--generate_realistic_data` CLI flag).  Designed to be
+     impossible to overlook — full-width red, an emoji-prefixed
+     headline, and a one-line summary of what the generator is doing. -->
+<div class="rounded-lg p-4 mb-6"
+     style="background:linear-gradient(90deg,#7f1d1d 0%,#9f1239 50%,#7f1d1d 100%);
+            border:2px solid #f87171;
+            box-shadow:0 0 0 1px rgba(248,113,113,0.4),0 4px 16px rgba(248,113,113,0.2);">
+  <div class="flex items-start gap-3">
+    <div style="font-size:1.6rem; line-height:1; padding-top:0.1rem;">⚠</div>
+    <div class="flex-1">
+      <div class="text-base font-semibold text-white mb-1" style="letter-spacing:0.04em;">
+        SYNTHETIC DATA &mdash; THIS NODE IS RUNNING IN DEMO MODE
+      </div>
+      <div class="text-sm text-red-100">
+        Records visible on this dashboard are produced by
+        <code class="text-amber-200">bdslib::common::realistic::generate</code>
+        every {{ dev_data_interval_secs }}s
+        ({{ dev_data_total_per_batch }} target records per batch;
+        {{ dev_data_batches }} batches emitted, {{ dev_data_records }} records total).
+        <strong>Nothing here is real operational telemetry.</strong>
+        Disable in <code class="text-amber-200">bds.hjson</code>
+        (<code class="text-amber-200">generate_realistic_data.enabled = false</code>)
+        and drop the
+        <code class="text-amber-200">--generate_realistic_data</code>
+        flag before pointing tools at this instance.
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Status cards -->
 <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
   <div class="card rounded-lg p-4">

@@ -70,4 +70,14 @@
       }
     }
   }
+  generate_realistic_data: {
+     enabled:        true
+     interval_secs:  3600         // clamped [5, 86400]
+     duration:       "2h"       // humantime window each batch covers
+     total:          2000       // target records per batch
+     scenarios:      5          // incident cascades per batch
+     noise_ratio:    0.7        // 0.0–0.95, background fraction
+     anomaly_ratio:  0.02       // 0.0–0.10, rare-record fraction
+     seed:           null       // null = entropy, integer = deterministic
+}
 }

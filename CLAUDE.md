@@ -246,6 +246,20 @@ Online time-based shard eviction.  Per-node, opt-in.  Touches **only** sharded t
 - `run_sweep(cfg, drain_reload) -> EvictionReport` is the shared entrypoint for both the background loop and `v2/retention.sweep`.
 - 5 new integration tests in `tests/retention_test.rs` (closure-false skips, closure-true evicts, per-interval matching, disabled-bypasses-closure, lifetime stats roll-up).
 
+### Synthetic-data generator (`src/dev_data.rs`, `src/bin/bdsnode/server/dev_data.rs`)
+
+Dev/demo only.  Background tokio task that pushes batches of fake telemetry via `bdslib::common::realistic::generate` through the local `pipe::send_many("ingest", …)` pipe on a fixed cadence.  Three ways state propagates to operators:
+
+1. **Startup banner** — multi-line WARN log lines from `bdslib::dev_data::loud_warning_banner()` so the bdsnode log makes the demo state impossible to miss.
+2. **`v2/status.dev_data`** — atomic counters (`enabled`, `records_lifetime`, `batches_emitted`, `last_run_ts`, `errors_lifetime`) + active-config echo (`interval_secs`, `duration`, `total_per_batch`, `scenarios`, `noise_ratio`, `anomaly_ratio`, `seed`).
+3. **bdsweb dashboard** — red "SYNTHETIC DATA" banner above the regular content when `dev_data.enabled=true`.  Renders only when armed; invisible otherwise.
+
+**Config**: `generate_realistic_data:` block in hjson with `enabled` / `interval_secs` / `duration` / `total` / `scenarios` / `noise_ratio` / `anomaly_ratio` / `seed`.  Default is `enabled: false` — strictly opt-in.
+
+**CLI flag**: `bdsnode --generate_realistic_data` forces `enabled=true` regardless of hjson.  Other knobs still come from the hjson block.
+
+**Status**: `bdslib::dev_data::stats()` is the `OnceLock<DevDataStats>` accessor — atomic counters, no locks.  `mark_enabled()` flips the flag at startup and never flips back (a live disable would let operators hide the banner mid-run, which we explicitly don't want).
+
 ## Integration Tests
 
 Tests live in `tests/storageengine_test.rs`. Each test creates its own DuckDB instance (`:memory:` or `tempfile`):

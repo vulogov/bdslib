@@ -36,6 +36,7 @@ cross-reference it rather than duplicating tuning advice.
    - 5.3 [Result-queue sweeper](#53-result-queue-sweeper)
    - 5.4 [BUND VM cleanup](#54-bund-vm-cleanup)
    - 5.5 [Shard retention](#55-shard-retention-retention-block)
+   - 5.6 [Synthetic data generator](#56-synthetic-data-generator-generate_realistic_data-block)
 6. [`cluster:` block](#6-cluster-block)
    - 6.1 [Membership](#61-membership)
    - 6.2 [Gossip cadence](#62-gossip-cadence)
@@ -640,6 +641,46 @@ Companion JSON-RPC surface:
 - [`v2/cluster.shards.list`](jsonrpc_api/v2_cluster_shards_list.md) — Phase 3 helper used by quorum probes.
 
 bdscmd CLI: `bdscmd retention-sweep [--duration H] [--dry-run] [--force]` and `bdscmd retention-settings`.
+
+### 5.6 Synthetic data generator (`generate_realistic_data:` block)
+
+**Dev/demo only.**  When enabled, bdsnode runs a background tokio
+task that pushes batches of fake telemetry into the local ingest
+pipe on a fixed cadence — useful for populating a fresh deployment
+with realistic-looking data for screenshots, training, and feature
+testing.  See [`DEV_DATA.md`](DEV_DATA.md) for the full operator
+guide.
+
+```hjson
+generate_realistic_data: {
+  enabled:        false       // master switch — opt-in
+  interval_secs:  60          // clamped [5, 86400]
+  duration:       "6h"        // humantime window each batch covers
+  total:          2000        // target records per batch
+  scenarios:      3           // incident cascades per batch
+  noise_ratio:    0.7         // 0.0–0.95, background-noise fraction
+  anomaly_ratio:  0.02        // 0.0–0.10, rare-record fraction
+  seed:           null        // null = entropy, integer = deterministic
+}
+```
+
+| Field                                  | Type    | Default  | Notes |
+|----------------------------------------|---------|----------|-------|
+| `generate_realistic_data.enabled`      | bool    | `false`  | Master switch.  Overridden to `true` by `--generate_realistic_data`. |
+| `generate_realistic_data.interval_secs`| integer | `60`     | Clamped to `[5, 86400]`. |
+| `generate_realistic_data.duration`     | string  | `"6h"`   | Humantime window each batch covers. |
+| `generate_realistic_data.total`        | integer | `2000`   | Target records per batch. |
+| `generate_realistic_data.scenarios`    | integer | `3`      | Incident cascades per batch. |
+| `generate_realistic_data.noise_ratio`  | float   | `0.7`    | Clamped to `[0.0, 0.95]`. |
+| `generate_realistic_data.anomaly_ratio`| float   | `0.02`   | Clamped to `[0.0, 0.10]`. |
+| `generate_realistic_data.seed`         | int?    | `null`   | Pin for reproducible datasets. |
+
+CLI override: `bdsnode --generate_realistic_data` forces `enabled=true` regardless
+of the hjson value.  Other knobs still come from the hjson block (or its defaults).
+
+When enabled, bdsnode logs a loud multi-line WARN banner at startup, `v2/status`
+gains a `dev_data.enabled=true` field, and the bdsweb dashboard prepends a red
+"SYNTHETIC DATA" banner above all content.
 
 ---
 

@@ -125,6 +125,29 @@
     }
   }
 
+  // ── Dev/demo: synthetic-data generator (generate_realistic_data) ──
+  //
+  // Off by default.  Enable via this block OR the
+  // `--generate_realistic_data` bdsnode CLI flag (CLI wins regardless
+  // of hjson).  When armed, bdsnode prints a loud WARN banner and
+  // pushes one batch of fake telemetry through the local ingest
+  // pipe every `interval_secs`.  v2/status.dev_data.enabled flips
+  // to true; the bdsweb dashboard renders a red "SYNTHETIC DATA"
+  // banner.  Production deployments MUST keep this off.
+  //
+  // See Documentation/DEV_DATA.md for the full operator guide.
+  //
+generate_realistic_data: {
+     enabled:        true
+     interval_secs:  3600         // clamped [5, 86400]
+     duration:       "2h"       // humantime window each batch covers
+     total:          2000       // target records per batch
+     scenarios:      5          // incident cascades per batch
+     noise_ratio:    0.7        // 0.0–0.95, background fraction
+     anomaly_ratio:  0.02       // 0.0–0.10, rare-record fraction
+     seed:           null       // null = entropy, integer = deterministic
+}
+
   // ── bdsweb "Analyze this!" buttons (under web.analyze.<target>) ──
   // Per-target sub-blocks; more targets (rca, signals, …) will slot
   // in here alongside logs and metrics.  All keys are optional;

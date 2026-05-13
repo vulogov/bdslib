@@ -90,6 +90,16 @@ struct DashboardData {
     has_recent:           bool,
     has_running:          bool,
     refresh_secs:         u64,
+    // ── Synthetic-data warning banner (dev/demo only) ──────────────────────
+    /// When true, this node has `generate_realistic_data` enabled.
+    /// The template renders a prominent red "SYNTHETIC DATA" banner
+    /// at the top of the page so operators can never mistake a demo
+    /// run for real telemetry.  Populated from `v2/status.dev_data`.
+    dev_data_enabled:        bool,
+    dev_data_records:        u64,
+    dev_data_batches:        u64,
+    dev_data_interval_secs:  u64,
+    dev_data_total_per_batch: u64,
 }
 
 fn short_uuid(s: &str) -> String {
@@ -161,6 +171,29 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
     let has_recent  = n_recent  > 0;
     let has_running = n_running > 0;
 
+    // ── Synthetic-data state ─────────────────────────────────────────────
+    let dev_data = snap.status.get("dev_data");
+    let dev_data_enabled = dev_data
+        .and_then(|d| d.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dev_data_records = dev_data
+        .and_then(|d| d.get("records_lifetime"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let dev_data_batches = dev_data
+        .and_then(|d| d.get("batches_emitted"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let dev_data_interval_secs = dev_data
+        .and_then(|d| d.get("interval_secs"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let dev_data_total_per_batch = dev_data
+        .and_then(|d| d.get("total_per_batch"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
     let tmpl = DashboardData {
         node_id:              str_val(&snap.status, "node_id"),
         hostname:             str_val(&snap.status, "hostname"),
@@ -189,6 +222,11 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         has_recent,
         has_running,
         refresh_secs,
+        dev_data_enabled,
+        dev_data_records,
+        dev_data_batches,
+        dev_data_interval_secs,
+        dev_data_total_per_batch,
     };
 
     Ok(tmpl.render()?)
