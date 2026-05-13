@@ -259,8 +259,17 @@ fn run() -> Result<()> {
 
     println!("\n=== Section 5: Reload parser from stored templates ===");
 
-    let mut fresh = manager.drain_load("2h")?;
-    println!("Loaded {} clusters into fresh parser", fresh.clusters().len());
+    // `drain_load` returns the seeded parser AND a `cluster_id → stored
+    // template UUID` map so the caller can correlate fresh in-memory
+    // cluster ids back to the tplstorage rows they were seeded from.
+    // We don't need that map here — match the parser back out and
+    // discard the rest.
+    let (mut fresh, cluster_map) = manager.drain_load("2h")?;
+    println!(
+        "Loaded {} clusters into fresh parser ({} have known template UUIDs)",
+        fresh.clusters().len(),
+        cluster_map.len(),
+    );
 
     let test_lines = [
         ("auth",    "user zara logged in from 10.0.5.99"),
