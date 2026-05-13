@@ -12,6 +12,7 @@ pub mod chat;
 pub mod chat_bund;
 pub mod context;
 pub mod dedup;
+pub mod help;
 pub mod jobs;
 pub mod manager;
 pub mod providers;

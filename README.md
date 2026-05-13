@@ -80,6 +80,7 @@ single-execution dedup, and async jobs.  Full reference:
 | **Async jobs** | `v4/llm.complete_async` / `analyze_async` enqueue work; background runner per node drives them through the same sync helpers, delivers results via the existing `ResultQueue` (same path `v2/eval.queued` uses) |
 | **Diagnostics** | `?llm.meta` Bund word, response carries `cache` (hit / miss / disabled) + `dedup` (ran / waited / disabled) + `prompt_chars` + `num_ctx` (auto-bumped past Ollama's 2048-token default to prevent silent RAG truncation) |
 | **English → Bund translator** | `v2/to.bund` — natural-language requests → syntax-validated Bund scripts.  Baked system prompt + few-shot examples, parse-failure retry loop, undefined-word dry-run against the live VM, sandbox-policy-aware prompt splice.  Consumed by `bdscmd to-bund` and the bdsweb `/bund` page's *Translate from English* panel.  See [`Documentation/LLM.md`](Documentation/LLM.md) § 13. |
+| **Docstore Q&A** | `v3/help` — natural-language question → docstore-backed RAG answer using the default LLM provider.  Searches the fully-replicated cluster docstore, with an optional `internal_only` flag that restricts retrieval to docs tagged `metadata.internal_doc == true` (the curated `Documentation/` corpus loaded via `scripts/load_internal_documentation.sh`).  Citations surface in `sources[]`.  See [`Documentation/LLM.md`](Documentation/LLM.md) § 14. |
 | **Driver surfaces** | bdsweb `/chat` (provider picker, sticky cookie) + `/admin/llm` (providers / cache / jobs admin) + `/bund` *Translate from English* panel; `bdscmd llm <subcommand>` family + `bdscmd to-bund`; `cls.llm.*` Bund words |
 | **Legacy compatibility** | `v2/chat.ollama` still ships for back-compat; new deployments should use `v4/llm.chat` (same response shape, HMAC-signed) |
 
@@ -372,6 +373,7 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 | **LLM (async + jobs)** | `v4/llm.complete_async` · `v4/llm.analyze_async` · `v4/llm.jobs.list` · `v4/llm.jobs.status` · `v4/llm.jobs.cancel` |
 | **LLM (cache admin)** | `v4/llm.cache.stats` · `v4/llm.cache.purge` |
 | **LLM (English → Bund)** | `v2/to.bund` · `v2/to.bund.settings` — natural-language requests → syntax-validated Bund scripts; companion settings echo for the active policy / provider |
+| **LLM (docstore Q&A)** | `v3/help` · `v3/help.settings` — natural-language question → docstore-backed RAG answer over the fully-replicated cluster docstore.  `internal_only` flag scopes search to docs tagged `metadata.internal_doc == true` (the corpus loaded by `scripts/load_internal_documentation.sh`).  Returns `{answer, sources[], n_docs, …}`. |
 | **LLM (receivers)** | `v2/llm.cache.{get,get.by_id,put,list_ids,delete}` · `v2/llm.last_executed` — internal, used by replicate_to_all + anti-entropy + dedup fan-out |
 
 ---

@@ -175,6 +175,20 @@ but stripped down: no HMAC, no cluster fan-out, no inference cache.
 - 4 unit tests in `src/llm/to_bund_prompt.rs` (length sanity, extra splicing, disabled-groups rendering, essentials present).
 - 6 integration tests in `tests/llm_to_bund_test.rs` using a `ScriptedProvider` impl (no HTTP) — round-trip success, parse-error retry, retries exhausted, per-call provider override, undefined-word retry, undefined-word retries exhausted.
 
+### Docstore Q&A — `v3/help` (`src/llm/help.rs`)
+
+Natural-language question → docstore-backed RAG answer using the
+default LLM provider.  Built on the same `Provider` abstraction as
+v4/llm.* but specialised for "ops asks the docs a question":
+
+- `llm::help::help(HelpRequest)` returns `HelpResponse { answer, n_docs, internal_only, limit, sources, provider, model, ms, tokens_in?, tokens_out?, note }`.  Internals: resolve provider → `db.doc_search_text(message, fetch)` (`fetch = limit*4` when `internal_only` else `limit`) → optionally retain `metadata.internal_doc == true` → truncate to `limit` → build `[doc N — name]` blocks (each capped at `MAX_CONTENT_CHARS=8000`, UTF-8-safe truncation) → `Provider.complete(rq)` via `runtime::block_on` → return.
+- Constants: `DEFAULT_LIMIT=8`, `MAX_LIMIT=50`, `MAX_CONTENT_CHARS=8000`; `SYSTEM_PROMPT` is refusal-friendly and tells the model to cite document names in `[brackets]`.
+- The docstore is fully replicated (one of the 5 replicated cluster stores), so a local search covers the whole cluster — no fan-out, no `cluster_meta`.
+- RPC: `src/bin/bdsnode/jsonrpc/v3_help.rs` registers `v3/help` and `v3/help.settings`.  Unauthenticated v3/* read surface (matches `v3/search`).
+- Tests: 9 unit tests in `src/llm/help.rs` (pure helpers — internal-doc detection, source extraction, UTF-8-safe truncation, context-block formatting, JSON serialisation); 5 integration tests in `tests/llm_help_test.rs` (seed real ShardsManager with 4 docs (2 internal + 1 external + 1 unflagged) and use a `ScriptedProvider` to assert on the assembled prompt — internal_only filtering, limit clamping, empty-message rejection).
+
+Companion script: `scripts/load_internal_documentation.sh` ingests the entire `Documentation/` tree tagged `internal_doc: true`.  The expected operator workflow is "run loader → consumers call `v3/help` with `internal_only: true`".
+
 ## Integration Tests
 
 Tests live in `tests/storageengine_test.rs`. Each test creates its own DuckDB instance (`:memory:` or `tempfile`):

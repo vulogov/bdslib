@@ -11,9 +11,12 @@ user-facing surfaces:
 | Shell    | `bdscmd llm <subcommand>` ([§ 7](#7--bdscmd-llm-subcommand))                          |
 | Scripts  | `cls.llm.*` Bund words ([§ 8](#8--bund-clsllm-words))                                 |
 
-A separate, lighter-weight surface — `v2/to.bund` — uses the same
-`Provider` abstraction to translate English into syntax-validated
-Bund scripts ([§ 13](#13--english--bund-translator-v2tobund)).
+Two thinner surfaces on the same `Provider` abstraction:
+
+- **`v2/to.bund`** — translate English into syntax-validated Bund
+  scripts ([§ 13](#13--english--bund-translator-v2tobund)).
+- **`v3/help`** — answer English questions over the cluster
+  docstore with RAG ([§ 14](#14--docstore-qa-v3help)).
 
 This document is the canonical reference.  Specifics that already live
 elsewhere are cross-linked rather than duplicated:
@@ -42,6 +45,7 @@ elsewhere are cross-linked rather than duplicated:
 11. [Diagnostics — `?llm.meta` + log lines](#11--diagnostics)
 12. [Operational gotchas](#12--operational-gotchas)
 13. [English → Bund translator (`v2/to.bund`)](#13--english--bund-translator-v2tobund)
+14. [Docstore Q&A (`v3/help`)](#14--docstore-qa-v3help)
 
 ---
 
@@ -803,3 +807,201 @@ splice handle the rest.
 | Cluster fan-out      | Via `dispatch::read` for analyze etc.       | No — single-node by construction            |
 | Async variant        | `v4/llm.complete_async`                     | None — synchronous only                     |
 | Response shape       | `{response, provider, model, cache, …}`     | `{script, valid, parse_attempts, …}`        |
+
+---
+
+## 14 · Docstore Q&A (`v3/help`)
+
+`v3/help` answers natural-language questions over the cluster
+docstore.  It searches the fully-replicated docstore for relevant
+documents, packs them into a RAG prompt, and runs one completion
+against the default LLM provider.  The endpoint is a thin layer on
+top of the same `Provider` abstraction the v4/llm.* surface uses,
+specialised for "operator asks the docs a question" workflows.
+
+Library source: `src/llm/help.rs`.
+RPC wire reference: [`jsonrpc_api/v3_help.md`](jsonrpc_api/v3_help.md).
+Consumer corpus: [`SCRIPTS.md`](SCRIPTS.md) §
+`load_internal_documentation.sh`.
+
+### Why a separate surface
+
+`v4/llm.analyze` with `kind=documents` takes pre-resolved document
+ids — the caller already knows which docs to feed in.  `v3/help`
+inverts that: the caller asks a question, the server picks the docs
+via semantic search.  Concretely:
+
+| Aspect                  | `v4/llm.analyze (kind=documents)` | `v3/help`                                    |
+|-------------------------|------------------------------------|----------------------------------------------|
+| Input                   | `{ids: [uuid, …], query, …}`       | `{message, internal_only?, limit?}`          |
+| Retrieval               | Caller does it                     | Server does it via `db.doc_search_text`     |
+| Internal-only filter    | None (caller pre-filters)          | `internal_only: true` flag                  |
+| Citation surface        | Caller-side                        | `sources[]` in response                     |
+| HMAC                    | Required (`cluster.shared_secret`) | Unauthenticated v3/* read                    |
+| Inference cache         | Yes                                | No — questions are heterogeneous            |
+| Async variant           | `v4/llm.analyze_async`             | None — synchronous only                     |
+
+The endpoint is paired with `scripts/load_internal_documentation.sh`,
+which ingests the entire `Documentation/` tree tagged
+`metadata.internal_doc = true`.  Set `internal_only: true` to scope
+the answer to that operator-curated corpus and exclude any
+user-loaded knowledge-base content.
+
+### Architecture
+
+```
+       v3/help                          v3/help.settings
+          │                                    │
+          ▼                                    ▼
+┌─────────────────────────┐         ┌────────────────────────┐
+│ llm::help::help()       │         │ echo:                  │
+│  · HelpRequest          │         │  default_limit         │
+│  · HelpResponse         │         │  max_limit             │
+│  · HelpSource           │         │  default_provider      │
+└──────────┬──────────────┘         │  providers[]           │
+           │                        └────────────────────────┘
+┌──────────┴──────────────────────────────────────────────┐
+│  Per call:                                              │
+│   1. resolve provider (manager::resolve)                │
+│   2. db.doc_search_text(message, fetch)                 │
+│        fetch = internal_only ? limit*4 : limit          │
+│   3. if internal_only, retain hits where                │
+│        metadata.internal_doc == true                    │
+│   4. truncate to limit                                  │
+│   5. build [doc N — name] blocks, each capped at        │
+│        MAX_CONTENT_CHARS=8000                           │
+│   6. assemble system + user messages                    │
+│   7. Provider.complete()                                │
+│   8. return HelpResponse { answer, sources[], … }       │
+└─────────────────────────────────────────────────────────┘
+```
+
+The docstore is one of the **fully-replicated** cluster stores
+(`docs`, `signals`, `scripts`, `users`, `llm_cache`), so a local
+search already covers every peer's data — `v3/help` does not need
+to fan out and does not return `cluster_meta`.
+
+### System prompt
+
+Baked into `src/llm/help.rs::SYSTEM_PROMPT`.  It instructs the model
+to:
+
+- Use **only** the provided documents.
+- Cite document names in `[brackets]`.
+- Say so plainly when the corpus doesn't answer the question
+  (rather than guessing from general knowledge).
+- Stay concise — a few sentences when possible, bullet points or
+  short code blocks for procedural questions.
+- Quote command lines / paths / config keys **verbatim** from the
+  documents.
+
+These constraints lean the model toward refusal-friendly,
+citation-heavy answers and reduce hallucination on technical
+content.
+
+### Tunable defaults
+
+| Constant            | Default | Override at call site |
+|---------------------|---------|------------------------|
+| `DEFAULT_LIMIT`     | `8`     | `params.limit`        |
+| `MAX_LIMIT`         | `50`    | hard-coded clamp      |
+| `MAX_CONTENT_CHARS` | `8000`  | hard-coded            |
+
+Limits clamp server-side, so a caller asking for `limit: 1000` gets
+`limit: 50` reflected in the response.  When the assembled prompt
+size demands more context, set `options.num_ctx` per call — the
+helper auto-buckets to 16k / 32k / 64k otherwise.
+
+### Internal-only mode
+
+When `internal_only: true`, the helper:
+
+1. Over-fetches `4 × limit` candidates from the docstore so the
+   post-filter step has enough material.
+2. Retains only hits whose `metadata.internal_doc == true`.
+3. Truncates to `limit`.
+4. Builds the prompt from the filtered list.
+
+The truth source for "what counts as internal" is the
+`internal_doc: true` flag on each document's metadata.  This is
+exactly the flag `scripts/load_internal_documentation.sh` emits, so
+the canonical flow is:
+
+```bash
+# Operator side, once per documentation refresh
+./scripts/load_internal_documentation.sh
+
+# Consumer side, ad-hoc
+curl -s -X POST http://node:9000/ -d '{
+  "jsonrpc":"2.0","method":"v3/help","id":1,
+  "params":{"message":"how do I rotate the cluster shared secret?",
+            "internal_only":true,"limit":6}
+}'
+```
+
+User-loaded documents (no `internal_doc` flag, or `internal_doc:
+false`) are untouched by the loader script and invisible to
+`internal_only: true` queries.
+
+### Empty-corpus handling
+
+When no documents match the query (e.g. wildly off-topic question,
+or `internal_only: true` against an empty internal corpus), the
+helper:
+
+- Sets `n_docs: 0` and an empty `sources[]`.
+- Adds a `note` field explaining the situation in plain English.
+- **Still calls the LLM** — the system prompt's refusal clause
+  produces a consistent "the documents do not contain the answer"
+  response instead of a confusing empty result.
+
+Callers that want zero-LLM-cost on empty corpora should check
+`n_docs == 0` and short-circuit before the call (the
+`v3/help.settings` RPC + a quick `doc-search` are cheaper ways to
+probe coverage).
+
+### Response shape
+
+```json
+{
+  "answer":        "According to [document 2 — v2_to_bund.md], …",
+  "n_docs":        4,
+  "internal_only": true,
+  "limit":         4,
+  "sources": [
+    { "id": "01…", "name": "v2_to_bund.md",
+      "score": 0.51, "internal_doc": true },
+    …
+  ],
+  "provider":   "ollama",
+  "model":      "llama3.2",
+  "ms":         6993,
+  "tokens_in":  4698,
+  "tokens_out": 209
+}
+```
+
+`tokens_in` / `tokens_out` are present when the provider reports
+them; `note` is present only when `n_docs == 0`.
+
+### Operational notes
+
+- **Cost gate** — every call hits the LLM provider.  Unlike
+  v4/llm.analyze, there's no per-call cache short-circuit, so a
+  poll-heavy consumer can rack up provider spend quickly.  Layer
+  rate-limiting at the bdsnode RPC port (reverse proxy / WAF) when
+  exposing the endpoint to untrusted callers.
+- **Refresh cadence** — re-run
+  `scripts/load_internal_documentation.sh` whenever the
+  `Documentation/` tree changes; the script's idempotency contract
+  removes the previous batch first and reindexes the HNSW vector
+  store at the end.
+- **Provider selection** — the same `provider` / `model` overrides
+  v4/llm.* accepts work here.  Setting `provider: "anthropic"` for
+  a tough technical question and falling back to the default for
+  routine ones is a reasonable cost-control pattern.
+- **Embeddings** — semantic search runs against the docstore's HNSW
+  index, which was built with `fastembed` (AllMiniLML6V2 by
+  default).  The retrieval quality only matches the LLM's answer
+  quality when the embedder is competent for your domain; consider
+  swapping in a domain-specific embedder for specialised corpora.
