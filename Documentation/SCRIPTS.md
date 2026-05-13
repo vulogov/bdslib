@@ -9,6 +9,7 @@ Shell scripts for data ingestion, node submission, and end-to-end verification o
 | Script | Purpose |
 |---|---|
 | [`fill-store.sh`](#fill-storesh) | Populate a running bdsnode with synthetic telemetry, logs, and docstore documents in one shot |
+| [`load_internal_documentation.sh`](#load_internal_documentationsh) | Re-ingest the `Documentation/` tree into the docstore tagged `internal_doc=true`; idempotent — re-running deletes the previous batch and reloads, leaving unrelated documents untouched |
 | [`send_file_to_node.sh`](#send_file_to_nodesh) | Generate an NDJSON file, submit it to bdsnode via `v2/add.file`, wait for ingestion, then remove the file |
 | [`send_logs_to_node.sh`](#send_logs_to_nodesh) | Generate mixed + log documents in memory and submit them as a single `v2/add.batch` call |
 | [`send_syslog_to_node.sh`](#send_syslog_to_nodesh) | Generate an RFC 3164 syslog file, submit via `v2/add.file.syslog`, wait for ingestion, verify with `v2/fulltext*` |
@@ -118,6 +119,105 @@ BDSCLI=./target/debug/bdscli BDSCMD=./target/debug/bdscmd \
 | `1` | Preflight failure (missing dependency or unreachable bdsnode). |
 
 Individual `bdscmd doc-add` failures are counted and reported but do not abort the script.
+
+---
+
+## load_internal_documentation.sh
+
+Re-ingest the `Documentation/` tree (project markdown + the
+[`Documentation/jsonrpc_api/`](jsonrpc_api/) reference + sub-folders)
+into the running bdsnode docstore.  Every document is tagged with
+`metadata.internal_doc = true` so the script can clean up its own
+previous output on re-run without disturbing user-loaded
+documents.
+
+### Workflow
+
+1. Health-check the bdsnode RPC endpoint (`v2/status`).
+2. Enumerate every live doc via `v2/doc.list_ids`.
+3. For each id, fetch metadata with `bdscmd doc-get-metadata` and
+   delete via `bdscmd doc-delete` iff `metadata.internal_doc == true`.
+4. Walk `--doc-dir` (default `./Documentation`) for `*.md` and
+   `*.txt` files (extend with `--include-ext .rst` etc.) and
+   `bdscmd doc-add` each one with metadata:
+   ```json
+   {
+     "internal_doc": true,
+     "name":         "<basename>",
+     "path":         "<relative path>",
+     "source":       "load_internal_documentation.sh",
+     "ingested_at":  <unix-seconds>
+   }
+   ```
+5. Rebuild the HNSW index via `bdscmd doc-reindex`.
+
+### Dependencies
+
+| Tool   | Purpose                                                                          |
+|--------|----------------------------------------------------------------------------------|
+| bdscmd | every mutation + metadata read goes through bdscmd                              |
+| curl   | `v2/doc.list_ids` is an anti-entropy receiver — not exposed by bdscmd today      |
+| jq     | metadata construction (`jq -nc`) and response parsing                            |
+| find   | file enumeration                                                                 |
+
+### Usage
+
+```bash
+./scripts/load_internal_documentation.sh [OPTIONS]
+```
+
+### Options
+
+| Flag                  | Default                      | Description                                                                 |
+|-----------------------|------------------------------|-----------------------------------------------------------------------------|
+| `--addr HOST:PORT`    | `http://127.0.0.1:9000`      | bdsnode address.  Accepts both `HOST:PORT` and `http://HOST:PORT` forms.   |
+| `--doc-dir PATH`      | `./Documentation`            | Documentation root to walk recursively.                                    |
+| `--include-ext EXT`   | —                            | Extra file extension to ingest (e.g. `.rst`).  May be repeated.            |
+| `--dry-run`           | off                          | Show what would be deleted / added without sending any mutations.          |
+| `--no-color`          | off                          | Disable ANSI colour output.                                                |
+| `-h`, `--help`        | —                            | Print the help banner pulled from the script header.                       |
+
+### Environment variables
+
+| Variable      | Equivalent flag |
+|---------------|-----------------|
+| `BDSCMD_ADDR` | `--addr`        |
+| `BDSCMD`      | bdscmd binary path (default `bdscmd`; falls back to `target/debug/bdscmd`) |
+
+### Idempotency contract
+
+| Doc state at start of run                            | Doc state after run                            |
+|------------------------------------------------------|------------------------------------------------|
+| Already in docstore, `internal_doc: true`            | Deleted, then re-added from the current tree   |
+| Already in docstore, no `internal_doc` field         | Untouched                                      |
+| Already in docstore, `internal_doc: false`           | Untouched                                      |
+| New `*.md` / `*.txt` under `--doc-dir`               | Added with `internal_doc: true` metadata       |
+
+### Examples
+
+```bash
+# Reload from the default Documentation/ into the default bdsnode
+./scripts/load_internal_documentation.sh
+
+# Same, against a remote node
+./scripts/load_internal_documentation.sh --addr http://10.0.0.5:9000
+
+# Preview deletes + adds without mutating anything
+./scripts/load_internal_documentation.sh --dry-run
+
+# Also ingest reStructuredText files alongside markdown
+./scripts/load_internal_documentation.sh --include-ext .rst
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | All deletions + additions completed (per-file failures are counted, not fatal). |
+| `1`  | Preflight failure: bdscmd / curl / jq missing, doc dir absent, or bdsnode unreachable. |
+| `64` | Unknown CLI option. |
+
+Individual `bdscmd doc-add` / `bdscmd doc-delete` failures are counted and warned but do not abort the script.
 
 ---
 
