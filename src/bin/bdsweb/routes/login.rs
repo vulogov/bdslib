@@ -44,6 +44,23 @@ pub struct LoginQuery {
     next: String,
 }
 
+/// Sanitise a post-login redirect target.  Only a same-origin absolute
+/// path is allowed — anything that could navigate off-site (`//evil`,
+/// `https://evil`, a scheme-relative or absolute URL) or loop back to
+/// `/login` falls back to `/`.  Applied to every value read from the
+/// `next` query/form field before it is used or echoed into the page.
+fn safe_next(next: &str) -> String {
+    if next.starts_with('/')
+        && !next.starts_with("//")
+        && !next.contains("://")
+        && next != "/login"
+    {
+        next.to_owned()
+    } else {
+        "/".to_owned()
+    }
+}
+
 pub async fn page(
     State(state):  State<AppState>,
     jar:           CookieJar,
@@ -56,15 +73,14 @@ pub async fn page(
     if !state.shared_secret.is_empty() {
         if let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) {
             if bdslib::cluster::session::verify_session_token(&token, &state.shared_secret).is_ok() {
-                let dest = if q.next.is_empty() || q.next == "/login" { "/".to_owned() } else { q.next };
-                return Redirect::to(&dest).into_response();
+                return Redirect::to(&safe_next(&q.next)).into_response();
             }
         }
     }
     match (LoginPage {
         error_msg:   String::new(),
         has_error:   false,
-        next:        q.next,
+        next:        safe_next(&q.next),
         open_access: state.shared_secret.is_empty(),
     }).render() {
         Ok(html) => Html(html).into_response(),
@@ -97,7 +113,17 @@ pub async fn submit(
         "password": form.password,
     })).await {
         Ok(v) => v,
-        Err(e) => return render_error(&state, &format!("{e}"), &form.next).await,
+        Err(e) => {
+            // Log the real error (it can name the backend node URL /
+            // topology) but show the unauthenticated visitor only a
+            // generic message — see security finding L1.
+            log::warn!("login: v3/user.authenticate RPC failed: {e}");
+            return render_error(
+                &state,
+                "Unable to reach the authentication service. Check the server log.",
+                &form.next,
+            ).await;
+        }
     };
 
     if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -109,16 +135,15 @@ pub async fn submit(
     };
     let ttl = resp.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(8 * 3600);
 
-    let dest = if form.next.is_empty() || form.next == "/login" { "/".to_owned() } else { form.next };
+    let dest = safe_next(&form.next);
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .path("/")
         .http_only(true)
-        // We CANNOT set Secure unconditionally because bdsweb may be
-        // proxied behind a TLS terminator that strips https on the
-        // backend leg.  Operators serving over HTTP-only loopback
-        // need cookies to work too.  Leave it off here; production
-        // deployments should set `Secure` via the proxy (e.g. nginx
-        // `proxy_cookie_flags`).
+        // `Secure` is driven by `state.secure_cookies` — `web.secure_cookies`
+        // in the config, defaulting to off only for a loopback bind (dev /
+        // HTTP-only) and on otherwise.  Operators behind a TLS terminator
+        // can pin it explicitly.
+        .secure(state.secure_cookies)
         .same_site(SameSite::Lax)
         .max_age(time::Duration::seconds(ttl as i64))
         .build();
@@ -137,7 +162,7 @@ async fn render_error(state: &AppState, msg: &str, next: &str) -> Response {
     let body = LoginPage {
         error_msg:   msg.to_owned(),
         has_error:   true,
-        next:        next.to_owned(),
+        next:        safe_next(next),
         open_access: state.shared_secret.is_empty(),
     }
     .render();

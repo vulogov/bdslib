@@ -56,6 +56,11 @@ struct WebConfig {
     /// `cluster.auth_rate_limit_per_minute` — Phase 6 rate limit
     /// applied per-IP to `POST /login`.  `0` disables the limit.
     auth_rate_limit_per_minute: u32,
+    /// `web.secure_cookies` — whether the `bds_session` cookie carries
+    /// the `Secure` attribute.  `None` (key absent) means "auto":
+    /// resolved at startup to `false` for a loopback bind and `true`
+    /// otherwise.  An explicit value overrides the heuristic.
+    secure_cookies: Option<bool>,
     /// Operator-tunable knobs for Telemetry → Logs → "Analyze this!".
     logs_analyze:           state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Telemetry → Metrics → "Analyze this!".
@@ -88,12 +93,26 @@ struct WebConfig {
     perf_analyze:                      state::AnalyzeTargetConfig,
 }
 
+/// True when `host` is a loopback bind — a loopback IP (`127.0.0.0/8`,
+/// `::1`) or the `localhost` hostname.  `0.0.0.0`, `::`, or any other
+/// hostname is treated as non-loopback so the open-access guard (H3)
+/// and the auto Secure-cookie heuristic (H2) fail safe.
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 fn load_config(config_path: Option<&str>) -> WebConfig {
     let defaults = WebConfig {
         dashboard_refresh_secs: 30,
         cluster_refresh_secs:   10,
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
+        secure_cookies: None,
         logs_analyze:                      state::AnalyzeTargetConfig::logs_default(),
         metrics_analyze:                   state::AnalyzeTargetConfig::metrics_default(),
         templates_analyze:                 state::AnalyzeTargetConfig::templates_default(),
@@ -141,6 +160,10 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         .and_then(|c| c.get("auth_rate_limit_per_minute").and_then(|v| v.as_f64()))
         .map(|n| n as u32)
         .unwrap_or(defaults.auth_rate_limit_per_minute);
+    let secure_cookies = obj.get("web")
+        .and_then(|v| v.as_object())
+        .and_then(|w| w.get("secure_cookies"))
+        .and_then(|v| v.as_bool());
 
     // `web.analyze.<target>.*` — every key is optional; the
     // per-target default factory supplies the fallback values, so a
@@ -198,6 +221,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
             .max(1),
         shared_secret,
         auth_rate_limit_per_minute,
+        secure_cookies,
         logs_analyze,
         metrics_analyze,
         templates_analyze,
@@ -228,12 +252,40 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
 
     let cfg = load_config(args.config.as_deref());
+    let host_is_loopback = is_loopback_host(&args.host);
     if cfg.shared_secret.is_empty() {
-        log::warn!("bdsweb starting in OPEN-ACCESS mode — no cluster.shared_secret found in config; \
-                    session auth is disabled");
+        // H3: open-access mode bypasses ALL auth — admin pages and
+        // /bund (arbitrary Bund eval) included.  Refuse to expose that
+        // surface on a non-loopback interface.
+        if !host_is_loopback {
+            log::error!(
+                "REFUSING TO START: bdsweb is in OPEN-ACCESS mode (no cluster.shared_secret) but \
+                 --host {} is not a loopback address. Open-access mode leaves the entire admin + \
+                 Bund-eval surface unauthenticated. Bind to 127.0.0.1 for local dev, or configure \
+                 cluster.shared_secret to enable session auth.",
+                args.host,
+            );
+            std::process::exit(1);
+        }
+        log::warn!("============================================================");
+        log::warn!("  bdsweb is running in OPEN-ACCESS mode — SESSION AUTH IS OFF");
+        log::warn!("  No cluster.shared_secret configured. Every page, including");
+        log::warn!("  /admin/* and /bund (arbitrary Bund eval), is unauthenticated.");
+        log::warn!("  Bound to loopback ({}) only — do not expose this process.", args.host);
+        log::warn!("============================================================");
     } else {
         log::info!("bdsweb auth enabled — shared_secret loaded ({} bytes)", cfg.shared_secret.len());
     }
+
+    // H2: resolve the effective Secure-cookie policy.  An explicit
+    // `web.secure_cookies` wins; otherwise default to off for a
+    // loopback bind (dev / HTTP-only) and on for any other address.
+    let secure_cookies = cfg.secure_cookies.unwrap_or(!host_is_loopback);
+    log::info!(
+        "bdsweb session cookie Secure flag: {}{}",
+        secure_cookies,
+        if cfg.secure_cookies.is_some() { " (web.secure_cookies)" } else { " (auto from bind address)" },
+    );
     log::info!(
         "web.analyze.logs: timeout={}s, max_rows={}, prompt_chars={}",
         cfg.logs_analyze.timeout_secs,
@@ -329,6 +381,7 @@ async fn main() {
         cfg.dashboard_refresh_secs,
         cfg.cluster_refresh_secs,
         cfg.shared_secret,
+        secure_cookies,
         cfg.logs_analyze,
         cfg.metrics_analyze,
         cfg.templates_analyze,

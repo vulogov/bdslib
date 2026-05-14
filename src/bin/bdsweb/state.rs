@@ -1067,6 +1067,12 @@ pub struct AppState {
     /// target node — both cases disable authentication entirely
     /// (open-access mode).
     pub shared_secret: Arc<String>,
+    /// Whether the `bds_session` cookie is issued with the `Secure`
+    /// attribute (`web.secure_cookies`).  Resolved at startup: an
+    /// explicit config value wins; otherwise it defaults to `false`
+    /// for a loopback bind (dev / HTTP-only) and `true` for any other
+    /// bind address.  See security finding H2.
+    pub secure_cookies: bool,
     /// 30-second cache of "is the user store empty cluster-wide?".
     /// While true, the auth middleware grants free access so an
     /// operator can hit `/admin/users` to create the first user.
@@ -1130,6 +1136,7 @@ impl AppState {
         dashboard_refresh_secs: u64,
         cluster_refresh_secs:   u64,
         shared_secret: String,
+        secure_cookies: bool,
         logs_analyze:                      AnalyzeTargetConfig,
         metrics_analyze:                   AnalyzeTargetConfig,
         templates_analyze:                 AnalyzeTargetConfig,
@@ -1159,6 +1166,7 @@ impl AppState {
             cluster_cache:   Arc::new(RwLock::new(None)),
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             shared_secret:   Arc::new(shared_secret),
+            secure_cookies,
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),
             logs_analyze:                      Arc::new(logs_analyze),
             metrics_analyze:                   Arc::new(metrics_analyze),
