@@ -13,6 +13,12 @@ pub struct DashboardSnapshot {
     pub count:    serde_json::Value,
     pub timeline: serde_json::Value,
     pub shards:   serde_json::Value,
+    /// Names of the sections (`v2/status`, `v2/shards`, …) whose RPC
+    /// failed on the last poll and are therefore showing carried-over
+    /// last-known data.  Empty when the whole snapshot is fresh.
+    /// Lets one slow/broken RPC degrade gracefully instead of blanking
+    /// the entire dashboard (resilience finding M3).
+    pub stale: Vec<String>,
 }
 
 /// Latest `v2/cluster.peers` snapshot for the /cluster page.  Populated
@@ -1089,6 +1095,11 @@ pub struct AppState {
     /// fetch — `0` until the first success.  Drives the `/healthz`
     /// readiness verdict without any extra RPC (resilience finding M4).
     pub dashboard_last_ok: Arc<AtomicU64>,
+    /// Process start time.  Used by the dashboard/cluster "Wait"
+    /// partials to escalate their message once the backend has been
+    /// unreachable for a while instead of spinning forever in silence
+    /// (resilience finding L1).
+    pub started_at: Instant,
     /// Cluster shared secret — same value as `cluster.shared_secret`
     /// in `bds.hjson`.  Used by the auth middleware to verify
     /// `bds_session` cookies and by `/admin/users` to HMAC-sign
@@ -1197,6 +1208,7 @@ impl AppState {
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             analyze_provider_cache: Arc::new(RwLock::new(AnalyzeProviderCache::default())),
             dashboard_last_ok: Arc::new(AtomicU64::new(0)),
+            started_at: Instant::now(),
             shared_secret:   Arc::new(shared_secret),
             secure_cookies,
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),

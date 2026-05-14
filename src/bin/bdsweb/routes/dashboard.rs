@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{extract::State, response::Html};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     client::{fmt_ts, rpc, str_val, u64_val},
@@ -34,6 +34,10 @@ pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppErro
 struct DashboardWait {
     poll_url: String,
     message:  String,
+    /// True once the process has been up long enough that an empty
+    /// cache means the backend is probably unreachable, not just
+    /// slow — the partial then shows an escalated message (L1).
+    escalated: bool,
 }
 
 // ── Data partial (rendered from a snapshot) ───────────────────────────────────
@@ -112,6 +116,10 @@ struct DashboardData {
     perf_ingest_lag_p95:     u64,   // ms
     perf_fanout_p95:         u64,   // ms
     perf_replicate_p95:      u64,   // ms
+    /// Non-empty when one or more sections are showing carried-over
+    /// data because their RPC failed on the last poll (M3).  The
+    /// template renders it as an amber "partial data" banner.
+    stale_note:              String,
 }
 
 fn short_uuid(s: &str) -> String {
@@ -258,6 +266,14 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         perf_ingest_lag_p95:   us_to_ms(perf_get_us("ingest_lag_p95_us")),
         perf_fanout_p95:       us_to_ms(perf_get_us("fanout_p95_us_max")),
         perf_replicate_p95:    us_to_ms(perf_get_us("replicate_p95_us_max")),
+        stale_note: if snap.stale.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Showing last-known data for {} — its latest refresh from bdsnode failed.",
+                snap.stale.join(", "),
+            )
+        },
     };
 
     Ok(tmpl.render()?)
@@ -268,14 +284,61 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
 /// Fetches the four dashboard RPCs concurrently from bdsnode and returns the
 /// snapshot.  Used by both the live `/dashboard/refresh` handler and the
 /// background poller spawned in `main`.
+///
+/// Uses `join!` (not `try_join!`) so a single failing RPC degrades that
+/// one section to its last-known value instead of blanking the whole
+/// dashboard (resilience finding M3).  Only when *every* section fails
+/// AND there is no prior snapshot does this return `Err` — that keeps
+/// the page on its "Wait" placeholder.
 pub async fn collect(state: &AppState) -> Result<DashboardSnapshot, AppError> {
-    let (status, count, timeline, shards) = tokio::try_join!(
+    let (status, count, timeline, shards) = tokio::join!(
         rpc(state, "v2/status",   json!({})),
         rpc(state, "v2/count",    json!({})),
         rpc(state, "v2/timeline", json!({})),
         rpc(state, "v2/shards",   json!({})),
-    )?;
-    Ok(DashboardSnapshot { status, count, timeline, shards })
+    );
+
+    // Previous snapshot — a failed section carries its last-good value
+    // forward.  Reading the cache here costs one clone per poll cycle
+    // (every `dashboard_refresh_secs`), not per request.
+    let prev = state.dashboard_cache.read().await.clone();
+    let mut stale: Vec<String> = Vec::new();
+
+    fn section(
+        name:  &str,
+        res:   Result<Value, AppError>,
+        prev:  Option<Value>,
+        stale: &mut Vec<String>,
+    ) -> Option<Value> {
+        match res {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("dashboard: {name} failed ({e}) — keeping last-known value");
+                stale.push(name.to_owned());
+                prev
+            }
+        }
+    }
+
+    let status   = section("v2/status",   status,   prev.as_ref().map(|p| p.status.clone()),   &mut stale);
+    let count    = section("v2/count",    count,    prev.as_ref().map(|p| p.count.clone()),    &mut stale);
+    let timeline = section("v2/timeline", timeline, prev.as_ref().map(|p| p.timeline.clone()), &mut stale);
+    let shards   = section("v2/shards",   shards,   prev.as_ref().map(|p| p.shards.clone()),   &mut stale);
+
+    // Every RPC failed and there was nothing cached to fall back on.
+    if status.is_none() && count.is_none() && timeline.is_none() && shards.is_none() {
+        return Err(AppError::Msg(
+            "dashboard: all backend RPCs failed and no cached data is available".to_owned(),
+        ));
+    }
+
+    Ok(DashboardSnapshot {
+        status:   status.unwrap_or(Value::Null),
+        count:    count.unwrap_or(Value::Null),
+        timeline: timeline.unwrap_or(Value::Null),
+        shards:   shards.unwrap_or(Value::Null),
+        stale,
+    })
 }
 
 /// Renders the dashboard from the cached snapshot.  If the background poller
@@ -289,9 +352,13 @@ pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppErro
         Some(snap) => Ok(Html(render_snapshot(snap, state.dashboard_refresh_secs)?)),
         None => {
             drop(guard);
+            // L1: once we've been up a while with still-empty cache,
+            // the backend is probably unreachable, not just slow.
+            let escalated = state.started_at.elapsed() > std::time::Duration::from_secs(30);
             Ok(Html(DashboardWait {
                 poll_url: "/dashboard/data".to_owned(),
                 message:  "Background poller is collecting telemetry…".to_owned(),
+                escalated,
             }.render()?))
         }
     }

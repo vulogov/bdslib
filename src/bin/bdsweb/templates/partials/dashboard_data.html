@@ -2,6 +2,15 @@
   Cached snapshot · auto-refreshes every {{ refresh_secs }}s
 </div>
 
+{% if !stale_note.is_empty() %}
+<!-- Partial-data banner (M3): one or more dashboard RPCs failed on the
+     last poll, so those sections show carried-over last-known values
+     instead of blanking the whole page. -->
+<div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 mb-4 text-sm text-amber-300">
+  {{ stale_note }}
+</div>
+{% endif %}
+
 {% if dev_data_enabled %}
 <!-- Synthetic-data warning banner.  Renders ONLY when the node has
      `generate_realistic_data` armed (hjson `enabled=true` or the

@@ -78,6 +78,9 @@ pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppErro
 struct ClusterWait {
     poll_url: String,
     message:  String,
+    /// True once the process has been up long enough that an empty
+    /// cache means the backend is probably unreachable (L1).
+    escalated: bool,
 }
 
 // ── Data partial (rendered from a snapshot) ───────────────────────────────────
@@ -214,9 +217,13 @@ pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppErro
         Some(snap) => Ok(Html(render_snapshot(snap)?)),
         None       => {
             drop(guard);
+            // L1: escalate the message once an empty cache has
+            // persisted long enough to mean "backend unreachable".
+            let escalated = state.started_at.elapsed() > std::time::Duration::from_secs(30);
             Ok(Html(ClusterWait {
                 poll_url: "/cluster/data".to_owned(),
                 message:  "Background poller is fetching cluster state…".to_owned(),
+                escalated,
             }.render()?))
         }
     }

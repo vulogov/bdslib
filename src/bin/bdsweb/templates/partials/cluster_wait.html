@@ -2,14 +2,19 @@
      hx-trigger="every 2s"
      hx-target="#cluster-data"
      hx-swap="innerHTML"
-     class="flex flex-col items-center justify-center py-32 gap-5 text-slate-500">
-  <svg class="animate-spin h-10 w-10 text-blue-500"
+     class="flex flex-col items-center justify-center py-32 gap-5 {% if escalated %}text-amber-400{% else %}text-slate-500{% endif %}">
+  <svg class="animate-spin h-10 w-10 {% if escalated %}text-amber-500{% else %}text-blue-500{% endif %}"
        xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
     <circle class="opacity-25" cx="12" cy="12" r="10"
             stroke="currentColor" stroke-width="4"></circle>
     <path class="opacity-75" fill="currentColor"
           d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
   </svg>
+  {% if escalated %}
+  <p class="text-base font-medium text-amber-300">bdsnode backend appears unreachable</p>
+  <p class="text-xs text-amber-500/80">Still retrying every 2s — this page recovers automatically once the backend responds.</p>
+  {% else %}
   <p class="text-base font-medium text-slate-300">Wait…</p>
   <p class="text-xs text-slate-600">{{ message }}</p>
+  {% endif %}
 </div>
