@@ -315,7 +315,10 @@ impl Shard {
     /// document body is fetched. Use this when you only need IDs and relevance
     /// scores without the overhead of retrieving and deserialising full records.
     pub fn search_fts_scored(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
-        self.fts.search_with_scores(query, limit)
+        let started = std::time::Instant::now();
+        let res = self.fts.search_with_scores(query, limit);
+        crate::perf::record_us("shard.fts_scored", started.elapsed().as_micros() as u64);
+        res
     }
 
     /// Full-text search returning `(primary_id, unix_ts, BM25_score)` triples.
@@ -324,6 +327,7 @@ impl Shard {
     /// single indexed PK lookup. Records whose IDs have been deleted between
     /// the FTS search and the timestamp lookup are silently skipped.
     pub fn search_fts_with_ts(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, i64, f32)>> {
+        let started = std::time::Instant::now();
         let hits = self.fts.search_with_scores(query, limit)?;
         let mut results = Vec::with_capacity(hits.len());
         for (id, score) in hits {
@@ -331,6 +335,7 @@ impl Shard {
                 results.push((id, ts, score));
             }
         }
+        crate::perf::record_us("shard.fts_with_ts", started.elapsed().as_micros() as u64);
         Ok(results)
     }
 
@@ -363,6 +368,7 @@ impl Shard {
         fingerprint: &str,
         limit: usize,
     ) -> Result<Vec<JsonValue>> {
+        let started = std::time::Instant::now();
         let candidate_pool = (limit * 2).max(10);
         let reranker = MMRReranker::new(0.7);
         let neighbors = self.vector.search_reranked(
@@ -372,7 +378,9 @@ impl Shard {
             candidate_pool,
             &reranker,
         )?;
-        self.neighbors_to_docs(neighbors)
+        let res = self.neighbors_to_docs(neighbors);
+        crate::perf::record_us("shard.vector_precomputed", started.elapsed().as_micros() as u64);
+        res
     }
 
     /// Vector search returning `(uuid, unix_ts, score)` triples only — no
@@ -387,6 +395,7 @@ impl Shard {
         fingerprint: &str,
         limit: usize,
     ) -> Result<Vec<(Uuid, i64, f32)>> {
+        let started = std::time::Instant::now();
         let candidate_pool = (limit * 2).max(10);
         let reranker = MMRReranker::new(0.7);
         let neighbors = self.vector.search_reranked(
@@ -403,6 +412,7 @@ impl Shard {
                 results.push((id, ts, n.score));
             }
         }
+        crate::perf::record_us("shard.vector_scored_precomputed", started.elapsed().as_micros() as u64);
         Ok(results)
     }
 

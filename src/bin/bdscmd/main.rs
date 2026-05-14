@@ -284,6 +284,21 @@ enum Commands {
     /// Echo the effective retention configuration + lifetime stats
     /// (`v2/retention.settings`).
     RetentionSettings(cmd::retention::SettingsCmd),
+
+    /// Snapshot the node's in-process latency series (`v2/perf`).
+    /// Returns one entry per series (ingest.flush, ingest.lag,
+    /// fanout.peer.*, replicate.method.*, …) with p50/p95/p99/min/
+    /// max/mean/n_total in microseconds.  Pass `--name <substr>` to
+    /// filter the series.
+    Perf(cmd::perf::Cmd),
+
+    /// Fetch the slow-query ring buffer (`v2/perf.slow_queries`).
+    /// Every `perf::time` call participates — when its elapsed time
+    /// exceeds `perf.slow_query_threshold_ms` (default 500 ms) it
+    /// lands in a bounded 100-entry ring.  Use `--name-prefix` to
+    /// filter (e.g. `fanout.`, `ingest.`) and `--since-secs` to bound
+    /// the age window.
+    PerfSlow(cmd::perf_slow::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -383,6 +398,8 @@ fn main() -> Result<()> {
         Commands::Ask(a)                      => cmd::ask::run(&url, &session, a),
         Commands::RetentionSweep(a)           => cmd::retention::sweep(&url, &session, a),
         Commands::RetentionSettings(a)        => cmd::retention::settings(&url, &session, a),
+        Commands::Perf(a)                     => cmd::perf::run(&url, &session, a),
+        Commands::PerfSlow(a)                 => cmd::perf_slow::run(&url, &session, a),
     }?;
 
     if cli.raw {

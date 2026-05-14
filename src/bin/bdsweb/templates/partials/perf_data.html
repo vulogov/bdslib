@@ -1,0 +1,87 @@
+<!-- ── Slow-query log ───────────────────────────────────────────────────── -->
+<div class="card rounded-lg p-4 mb-6">
+  <div class="flex items-center justify-between mb-3">
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide">Slow-query log</div>
+      <div class="text-[10px] text-slate-600 mt-0.5">
+        Threshold: {{ slow_threshold_ms }} ms · Ring capacity: 100 events · Newest first
+      </div>
+    </div>
+    <span class="text-xs text-slate-500">{{ slow_entries.len() }} entries</span>
+  </div>
+  {% if slow_entries.is_empty() %}
+  <div class="text-center py-8 text-slate-500 text-sm">
+    No slow queries recorded.
+    {% if slow_threshold_ms == 0 %}
+    <br><span class="text-xs text-slate-600">Slow log disabled (threshold = 0)</span>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table>
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Series</th>
+          <th class="text-right">Elapsed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in slow_entries %}
+        <tr>
+          <td class="text-xs text-slate-500 font-mono">{{ e.when }}</td>
+          <td class="text-sm text-slate-200 font-mono">{{ e.name }}</td>
+          <td class="text-right font-mono {% if e.elapsed_ms >= 1000 %}text-red-400{% else %}text-yellow-400{% endif %}">
+            {{ e.elapsed_ms }} ms
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Series table ─────────────────────────────────────────────────────── -->
+<div class="card rounded-lg p-4">
+  <div class="flex items-center justify-between mb-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">All series ({{ series.len() }})</div>
+    <div class="text-[10px] text-slate-600">Sorted by p95 descending · times in µs</div>
+  </div>
+  {% if series.is_empty() %}
+  <div class="text-center py-8 text-slate-500 text-sm">
+    No series recorded yet. Drive some traffic through the node to populate.
+  </div>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th class="text-right">n</th>
+          <th class="text-right">recent</th>
+          <th class="text-right">min</th>
+          <th class="text-right">p50</th>
+          <th class="text-right">p95</th>
+          <th class="text-right">p99</th>
+          <th class="text-right">max</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in series %}
+        <tr>
+          <td class="text-sm text-slate-200 font-mono">{{ s.name }}</td>
+          <td class="text-right font-mono text-slate-400">{{ s.n_total }}</td>
+          <td class="text-right font-mono text-slate-500">{{ s.n_recent }}</td>
+          <td class="text-right font-mono text-slate-400">{{ s.min_us }}</td>
+          <td class="text-right font-mono text-slate-300">{{ s.p50_us }}</td>
+          <td class="text-right font-mono {% if s.p95_us >= 500000 %}text-red-400{% elif s.p95_us >= 100000 %}text-yellow-400{% else %}text-slate-200{% endif %}">{{ s.p95_us }}</td>
+          <td class="text-right font-mono {% if s.p99_us >= 1000000 %}text-red-400{% else %}text-slate-300{% endif %}">{{ s.p99_us }}</td>
+          <td class="text-right font-mono text-slate-500">{{ s.max_us }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>

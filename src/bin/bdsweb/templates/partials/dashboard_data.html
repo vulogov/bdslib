@@ -218,6 +218,51 @@
   </div>
 </div>
 
+<!-- ── Performance ───────────────────────────────────────────────────────── -->
+{% if perf_has_samples %}
+<div class="card rounded-lg p-4 mb-8">
+  <div class="flex items-center justify-between mb-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Performance</div>
+    <a href="/perf" class="text-xs text-blue-400 hover:text-blue-300">All series & slow log →</a>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="rounded bg-slate-900/70 p-3">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">Ingest flush p50 / p95 / p99</div>
+      <div class="text-sm font-mono text-slate-200">
+        <span class="text-green-300">{{ perf_ingest_flush_p50 }}</span>
+        <span class="text-slate-500">/</span>
+        <span class="{% if perf_ingest_flush_p95 >= 500 %}text-yellow-400{% else %}text-slate-200{% endif %}">{{ perf_ingest_flush_p95 }}</span>
+        <span class="text-slate-500">/</span>
+        <span class="{% if perf_ingest_flush_p99 >= 1000 %}text-red-400{% else %}text-slate-200{% endif %}">{{ perf_ingest_flush_p99 }}</span>
+        <span class="text-slate-500 text-xs ml-1">ms</span>
+      </div>
+      <div class="text-[10px] text-slate-600 mt-1">{{ perf_ingest_flush_n }} flushes lifetime</div>
+    </div>
+    <div class="rounded bg-slate-900/70 p-3">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">Ingest lag p95</div>
+      <div class="text-sm font-mono text-slate-200">
+        {{ perf_ingest_lag_p95 }} <span class="text-slate-500 text-xs">ms</span>
+      </div>
+      <div class="text-[10px] text-slate-600 mt-1">first doc → flush</div>
+    </div>
+    <div class="rounded bg-slate-900/70 p-3">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">Fan-out p95 max</div>
+      <div class="text-sm font-mono {% if perf_fanout_p95 == 0 %}text-slate-500{% else %}text-slate-200{% endif %}">
+        {{ perf_fanout_p95 }} <span class="text-slate-500 text-xs">ms</span>
+      </div>
+      <div class="text-[10px] text-slate-600 mt-1">slowest v3/* fan-out method</div>
+    </div>
+    <div class="rounded bg-slate-900/70 p-3">
+      <div class="text-[10px] text-slate-500 uppercase tracking-wide mb-1">Replicate p95 max</div>
+      <div class="text-sm font-mono {% if perf_replicate_p95 == 0 %}text-slate-500{% else %}text-slate-200{% endif %}">
+        {{ perf_replicate_p95 }} <span class="text-slate-500 text-xs">ms</span>
+      </div>
+      <div class="text-[10px] text-slate-600 mt-1">slowest write replication</div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Shard table -->
 {% if !shards.is_empty() %}
 <div class="card rounded-lg overflow-hidden">

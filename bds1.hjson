@@ -15,6 +15,15 @@
   max_open_shards:      8
   ingest_channel_capacity: 10000
 
+  // Number of flusher threads draining the `ingest` channel.
+  // The flush operation itself is internally serialised by
+  // ShardsManager::add_batch — DuckDB/Tantivy/HNSW aren't
+  // safe under concurrent same-shard writers — so raising this
+  // doesn't speed up flushing.  Extra threads only help on bursty
+  // workloads where batch accumulation is the bottleneck.
+  // Default 1.  Clamped to [1, 16].
+  pipe_flushers:    1
+
   // ── Background tasks ──
   drain_enabled:        true
   scheduler_interval_secs: 60   // fire stored BUND scripts whose crontab matches the current minute
@@ -147,7 +156,15 @@ generate_realistic_data: {
      anomaly_ratio:  0.02       // 0.0–0.10, rare-record fraction
      seed:           null       // null = entropy, integer = deterministic
 }
-
+retention: {
+  enabled:                     true       // required to activate; default false
+  duration:                    "1day"   // humantime; e.g. "7days", "6h"
+  interval_secs:               300        // how often the background sweep runs
+  max_evictions_per_run:       50         // per‑sweep cap; 0 = no cap
+  dry_run:                     false      // log what would be evicted but don't delete
+  reload_drain_after_evict:    true       // re‑run drain mining after eviction
+  quorum_check_enabled:        false      // opt‑in cluster safety net (Phase 3)
+}
   // ── bdsweb "Analyze this!" buttons (under web.analyze.<target>) ──
   // Per-target sub-blocks; more targets (rca, signals, …) will slot
   // in here alongside logs and metrics.  All keys are optional;

@@ -11,6 +11,7 @@ pub mod docs;
 pub mod help;
 pub mod knn;
 pub mod logs;
+pub mod perf;
 pub mod primary_lsa_query_summary;
 pub mod primary_lsa_summary;
 pub mod primary_query_summary;

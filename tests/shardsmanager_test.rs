@@ -164,6 +164,48 @@ fn test_add_batch_error_propagates() {
     assert!(mgr.add_batch(docs).is_err());
 }
 
+/// Regression: PR 1 introduced parallel flushers (`pipe_flushers`)
+/// that called `ShardsManager::add_batch` concurrently from N threads.
+/// The per-shard storage engines (DuckDB pool, Tantivy writer, HNSW
+/// upserter) are not safe under concurrent same-shard writers — the
+/// failure mode in production was DuckDB returning `Batch transaction
+/// failed` / `Execution of select_all failed`.  PR 7 added an internal
+/// mutex so concurrent callers serialise.  This test pins the
+/// invariant: 8 threads × 50 docs each, all sharing one ShardsManager,
+/// must all complete without error and produce 400 distinct IDs.
+#[test]
+fn test_add_batch_concurrent_calls_serialise_cleanly() {
+    use std::sync::Arc;
+    let (_dir, mgr) = tmp_manager("1h");
+    let mgr = Arc::new(mgr);
+
+    const N_THREADS: usize = 8;
+    const PER_THREAD: usize = 50;
+    let mut handles = Vec::with_capacity(N_THREADS);
+    for t in 0..N_THREADS {
+        let mgr = Arc::clone(&mgr);
+        handles.push(std::thread::spawn(move || -> Vec<Uuid> {
+            let docs: Vec<serde_json::Value> = (0..PER_THREAD).map(|i| {
+                // Distinct keys per thread × index so dedup doesn't collapse them.
+                doc(&format!("thread-{t}-key-{i}"), &format!("payload {t} {i}"))
+            }).collect();
+            mgr.add_batch(docs).expect("concurrent add_batch must not error")
+        }));
+    }
+
+    let mut all_ids: Vec<Uuid> = Vec::with_capacity(N_THREADS * PER_THREAD);
+    for h in handles {
+        all_ids.extend(h.join().expect("worker thread panicked"));
+    }
+    assert_eq!(all_ids.len(), N_THREADS * PER_THREAD);
+    let unique: std::collections::HashSet<Uuid> = all_ids.iter().cloned().collect();
+    assert_eq!(unique.len(), all_ids.len(),
+        "concurrent flush produced duplicate or nil UUIDs");
+    for id in &all_ids {
+        assert!(!id.is_nil(), "concurrent flush produced a nil UUID");
+    }
+}
+
 // ── delete_by_id ──────────────────────────────────────────────────────────────
 
 #[test]

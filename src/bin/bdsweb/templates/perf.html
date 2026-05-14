@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Performance · bdsnode{% endblock %}
+{% block nav_perf %}active{% endblock %}
+
+{% block head %}
+<style>
+/* "Analyze this!" floating pane — mirrors logs.html.  Slides in from
+   the left because it's the analyst's running notes for what is
+   shown on the right (the data tables stay where they are). */
+#analysis-panel {
+  position: fixed;
+  top: 57px;          /* matches nav height */
+  left: 0;
+  bottom: 0;
+  width: min(640px, 100vw);
+  background: #0e1520;
+  border-right: 1px solid #1e2535;
+  box-shadow: 6px 0 32px rgba(0,0,0,0.5);
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease-in-out;
+  overflow: hidden;
+}
+#analysis-panel.open { transform: translateX(0); }
+
+#analysis-spinner {
+  display: none;
+  font-size: 0.75rem;
+  color: #60a5fa;
+}
+#analysis-spinner.htmx-request,
+.htmx-request#analysis-spinner { display: inline; }
+
+.btn-analyze {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #c7d2fe;
+  background: linear-gradient(180deg, #2937a2 0%, #1f2774 100%);
+  border: 1px solid #3b46c9;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.btn-analyze:hover { filter: brightness(1.15); }
+.btn-analyze:disabled { filter: grayscale(0.6); cursor: not-allowed; opacity: 0.5; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <h1 class="text-xl font-semibold text-slate-200">Performance</h1>
+    <p class="text-xs text-slate-500 mt-0.5">
+      In-process latency registry (<code>v2/perf</code>) + slow-query ring
+      (<code>v2/perf.slow_queries</code>).
+      Auto-refreshes every {{ refresh_secs }}s.
+    </p>
+  </div>
+  <div class="flex items-center gap-2">
+    <!-- "Analyze this!" — fetches /perf/analyze and slides the
+         left-side pane open.  Same one-shot LLM pattern as Logs;
+         no chat session involved. -->
+    <button id="analyze-btn"
+            type="button"
+            class="btn-analyze"
+            hx-get="/perf/analyze"
+            hx-target="#analysis-body"
+            hx-swap="innerHTML"
+            hx-indicator="#analysis-spinner"
+            hx-disabled-elt="this"
+            onclick="onAnalyzeClick()"
+            title="One-shot LLM analysis of the current performance snapshot">
+      <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      Analyze this!
+    </button>
+    <span id="analysis-spinner">Analyzing…</span>
+    <button type="button"
+            class="btn btn-primary"
+            hx-get="/perf/data"
+            hx-target="#perf-data"
+            hx-swap="innerHTML">
+      Reload
+    </button>
+  </div>
+</div>
+
+<div id="perf-data"
+     hx-get="/perf/data"
+     hx-trigger="load, every {{ refresh_secs }}s"
+     hx-swap="innerHTML">
+  <div class="flex flex-col items-center justify-center py-32 gap-5 text-slate-500">
+    <svg class="animate-spin h-10 w-10 text-blue-500"
+         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10"
+              stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+    </svg>
+    <p class="text-base font-medium text-slate-300">Loading…</p>
+  </div>
+</div>
+
+<!-- ── Floating "Analyze this!" pane ────────────────────────────────────── -->
+<div id="analysis-panel"
+     data-analyze-provider="{{ analyze_provider }}"
+     data-analyze-model="{{ analyze_model }}">
+  <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+       style="border-bottom:1px solid #1e2535;background:#0a0f18;">
+    <div class="flex items-center gap-2 min-w-0">
+      <svg viewBox="0 0 16 16" width="14" height="14" class="text-blue-400 shrink-0" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      <span class="text-xs text-slate-300 uppercase tracking-wide">Performance analysis</span>
+      <span class="text-xs text-slate-600">· one-shot, not chat</span>
+    </div>
+    <button onclick="closeAnalysisPanel()"
+            class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
+            title="Close">✕</button>
+  </div>
+  <div id="analysis-body" class="flex-1 overflow-y-auto p-4">
+    <div class="text-center text-slate-500 text-sm py-8">
+      Click <span class="text-slate-300">"Analyze this!"</span> above to ask
+      {% if !analyze_provider.is_empty() %}
+        <span class="font-mono text-slate-300">{{ analyze_provider }}{% if !analyze_model.is_empty() %} ({{ analyze_model }}){% endif %}</span>
+      {% else %}
+        the default LLM
+      {% endif %}
+      to interpret the current perf snapshot and slow-query log against
+      bdslib's sharded mixed-engine storage model.
+    </div>
+  </div>
+</div>
+
+<script>
+function openAnalysisPanel()  { document.getElementById('analysis-panel').classList.add('open'); }
+function closeAnalysisPanel() { document.getElementById('analysis-panel').classList.remove('open'); }
+
+// Fires alongside the hx-get to /perf/analyze.  Opens the pane
+// immediately and shows a labelled wait banner so the operator
+// knows which provider is being asked.  Mirrors logs.html.
+function onAnalyzeClick() {
+  var pane     = document.getElementById('analysis-panel');
+  var provider = (pane && pane.dataset.analyzeProvider) || '';
+  var model    = (pane && pane.dataset.analyzeModel)    || '';
+  var providerLabel;
+  if (provider && model)      providerLabel = provider + ' (' + model + ')';
+  else if (provider)          providerLabel = provider;
+  else                        providerLabel = 'the default LLM';
+
+  var localProviders = { 'ollama': true };
+  var perfHint = localProviders[provider]
+    ? 'Local inference on a CPU is the slow path — expect 10–60s for a typical snapshot. Cached repeats return instantly.'
+    : 'Hosted providers usually return in a few seconds. Cached repeats return instantly.';
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  document.getElementById('analysis-body').innerHTML =
+    '<div class="card rounded-lg p-5 text-sm text-slate-300 flex items-center gap-3">' +
+      '<div style="width:14px;height:14px;border:2px solid #2937a2;border-top-color:#c7d2fe;' +
+            'border-radius:50%;animation:spin 0.9s linear infinite"></div>' +
+      '<div>' +
+        'Asking <span class="font-mono text-slate-200">' + esc(providerLabel) +
+        '</span> to interpret the perf snapshot…' +
+        '<div class="text-xs text-slate-500 mt-1">' + esc(perfHint) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+  openAnalysisPanel();
+}
+
+// Esc closes the pane if it's open.
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('analysis-panel').classList.contains('open')) {
+    closeAnalysisPanel();
+  }
+});
+</script>
+{% endblock %}

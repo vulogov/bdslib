@@ -127,11 +127,18 @@ pub async fn replicate_to_all(
         }
     };
 
+    // Wrap once.  Per-peer task gets a cheap Arc::clone (atomic
+    // refcount bump) instead of deep-cloning the full doc tree.
+    // Significant under write bursts where `params` is a multi-KB
+    // document or a batch.
+    let params_arc    = Arc::new(params);
+    let canonical_arc = Arc::new(canonical);
+
     let mut joins = Vec::with_capacity(peers.len());
     for peer in peers {
         let cluster = cluster.clone();
-        let params  = params.clone();
-        let bytes   = canonical.clone();
+        let params  = Arc::clone(&params_arc);
+        let bytes   = Arc::clone(&canonical_arc);
         joins.push(tokio::spawn(async move {
             replicate_one(cluster, peer, method, params, bytes).await
         }));
@@ -157,14 +164,22 @@ async fn replicate_one(
     cluster: Arc<Cluster>,
     peer:    Peer,
     method:  &'static str,
-    params:  JsonValue,
-    bytes:   Vec<u8>,
+    params:  Arc<JsonValue>,
+    bytes:   Arc<Vec<u8>>,
 ) -> bool {
-    match call_peer_v2(&cluster, &peer.url, method, &params).await {
+    // Time the write replication RPC for v2/perf.  Distinct prefix from
+    // `fanout.*` (read fan-out) so operators can isolate write load.
+    let node_label = peer.node_id.to_string();
+    let started    = std::time::Instant::now();
+    let res        = call_peer_v2(&cluster, &peer.url, method, &params).await;
+    let elapsed_us = started.elapsed().as_micros() as u64;
+    crate::perf::record_us(&format!("replicate.peer.{node_label}"), elapsed_us);
+    crate::perf::record_us(&format!("replicate.method.{method}"),    elapsed_us);
+    match res {
         Ok(_)  => { log::debug!("[cluster::replication {method}] -> {} ok", peer.url); true }
         Err(e) => {
             log::warn!("[cluster::replication {method}] -> {} failed: {e}; hinting", peer.url);
-            if let Err(err) = cluster.hints.enqueue(peer.node_id, method, &bytes) {
+            if let Err(err) = cluster.hints.enqueue(peer.node_id, method, bytes.as_slice()) {
                 log::error!("[cluster::replication {method}] enqueue hint for {}: {err}", peer.url);
             }
             false

@@ -172,8 +172,20 @@ impl Cluster {
         // Per-Client connection pool.  The default timeout is generous
         // (peer_rpc_timeout + 2s grace); individual calls override with
         // the precise deadline they want.
+        // Cluster RPC client.
+        //
+        // - HTTP/2 adaptive window keeps a single multiplexed connection
+        //   to each peer instead of opening a new TCP socket per RPC,
+        //   shaving the handshake cost from every fan-out call.  reqwest
+        //   transparently falls back to HTTP/1.1 if the peer doesn't
+        //   advertise h2 via ALPN, so no upgrade is required cluster-wide.
+        // - gzip on responses keeps WAN bandwidth manageable when
+        //   v3/search / v3/primaries return large result sets.  Requires
+        //   the `gzip` feature on reqwest (see Cargo.toml).
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.peer_rpc_timeout_secs.saturating_add(2)))
+            .http2_adaptive_window(true)
+            .gzip(true)
             .build()
             .map_err(|e| crate::common::error::err_msg(format!("reqwest client build: {e}")))?;
 

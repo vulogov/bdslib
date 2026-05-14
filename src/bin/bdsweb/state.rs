@@ -791,6 +791,76 @@ pub const DEFAULT_TEMPLATES_ANALYZE_PROMPT: &str =
      are fine; be terse.  If the sample is too small or too homogenous to \
      support a conclusion, say so plainly rather than speculating.";
 
+/// Default prompt for `web.analyze.perf` — performance series + slow-log
+/// snapshot from `v2/perf` and `v2/perf.slow_queries`.  bdslib is a
+/// **sharded, mixed-engine** store: every record traverses ONNX embed
+/// → DuckDB insert → Tantivy commit → HNSW upsert, with time-partitioned
+/// shards routed by the record's `timestamp` field.  Cluster reads
+/// (v3/*) fan out to every Alive peer; writes replicate to either a
+/// random subset (sharded stores: telemetry) or all peers (replicated
+/// stores: docs/signals/scripts/users/llm_cache).
+///
+/// The prompt teaches the model the series taxonomy so it can correctly
+/// attribute latency to the right engine.  All values are µs.
+pub const DEFAULT_PERF_ANALYZE_PROMPT: &str =
+    "You are diagnosing the performance of a bdslib node — a sharded, \
+     mixed-engine telemetry store (DuckDB + Tantivy FTS + HNSW vector \
+     index + fastembed ONNX) running standalone or as part of a \
+     gossip-based cluster.  All times are in microseconds.\n\
+     \n\
+     Series taxonomy — use this to attribute latency correctly:\n\
+     \n\
+     - `ingest.flush`              — wall-clock of one `ShardsManager::add_batch` \
+       call.  Sums embed_batch + DuckDB insert + Tantivy commit + HNSW upsert + \
+       optional drain mining, across every shard touched.  This is the dominant \
+       cost of ingest.\n\
+     - `ingest.lag`                — time from the FIRST doc of a batch arriving \
+       in the channel to its flush.  Bounded by `pipe_timeout_ms` when traffic is \
+       light; expect it to track that ceiling on quiet nodes.\n\
+     - `ingest.batch_size`         — number of records per flush (NOT a duration). \
+       Approaching `pipe_batch_size` means the flusher is saturating; well below \
+       it means traffic is slow / latency-driven.\n\
+     - `embed.hit` / `embed.miss`  — query-embedding cache hits vs ONNX inference \
+       misses.  Hits run in <10 µs; misses run ~2–15 ms (CPU-bound).  Low hit \
+       ratio on a dashboard workload indicates queries vary too much for the cache.\n\
+     - `shard.vector_precomputed` / `shard.vector_scored_precomputed` — per-shard \
+       HNSW search + MMR rerank.  Linear in shard count for a search; spike \
+       suggests cold HNSW or a shard with degraded recall.\n\
+     - `shard.fts_scored` / `shard.fts_with_ts` — per-shard Tantivy BM25 search. \
+       Tantivy is mmap-based; cold cache → large spike on first read after \
+       startup.\n\
+     - `fanout.peer.<node_id>`     — RTT of one v3/* read-fan-out RPC to one peer. \
+       Adaptive timeout (when enabled) clamps to `min(peer_rpc_timeout, p95 × 3)`. \
+       Persistent high p95 → that peer is sick or WAN is degraded.\n\
+     - `fanout.method.<m>`         — RTT aggregated across peers per RPC method.\n\
+     - `replicate.peer.<node_id>` / `replicate.method.<m>` — write replication RTT \
+       (one entry per peer per replicated write).  Distinct from fanout because \
+       writes go through a replication pool, not the read fan-out.\n\
+     \n\
+     Produce a concise analysis covering:\n\
+     1. **Headline verdict** — is the node healthy, slow on ingest, slow on \
+        reads, slow on cluster, or showing a specific engine bottleneck?  One \
+        line.\n\
+     2. **Hot-path attribution** — for the slowest series, name the engine \
+        responsible (ONNX / DuckDB / Tantivy / HNSW / network).  Cite the \
+        specific series name and its p95 in µs.\n\
+     3. **Cluster shape** — fan-out skew across peers (one slow peer or all?), \
+        replicate vs fanout disparity, evidence of partial reads.  Skip if not \
+        in cluster mode (no `fanout.*` / `replicate.*` series present).\n\
+     4. **Cache effectiveness** — `embed.hit` / (`embed.hit` + `embed.miss`) \
+        ratio; low ratio means dashboard queries vary or cache is undersized.\n\
+     5. **Slow-query log** — name the top 1–3 outliers, identify which engine \
+        owns each, and call out whether they're cluster-related, ingest-related, \
+        or a one-off spike.\n\
+     6. **Concrete next step** — one specific action: raise `pipe_flushers`, \
+        bump `embedding_cache_size`, run `bdscmd retention-sweep`, investigate \
+        peer X, etc.  Cite the bds.hjson knob name.\n\
+     \n\
+     Be terse; bullet points are fine.  Quote specific series names and p95 \
+     values verbatim when citing evidence.  If the sample is too small \
+     (most series have n_recent < 20) say so plainly — percentiles below \
+     that threshold are noise.";
+
 impl AnalyzeTargetConfig {
     /// Default settings for `web.analyze.logs`.
     pub fn logs_default() -> Self {
@@ -959,6 +1029,19 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_RCA_TEMPLATES_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.perf`.  The payload is small
+    /// (typically 5–30 series + up to 100 slow-log entries), so 200
+    /// "rows" comfortably accommodates both blocks.  Longer timeout
+    /// because the prompt asks for engine-attribution reasoning that
+    /// some hosted models take a few seconds to produce.
+    pub fn perf_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        200,
+            prompt_template: DEFAULT_PERF_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1036,6 +1119,9 @@ pub struct AppState {
     /// Operator-configurable knobs for the "Analyze this!" button on
     /// the RCA → Templates RCA page (`web.analyze.rca_templates.*`).
     pub rca_templates_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Administration → Performance page (`web.analyze.perf.*`).
+    pub perf_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -1058,6 +1144,7 @@ impl AppState {
         knn_analyze:                       AnalyzeTargetConfig,
         rca_analyze:                       AnalyzeTargetConfig,
         rca_templates_analyze:             AnalyzeTargetConfig,
+        perf_analyze:                      AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -1087,6 +1174,7 @@ impl AppState {
             knn_analyze:                       Arc::new(knn_analyze),
             rca_analyze:                       Arc::new(rca_analyze),
             rca_templates_analyze:             Arc::new(rca_templates_analyze),
+            perf_analyze:                      Arc::new(perf_analyze),
         }
     }
 }

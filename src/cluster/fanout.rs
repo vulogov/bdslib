@@ -81,11 +81,14 @@ pub async fn fan_out_v2(
     params:  JsonValue,
 ) -> FanOutResults {
     let alive = cluster.peers.read().alive();
-    let timeout = Duration::from_secs(cluster.config.peer_rpc_timeout_secs);
+    let default_timeout = Duration::from_secs(cluster.config.peer_rpc_timeout_secs);
 
     if alive.is_empty() {
         return FanOutResults { responses: vec![], peers_queried: 0, peers_answered: 0 };
     }
+
+    let adaptive = cluster.config.adaptive_peer_timeout_enabled;
+    let multiplier = cluster.config.adaptive_peer_timeout_multiplier;
 
     let mut set: JoinSet<PeerResult> = JoinSet::new();
     for peer in alive.iter().cloned() {
@@ -93,8 +96,27 @@ pub async fn fan_out_v2(
         let url    = peer.url.clone();
         let method = method.to_owned();
         let params = params.clone();
+        let node_label = peer.node_id.to_string();
+
+        // Per-peer dynamic deadline.  Clamps to `[default × 0.1, default]`.
+        // Falls back to the static default whenever the peer has fewer
+        // than 20 recent samples (insufficient signal).
+        let timeout = if adaptive {
+            adaptive_timeout(&node_label, default_timeout, multiplier)
+        } else {
+            default_timeout
+        };
+
         set.spawn(async move {
+            // Time the RPC for the cluster perf registry.  Two labels:
+            //   fanout.peer.<node_id>     — per-peer RTT distribution
+            //   fanout.method.<method>    — per-RPC RTT across peers
+            // Both populate p50/p95/p99 for v2/perf.
+            let started = std::time::Instant::now();
             let result = call_v2(&http, &url, &method, params, timeout).await;
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            crate::perf::record_us(&format!("fanout.peer.{node_label}"), elapsed_us);
+            crate::perf::record_us(&format!("fanout.method.{method}"),  elapsed_us);
             PeerResult { peer, result }
         });
     }
@@ -115,6 +137,31 @@ pub async fn fan_out_v2(
         peers_answered: answered,
         responses,
     }
+}
+
+/// Compute the per-peer RPC deadline.
+///
+/// Returns the static `default` unchanged when the peer has not
+/// accumulated enough samples (less than 20 in the ring) for its p95
+/// to be trustworthy.  Otherwise returns
+/// `min(default, p95 × multiplier).max(default / 10)` —
+/// never exceeds the operator's contract, never drops below 10% of it.
+///
+/// 10% floor protects against degenerate cases where a series's p95 is
+/// momentarily 0 (cold path) or near-zero from a single fast sample.
+fn adaptive_timeout(node_label: &str, default: Duration, multiplier: f64) -> Duration {
+    let series = format!("fanout.peer.{node_label}");
+    let Some(p95_us) = crate::perf::registry().p95_us(&series, 20) else {
+        return default;
+    };
+    let scaled_us = (p95_us as f64) * multiplier;
+    if !scaled_us.is_finite() || scaled_us <= 0.0 {
+        return default;
+    }
+    let default_us = default.as_micros() as f64;
+    let floor_us   = (default_us * 0.1).max(1_000.0); // never below 1 ms
+    let clamped    = scaled_us.clamp(floor_us, default_us);
+    Duration::from_micros(clamped as u64)
 }
 
 async fn call_v2(
@@ -151,4 +198,58 @@ async fn call_v2(
         return Err(err_msg(format!("{method} rpc error: {msg}")));
     }
     Ok(envelope.get("result").cloned().unwrap_or_default())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Unit tests — adaptive_timeout is pure; no Cluster needed.
+// ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Push n samples of `value_us` into a series so its p95 reads exactly.
+    fn seed_series(name: &str, value_us: u64, n: usize) {
+        for _ in 0..n {
+            crate::perf::record(name, value_us);
+        }
+    }
+
+    #[test]
+    fn adaptive_returns_default_when_too_few_samples() {
+        let name = "test.adapt.few";
+        seed_series(name, 10_000, 5); // 5 samples — below 20 min
+        let got = adaptive_timeout("adapt.few", Duration::from_secs(2), 3.0);
+        assert_eq!(got, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn adaptive_tightens_to_p95_times_multiplier() {
+        let name = "fanout.peer.adapt.healthy";
+        // 50 samples at 100 ms → p95 ≈ 100 ms.  Multiplier 3 → 300 ms.
+        seed_series(name, 100_000, 50);
+        let got = adaptive_timeout("adapt.healthy", Duration::from_secs(2), 3.0);
+        let got_ms = got.as_millis();
+        assert!(got_ms >= 250 && got_ms <= 350, "got {got_ms} ms");
+    }
+
+    #[test]
+    fn adaptive_never_exceeds_default() {
+        let name = "fanout.peer.adapt.slow";
+        // 50 samples at 5 s → multiplier × p95 = 15 s, but default is 2 s.
+        seed_series(name, 5_000_000, 50);
+        let got = adaptive_timeout("adapt.slow", Duration::from_secs(2), 3.0);
+        assert_eq!(got, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn adaptive_never_drops_below_ten_percent_of_default() {
+        let name = "fanout.peer.adapt.tiny";
+        // 50 samples at 1 µs → multiplier × p95 = 3 µs ≪ 10% floor.
+        seed_series(name, 1, 50);
+        let got = adaptive_timeout("adapt.tiny", Duration::from_secs(2), 3.0);
+        // Floor is 200 ms (10% of 2 s).
+        let got_ms = got.as_millis();
+        assert!(got_ms >= 199 && got_ms <= 201, "got {got_ms} ms");
+    }
 }

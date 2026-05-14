@@ -100,6 +100,17 @@ struct DashboardData {
     dev_data_batches:        u64,
     dev_data_interval_secs:  u64,
     dev_data_total_per_batch: u64,
+    // ── Perf headline (from v2/status.perf) ────────────────────────────────
+    /// True only when there's been at least one ingest flush — keeps the
+    /// tile hidden on a brand-new node before any work has happened.
+    perf_has_samples:        bool,
+    perf_ingest_flush_p50:   u64,   // ms
+    perf_ingest_flush_p95:   u64,   // ms
+    perf_ingest_flush_p99:   u64,   // ms
+    perf_ingest_flush_n:     u64,
+    perf_ingest_lag_p95:     u64,   // ms
+    perf_fanout_p95:         u64,   // ms
+    perf_replicate_p95:      u64,   // ms
 }
 
 fn short_uuid(s: &str) -> String {
@@ -194,6 +205,17 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
+    // ── Perf headline (from v2/status.perf) ──────────────────────────────
+    let perf = snap.status.get("perf");
+    let perf_get_us = |k: &str| -> u64 {
+        perf.and_then(|p| p.get(k)).and_then(|v| v.as_u64()).unwrap_or(0)
+    };
+    let perf_ingest_flush_n = perf_get_us("ingest_flush_n_total");
+    let perf_has_samples = perf_ingest_flush_n > 0;
+    // Convert µs → ms for display (one decimal of precision is overkill
+    // at the dashboard level; rounded ms is the right call).
+    let us_to_ms = |us: u64| us / 1_000;
+
     let tmpl = DashboardData {
         node_id:              str_val(&snap.status, "node_id"),
         hostname:             str_val(&snap.status, "hostname"),
@@ -227,6 +249,14 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         dev_data_batches,
         dev_data_interval_secs,
         dev_data_total_per_batch,
+        perf_has_samples,
+        perf_ingest_flush_p50: us_to_ms(perf_get_us("ingest_flush_p50_us")),
+        perf_ingest_flush_p95: us_to_ms(perf_get_us("ingest_flush_p95_us")),
+        perf_ingest_flush_p99: us_to_ms(perf_get_us("ingest_flush_p99_us")),
+        perf_ingest_flush_n,
+        perf_ingest_lag_p95:   us_to_ms(perf_get_us("ingest_lag_p95_us")),
+        perf_fanout_p95:       us_to_ms(perf_get_us("fanout_p95_us_max")),
+        perf_replicate_p95:    us_to_ms(perf_get_us("replicate_p95_us_max")),
     };
 
     Ok(tmpl.render()?)

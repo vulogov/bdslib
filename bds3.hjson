@@ -77,4 +77,13 @@
      anomaly_ratio:  0.02       // 0.0–0.10, rare-record fraction
      seed:           null       // null = entropy, integer = deterministic
 }
+retention: {
+  enabled:                     true       // required to activate; default false
+  duration:                    "1day"   // humantime; e.g. "7days", "6h"
+  interval_secs:               300        // how often the background sweep runs
+  max_evictions_per_run:       50         // per‑sweep cap; 0 = no cap
+  dry_run:                     false      // log what would be evicted but don't delete
+  reload_drain_after_evict:    true       // re‑run drain mining after eviction
+  quorum_check_enabled:        false      // opt‑in cluster safety net (Phase 3)
+}
 }

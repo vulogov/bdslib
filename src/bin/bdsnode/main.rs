@@ -81,6 +81,25 @@ fn ingest_channel_capacity_from_config(config_path: Option<&str>) -> usize {
        .unwrap_or(DEFAULT)
 }
 
+/// Read `perf.slow_query_threshold_ms` from hjson and install it into
+/// the perf module.  Missing block / missing key / invalid value all
+/// keep the bdslib default (500 ms).  Set the key to `0` to disable
+/// the slow log entirely.
+fn apply_slow_query_threshold(config_path: Option<&str>) {
+    let Some(path) = config_path else { return };
+    let Ok(raw) = std::fs::read_to_string(path) else { return };
+    let Ok(val) = serde_hjson::from_str::<serde_hjson::Value>(&raw) else { return };
+    let Some(ms) = val.as_object()
+        .and_then(|o| o.get("perf"))
+        .and_then(|p| p.as_object())
+        .and_then(|p| p.get("slow_query_threshold_ms"))
+        .and_then(|v| v.as_f64())
+    else { return };
+    let us = (ms.max(0.0) as u64).saturating_mul(1000);
+    bdslib::perf::set_slow_threshold_us(us);
+    log::info!("[perf] slow-query threshold = {ms} ms ({us} µs)");
+}
+
 fn raise_nofile_limit(limit: u64) {
     match rlimit::increase_nofile_limit(limit) {
         Ok(n)  => log::info!("NOFILE soft limit raised to {n}"),
@@ -158,6 +177,13 @@ async fn main() -> anyhow::Result<()> {
     bdslib::init_db(cli.config.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("failed to initialise database")?;
+
+    // Apply the slow-query threshold to the perf module.  Keeps the
+    // bdslib API surface tiny — one OnceLock-backed setter — and
+    // means every existing `perf::time` call participates without
+    // per-site instrumentation.  Default kicks in (500 ms) when no
+    // hjson key is present.
+    apply_slow_query_threshold(cli.config.as_deref());
 
     jsonrpc::chat_ollama::init(cli.config.as_deref())
         .context("failed to initialise Ollama config")?;

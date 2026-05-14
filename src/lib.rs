@@ -13,6 +13,7 @@ pub mod globals;
 pub mod llm;
 pub mod dev_data;
 pub mod observability;
+pub mod perf;
 pub mod retention;
 pub mod scheduler;
 pub mod shard;

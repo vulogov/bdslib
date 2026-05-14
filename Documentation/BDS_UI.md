@@ -185,6 +185,42 @@ Below it, a **Shard Details** table lists shard start time, primary
 count, secondary count, and total. Older shards beyond the most
 recent five are summarised in the header.
 
+### World clocks
+
+A stack of **five live 24-hour digital clocks** sits at the top of
+the dashboard.  The first row is always **UTC** (highlighted blue,
+not editable).  The four rows below default to New York, London,
+Tokyo, and Sydney but you can change them:
+
+- **Hover over a row** to reveal a small ✎ button.
+- **Click ✎** to open an inline editor with two fields: a custom
+  label (e.g. "HQ", "SF office") and an IANA timezone string.
+- The timezone input has **autocomplete** populated from the
+  browser's known IANA zones — start typing `Asia/` to see every
+  Asian zone.
+- Press **Enter** (or click **Save**) to commit, **Esc** to cancel.
+- Click **↺ reset** in the card header to restore the four
+  defaults.
+- **Click the card header** (anywhere except the reset button) to
+  collapse the stack to a single-line UTC readout, or expand it
+  back.  Space / Enter on the focused header also toggles, for
+  keyboard navigation.  The collapsed state is remembered per
+  browser.
+
+Your timezone picks are stored in the browser's `localStorage`
+(`bdsweb.clocks.v1`); the expand/collapse state under
+`bdsweb.clocks.v1.collapsed`.  They survive reloads, tab
+switches, and bdsweb upgrades.  Each browser / profile keeps its
+own set — the clocks are a per-user preference, not a
+per-deployment one.
+
+The clocks live in the dashboard shell so the HTMX 30-second
+auto-refresh doesn't tear down the per-second timer; they tick
+smoothly even when the rest of the page is mid-refresh.  The
+compact UTC readout shown when collapsed shares the same
+formatter as slot 1 in the expanded stack, so the time you see
+in either view is identical.
+
 ### When to look at the dashboard
 
 - **Ingestion seems stuck.** Check the ingest queues. A persistently

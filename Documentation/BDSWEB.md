@@ -117,6 +117,24 @@ Routes:
 
 ### Displayed Information
 
+**World clocks (above the status row):**
+- Stack of 5 live 24-hour digital clocks updated client-side every
+  second via `Intl.DateTimeFormat`.
+- Row 1 is **UTC** (locked, blue-highlighted).
+- Rows 2–5 are user-configurable.  Click the ✎ button on any
+  row to set a custom label + IANA timezone.  Choices persist in
+  `localStorage` under `bdsweb.clocks.v1`; the **↺ reset** button
+  in the card header restores defaults (New York / London /
+  Tokyo / Sydney).
+- **Collapsible**: clicking the card header collapses the stack to
+  a single-row UTC readout; clicking again expands it.  State is
+  persisted in `localStorage` under `bdsweb.clocks.v1.collapsed`
+  so each browser remembers its preferred view.  Keyboard a11y
+  via Space / Enter on the focused header.
+- The card lives in the dashboard *shell* (outside the HTMX swap
+  target), so the per-second timer keeps ticking even while the
+  rest of the page auto-refreshes.
+
 **Status row (4 cards):**
 - Node ID — the unique identifier of the connected bdsnode instance
 - Hostname — OS hostname of the node
@@ -219,6 +237,117 @@ cluster_refresh_secs: 10     // background poll interval + HTMX trigger
 Floor 1 s.  Defaults to 10 s — faster than the Dashboard because
 peer-state changes (gossip transitions, fan-out failures, hint
 queue churn) are what operators want to observe in near-real-time.
+
+---
+
+## 5c. Performance
+
+**Path:** `GET /perf` (under **Administration → Performance** in the
+top nav)
+
+Live view of the in-process latency registry surfaced by `v2/perf`
+plus the slow-query ring from `v2/perf.slow_queries`.  Diagnostic
+page — no background poller; the data fetch runs every time the
+page or its data partial is requested.  Auto-refreshes via HTMX
+every `dashboard_refresh_secs` (same cadence as the Dashboard's
+underlying `v2/status` poll), and the **Reload** button forces a
+live fetch through `/perf/data`.
+
+Routes:
+
+| Route            | Method | Purpose                                                                  |
+|------------------|--------|--------------------------------------------------------------------------|
+| `/perf`          | GET    | Shell template + HTMX trigger for `/perf/data`                           |
+| `/perf/data`     | GET    | Renders `v2/perf` + `v2/perf.slow_queries` in two tables                 |
+| `/perf/analyze`  | GET    | "Analyze this!" — one-shot LLM analysis of the current snapshot           |
+
+### Displayed Information
+
+**Slow-query log card:**
+- Threshold echoed (from `perf.slow_query_threshold_ms`, default 500 ms)
+- Ring capacity (fixed at 100)
+- Each entry: timestamp · series name · elapsed ms (yellow ≥ threshold,
+  red ≥ 1000 ms)
+- Empty-state message + "Slow log disabled" hint when threshold is 0
+
+**Series table:**
+- One row per active series, sorted by p95 descending
+- Columns: name · n_total · n_recent · min · p50 · p95 · p99 · max (all µs)
+- p95 cell tints yellow ≥ 100 ms, red ≥ 500 ms; p99 tints red ≥ 1 s
+
+### Dashboard tile
+
+The main Dashboard (`/`) carries a compact 4-card row driven by the
+`perf` block of `v2/status` (no extra RPC).  Cards: ingest flush
+p50/p95/p99 + lifetime count · ingest lag p95 · fan-out p95 max
+(slowest v3/* method) · replicate p95 max (slowest write
+replication).  The card row is hidden until the node has recorded
+at least one ingest flush, so freshly-started nodes don't render
+a wall of zeros.
+
+### Analyze this!
+
+The header on `/perf` carries an **Analyze this!** button next to
+**Reload**, modelled on the Telemetry → Logs page.  Clicking it
+fetches `v2/perf` + `v2/perf.slow_queries`, normalises the two
+blocks into a single typed `rows` array (each entry carries a
+`kind` discriminator — `"series"` or `"slow_entry"`), and hands the
+payload to `v4/llm.analyze` with a perf-focused prompt template.
+The result renders in a slide-out pane on the left side (mirror of
+the Logs analysis pane); Esc dismisses it.
+
+The default prompt teaches the model bdslib's series taxonomy —
+`ingest.*` (DuckDB + Tantivy + HNSW + ONNX inside `add_batch`),
+`shard.*` (per-shard search), `embed.*` (ONNX cache),
+`fanout.*` (read fan-out RTT), `replicate.*` (write replication
+RTT) — and asks for a six-point report covering headline verdict,
+hot-path attribution, cluster shape, cache effectiveness, slow-log
+outliers, and a single concrete next step citing a `bds.hjson`
+knob.
+
+Same operator semantics as the other "Analyze this!" surfaces:
+one-shot (no chat history), `v4/llm.analyze` runs through the
+configured default provider/model, response is rendered as
+Markdown, identical inputs hit the inference cache so repeats are
+free.
+
+### JSON-RPC calls made
+
+| Method                   | Purpose                                                |
+|--------------------------|--------------------------------------------------------|
+| `v2/perf`                | Full series snapshot                                   |
+| `v2/perf.slow_queries`   | Recent slow events (ring buffer)                       |
+| `v4/llm.analyze`         | One-shot perf analysis (HMAC-signed via `signed_rpc`)  |
+| `v4/llm.providers.list`  | Resolve default provider/model for the wait banner     |
+| `v2/status` (Dashboard)  | Carries the compact `perf` block consumed by the tile  |
+
+### Configuration
+
+The page inherits `dashboard_refresh_secs` for its HTMX auto-refresh
+cadence.  Threshold tuning lives in the bdsnode side
+(`perf.slow_query_threshold_ms` — see BDSCONFIG.md §4.2).
+
+The "Analyze this!" surface is tunable via the standard
+`web.analyze.<target>` block — for this page, **`web.analyze.perf`**:
+
+```hjson
+web: {
+  analyze: {
+    perf: {
+      timeout_secs:    600
+      max_rows:        200
+      // Optional: replace the baked perf-focused prompt entirely.
+      // prompt_template: '''…'''
+    }
+  }
+}
+```
+
+| Field                            | Type    | Default | Description                                                                              |
+|----------------------------------|---------|---------|------------------------------------------------------------------------------------------|
+| `web.analyze.perf.timeout_secs`  | integer | 600     | Per-call deadline for `v4/llm.analyze`.  Floor 30.                                       |
+| `web.analyze.perf.max_rows`      | integer | 200     | Cap on combined series + slow-log entries sent to the LLM.  Series sorted by p95 desc; slow entries newest-first; truncation drops the tail. |
+| `web.analyze.perf.prompt_template` | string | baked   | Optional override of the default sharded-mixed-engine prompt.                            |
 
 ---
 

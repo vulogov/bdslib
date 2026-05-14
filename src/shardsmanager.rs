@@ -36,6 +36,9 @@ struct ManagerConfig {
     /// `None`, fastembed's default is used (`~/.cache/huggingface/hub` or
     /// `$HF_HOME`).
     embedding_cache_dir: Option<String>,
+    /// Capacity of the in-process query-embedding cache.  `0` disables
+    /// the cache.  Default: 256.
+    embedding_cache_size: usize,
 }
 
 /// Fallback when the config does not pin an `embedding_model`.  Matches
@@ -118,6 +121,12 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         .and_then(|v| v.as_str())
         .map(str::to_owned);
 
+    let embedding_cache_size = obj
+        .get("embedding_cache_size")
+        .and_then(|v| v.as_f64())
+        .map(|n| n as usize)
+        .unwrap_or(crate::embedding::DEFAULT_CACHE_CAPACITY);
+
     Ok(ManagerConfig {
         dbpath,
         shard_duration,
@@ -131,6 +140,7 @@ fn parse_config(raw: &str) -> Result<ManagerConfig> {
         max_open_shards,
         embedding_model,
         embedding_cache_dir,
+        embedding_cache_size,
     })
 }
 
@@ -223,6 +233,20 @@ pub struct ShardsManager {
     /// Cluster layer.  `Some` when `cluster.enabled = true` in `bds.hjson`;
     /// `None` for stand-alone deployments (zero overhead — no background tasks).
     pub(crate) cluster: Option<Arc<Cluster>>,
+    /// Serialises concurrent callers of `add_batch`.
+    ///
+    /// `add_batch` internally uses Rayon to parallelise across shards, but
+    /// the per-shard storage engines (DuckDB connection pool, Tantivy
+    /// index writer, HNSW upserter) are not safe under concurrent writers
+    /// from different threads.  Without this lock, two flushers (or a
+    /// flusher + a direct `v2/add` call) that target the same shard
+    /// produce `Batch transaction failed` / `Execution of select_all
+    /// failed` errors from DuckDB.
+    ///
+    /// Held only for the duration of one `add_batch` call.  Since the
+    /// Rayon par_iter inside `add_batch` already saturates the engines
+    /// across shards, this lock costs nothing on the common path.
+    pub(crate) add_batch_lock: Arc<std::sync::Mutex<()>>,
 }
 
 impl ShardsManager {
@@ -265,7 +289,11 @@ impl ShardsManager {
             cache_dir.as_deref().map(std::path::Path::display)
         );
 
-        let embedding = EmbeddingEngine::new(model.clone(), cache_dir)
+        let embedding = EmbeddingEngine::new_with_cache(
+            model.clone(),
+            cache_dir,
+            cfg.embedding_cache_size,
+        )
             .map_err(|e| err_msg(format!("failed to load embedding model {model:?}: {e}")))?;
 
         let mgr = Self::with_embedding(config_path, embedding)?;
@@ -351,6 +379,7 @@ impl ShardsManager {
             // engine — `Self::new` populates this slot after construction.
             embedding_model_name: Arc::new(std::sync::Mutex::new(None)),
             cluster,
+            add_batch_lock: Arc::new(std::sync::Mutex::new(())),
         };
 
         if cfg.drain_enabled {
@@ -438,6 +467,18 @@ impl ShardsManager {
         if docs.is_empty() {
             return Ok(vec![]);
         }
+
+        // Serialise concurrent callers — DuckDB + Tantivy + HNSW are not
+        // safe under multiple simultaneous writers to the same shard, and
+        // bdsnode's parallel flusher pool (`pipe_flushers > 1`) plus
+        // direct `v2/add` calls can race here.  The internal Rayon
+        // par_iter still parallelises across shards within ONE call, so
+        // holding this lock doesn't sacrifice the meaningful concurrency.
+        // Poisoning is fatal (a panic happened mid-write); surfacing it
+        // as an error rather than silently re-poisoning is the safer
+        // path because subsequent writes may have nothing to write to.
+        let _guard = self.add_batch_lock.lock()
+            .map_err(|e| err_msg(format!("add_batch lock poisoned: {e}")))?;
 
         // ── drain: fast DuckDB-only writes, no ONNX inside the lock ─────────────
         struct PendingTpl {
@@ -684,12 +725,25 @@ impl ShardsManager {
     /// [`search_fts`]: ShardsManager::search_fts
     pub fn fulltextsearch(&self, duration: &str, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
         let (start, end) = lookback_window(duration)?;
-        let mut results: Vec<(Uuid, f32)> = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            // Fetch up to `limit` candidates per shard; after merging across all
-            // shards the final list is truncated to `limit` by score.
-            results.extend(shard.search_fts_scored(query, limit)?);
+
+        let infos = self.cache.info().shards_in_range(start, end)?;
+        let mut shards: Vec<crate::shard::Shard> = Vec::with_capacity(infos.len());
+        for info in infos {
+            shards.push(self.cache.shard(info.start_time)?);
+        }
+
+        // Per-shard FTS in parallel — matches the vector-search pattern.
+        // Tantivy reads are reentrant; each shard owns an independent
+        // index, so Rayon parallelism is safe.
+        let per_shard: Vec<Vec<(Uuid, f32)>> = shards
+            .par_iter()
+            .map(|shard| shard.search_fts_scored(query, limit))
+            .collect::<Result<Vec<_>>>()?;
+
+        let total: usize = per_shard.iter().map(|v| v.len()).sum();
+        let mut results: Vec<(Uuid, f32)> = Vec::with_capacity(total);
+        for v in per_shard {
+            results.extend(v);
         }
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(limit);
@@ -709,10 +763,22 @@ impl ShardsManager {
         limit: usize,
     ) -> Result<Vec<(Uuid, i64, f32)>> {
         let (start, end) = lookback_window(duration)?;
-        let mut results: Vec<(Uuid, i64, f32)> = Vec::new();
-        for info in self.cache.info().shards_in_range(start, end)? {
-            let shard = self.cache.shard(info.start_time)?;
-            results.extend(shard.search_fts_with_ts(query, limit)?);
+
+        let infos = self.cache.info().shards_in_range(start, end)?;
+        let mut shards: Vec<crate::shard::Shard> = Vec::with_capacity(infos.len());
+        for info in infos {
+            shards.push(self.cache.shard(info.start_time)?);
+        }
+
+        let per_shard: Vec<Vec<(Uuid, i64, f32)>> = shards
+            .par_iter()
+            .map(|shard| shard.search_fts_with_ts(query, limit))
+            .collect::<Result<Vec<_>>>()?;
+
+        let total: usize = per_shard.iter().map(|v| v.len()).sum();
+        let mut results: Vec<(Uuid, i64, f32)> = Vec::with_capacity(total);
+        for v in per_shard {
+            results.extend(v);
         }
         results.sort_by(|a, b| b.1.cmp(&a.1));
         results.truncate(limit);
@@ -733,6 +799,25 @@ impl ShardsManager {
     ) -> Result<Vec<(Uuid, i64, f32)>> {
         let fingerprint = json_fingerprint(query);
         let query_vec = self.cache.embedding().embed(&fingerprint)?;
+        self.vectorsearch_with_vec(duration, &fingerprint, &query_vec, limit)
+    }
+
+    /// Like [`vectorsearch`] but accepts a pre-computed embedding vector
+    /// + the matching fingerprint string.  Used by the cluster query
+    /// coordinator (`v3/search`) so the heavy ONNX inference happens
+    /// **once** on the entry node — peers run the same merge/rank
+    /// pipeline against the already-embedded vector and skip the
+    /// ~5-15 ms per-call embed cost.
+    ///
+    /// Errors only if the catalog lookup or any per-shard search fails
+    /// — embedding is not retried here.
+    pub fn vectorsearch_with_vec(
+        &self,
+        duration:    &str,
+        fingerprint: &str,
+        query_vec:   &[f32],
+        limit:       usize,
+    ) -> Result<Vec<(Uuid, i64, f32)>> {
         let (start, end) = lookback_window(duration)?;
 
         let infos = self.cache.info().shards_in_range(start, end)?;
@@ -744,7 +829,7 @@ impl ShardsManager {
         let per_shard: Vec<Vec<(Uuid, i64, f32)>> = shards
             .par_iter()
             .map(|shard| {
-                shard.search_vector_scored_precomputed(&query_vec, &fingerprint, limit)
+                shard.search_vector_scored_precomputed(query_vec, fingerprint, limit)
             })
             .collect::<Result<Vec<_>>>()?;
 

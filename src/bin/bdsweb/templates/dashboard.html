@@ -92,6 +92,148 @@
   color: #64748b;
   font-style: italic;
 }
+
+/* ── World-clock stack (top of dashboard) ────────────────────────────── */
+/* Lives in the dashboard shell — never re-rendered by HTMX, so the
+   per-second setInterval below isn't churned every 30 s. */
+.clock-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid #1e2535;
+  cursor: pointer;
+  user-select: none;
+  transition: background 120ms;
+}
+.clock-header:hover { background: rgba(255,255,255,0.025); }
+.clock-header .chev {
+  flex: 0 0 auto;
+  width: 0.85rem; height: 0.85rem;
+  color: #64748b;
+  transition: transform 140ms;
+}
+.clock-header .title {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.clock-header .compact {
+  flex: 1 1 auto;
+  text-align: right;
+  font-family: 'JetBrains Mono','Fira Code','Menlo',monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
+  color: #93c5fd;
+  letter-spacing: 0.03em;
+  /* Visible only when the card is collapsed. */
+  display: none;
+}
+.clock-header .reset-btn {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: #475569;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.25rem;
+}
+.clock-header .reset-btn:hover { color: #cbd5e1; background: rgba(255,255,255,0.05); }
+/* Collapsed state — toggled by JS on the outer #clock-stack via
+   `data-collapsed="true"`.  No height animation: an instant snap
+   keeps the layout stable while #dashboard-data swaps below. */
+#clock-stack[data-collapsed="true"] #clock-rows { display: none; }
+#clock-stack[data-collapsed="true"] .clock-header .compact { display: block; }
+#clock-stack[data-collapsed="true"] .clock-header .chev    { transform: rotate(-90deg); }
+.clock-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.9rem;
+  font-family: 'JetBrains Mono','Fira Code','Cascadia Code','Menlo',monospace;
+  position: relative;
+}
+.clock-row:not(:first-child) { border-top: 1px solid #1a2235; }
+.clock-row.utc {
+  background: linear-gradient(90deg, rgba(59,130,246,0.10), transparent 60%);
+  border-left: 3px solid #3b82f6;
+}
+.clock-label {
+  flex: 0 0 auto;
+  width: 9rem;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.clock-row.utc .clock-label { color: #93c5fd; font-weight: 600; }
+.clock-tz {
+  font-size: 0.65rem;
+  color: #475569;
+  margin-left: 0.4rem;
+}
+.clock-time {
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 1.05rem;
+  color: #e2e8f0;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.clock-row.utc .clock-time { color: #ffffff; font-weight: 600; }
+.clock-edit-btn {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: #475569;
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.78rem;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms, background 120ms;
+}
+.clock-row:hover .clock-edit-btn { opacity: 1; }
+.clock-edit-btn:hover { color: #cbd5e1; background: rgba(255,255,255,0.05); }
+.clock-editor {
+  background: #0d1320;
+  border-top: 1px solid #1a2235;
+  padding: 0.5rem 0.9rem;
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.clock-editor input {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #1e2535;
+  background: #0f1117;
+  color: #e2e8f0;
+  border-radius: 0.3rem;
+}
+.clock-editor input.tz   { flex: 1 1 18rem; min-width: 14rem; }
+.clock-editor input.label{ flex: 0 1 10rem; }
+.clock-editor button {
+  font-size: 0.74rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: 0.3rem;
+  cursor: pointer;
+  border: 1px solid #1e2535;
+}
+.clock-editor button.save   { background:#1d4ed8; color:#fff; border-color:#1d4ed8; }
+.clock-editor button.save:hover { background:#2563eb; }
+.clock-editor button.cancel { background:transparent; color:#94a3b8; }
+.clock-editor button.cancel:hover { color:#e2e8f0; background:#1a2235; }
+.clock-editor .hint { font-size: 0.68rem; color:#64748b; flex-basis: 100%; }
 </style>
 {% endblock %}
 
@@ -107,6 +249,38 @@
           hx-disabled-elt="this">
     Reload
   </button>
+</div>
+
+<!-- ── World-clock stack ──────────────────────────────────────────────
+     Five 24-hour digital clocks.  Top row is UTC (locked); the four
+     below are user-configurable and persisted in localStorage so each
+     operator's pick survives reloads + tab switches.  Renders OUTSIDE
+     #dashboard-data so the HTMX swap that refreshes every 30 s
+     doesn't tear down the per-second setInterval below. -->
+<div id="clock-stack" class="card rounded-lg mb-6" style="overflow:hidden;">
+  <!-- Header doubles as the collapse toggle.  Clicking anywhere on it
+       flips `data-collapsed` on #clock-stack which the CSS uses to
+       hide #clock-rows + reveal the compact UTC readout on the right.
+       The reset button stops propagation so reset doesn't also
+       collapse the card. -->
+  <div id="clock-header" class="clock-header" role="button" tabindex="0"
+       aria-controls="clock-rows" aria-expanded="true"
+       title="Click to collapse / expand">
+    <svg class="chev" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2.5"
+         stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+    <div class="title">World clocks</div>
+    <!-- Compact UTC readout; CSS hides it while expanded.  The shared
+         tick function fills it (data-clock-time="0" maps to slot 0,
+         which is always UTC). -->
+    <div class="compact" data-clock-time="0">--:--:--</div>
+    <button id="clock-reset" class="reset-btn" type="button"
+            title="Reset to defaults">↺ reset</button>
+  </div>
+  <div id="clock-rows"></div>
+  <datalist id="clock-tz-list"></datalist>
 </div>
 
 <div id="dashboard-data"
@@ -147,5 +321,288 @@
         '</div>';
     });
   })();
+</script>
+
+<!-- ── World-clock stack driver ─────────────────────────────────────
+     Pure client-side: timezone choices live in localStorage, the
+     timer reads them every second and re-renders just the time
+     <span>s.  No server round-trip per tick. -->
+<script>
+(function () {
+  // Slot 0 is hard-coded UTC.  Slots 1..4 are user-configurable, with
+  // sensible defaults so a fresh browser sees four useful zones out
+  // of the box.
+  var STORE_KEY = 'bdsweb.clocks.v1';
+  var DEFAULTS  = [
+    { tz: 'UTC',                 label: 'UTC',       locked: true  },
+    { tz: 'America/New_York',    label: 'New York',  locked: false },
+    { tz: 'Europe/London',       label: 'London',    locked: false },
+    { tz: 'Asia/Tokyo',          label: 'Tokyo',     locked: false },
+    { tz: 'Australia/Sydney',    label: 'Sydney',    locked: false },
+  ];
+
+  function loadSlots() {
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return clone(DEFAULTS);
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length !== 5) return clone(DEFAULTS);
+      // Slot 0 is ALWAYS UTC, regardless of what's in storage.
+      parsed[0] = clone(DEFAULTS[0]);
+      // Validate each TZ against Intl — fall back to defaults on bad input.
+      for (var i = 1; i < 5; i++) {
+        if (!parsed[i] || typeof parsed[i].tz !== 'string' || !isValidTz(parsed[i].tz)) {
+          parsed[i] = clone(DEFAULTS[i]);
+        } else if (typeof parsed[i].label !== 'string' || !parsed[i].label) {
+          parsed[i].label = labelFromTz(parsed[i].tz);
+        }
+        parsed[i].locked = false;
+      }
+      return parsed;
+    } catch (e) { return clone(DEFAULTS); }
+  }
+
+  function saveSlots(slots) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(slots)); }
+    catch (e) { /* private mode etc. — silently ignore */ }
+  }
+
+  function clone(arr) { return JSON.parse(JSON.stringify(arr)); }
+
+  function isValidTz(tz) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; }
+    catch (e) { return false; }
+  }
+
+  function labelFromTz(tz) {
+    if (!tz || tz === 'UTC') return 'UTC';
+    var last = tz.split('/').pop() || tz;
+    return last.replace(/_/g, ' ');
+  }
+
+  // Pre-bake formatters per slot so we don't re-construct Intl objects
+  // on every tick.  Rebuilt when the user saves an edit.
+  var formatters = [];
+  function buildFormatters(slots) {
+    formatters = slots.map(function (s) {
+      try {
+        return new Intl.DateTimeFormat('en-GB', {
+          timeZone: s.tz,
+          hour12:   false,
+          year:     'numeric',
+          month:    '2-digit',
+          day:      '2-digit',
+          hour:     '2-digit',
+          minute:   '2-digit',
+          second:   '2-digit',
+        });
+      } catch (e) {
+        // Should never happen — loadSlots already validated — but
+        // be defensive.
+        return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC' });
+      }
+    });
+  }
+
+  function formatNow(idx) {
+    var parts = formatters[idx].formatToParts(new Date());
+    var bag = {};
+    for (var i = 0; i < parts.length; i++) bag[parts[i].type] = parts[i].value;
+    // en-GB gives DD/MM/YYYY; we want YYYY-MM-DD HH:MM:SS for readability.
+    return (bag.year || '----') + '-' + (bag.month || '--') + '-' + (bag.day || '--')
+         + '  ' + (bag.hour || '--') + ':' + (bag.minute || '--') + ':' + (bag.second || '--');
+  }
+
+  // Populate the datalist with the system's known IANA zones so the
+  // edit input gets autocomplete out of the box.  Falls back to a
+  // short curated list when Intl.supportedValuesOf isn't available
+  // (older browsers).
+  function populateDatalist() {
+    var dl = document.getElementById('clock-tz-list');
+    if (!dl) return;
+    var zones = [];
+    try { if (typeof Intl.supportedValuesOf === 'function') zones = Intl.supportedValuesOf('timeZone'); }
+    catch (e) { /* ignore */ }
+    if (!zones.length) {
+      zones = [
+        'UTC', 'America/Los_Angeles', 'America/Denver', 'America/Chicago',
+        'America/New_York', 'America/Sao_Paulo', 'Europe/London',
+        'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow', 'Africa/Cairo',
+        'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Shanghai',
+        'Asia/Tokyo', 'Asia/Seoul', 'Australia/Sydney', 'Pacific/Auckland',
+      ];
+    }
+    dl.innerHTML = zones.map(function (z) { return '<option value="' + z + '"></option>'; }).join('');
+  }
+
+  // ── DOM rendering ─────────────────────────────────────────────────
+  var state = { slots: loadSlots(), editingIdx: -1 };
+
+  function render() {
+    var host = document.getElementById('clock-rows');
+    if (!host) return;
+    var html = '';
+    for (var i = 0; i < state.slots.length; i++) {
+      var s = state.slots[i];
+      html += '<div class="clock-row' + (s.locked ? ' utc' : '') + '" data-idx="' + i + '">'
+            + '  <div class="clock-label" title="' + escapeHtml(s.tz) + '">'
+            +      escapeHtml(s.label)
+            +      (s.locked ? '' : '<span class="clock-tz">' + escapeHtml(s.tz) + '</span>')
+            + '  </div>'
+            + '  <div class="clock-time" data-clock-time="' + i + '">--:--:--</div>'
+            + (s.locked
+                ? ''
+                : '  <button class="clock-edit-btn" data-edit="' + i + '" title="Configure">✎</button>')
+            + '</div>';
+      if (state.editingIdx === i && !s.locked) {
+        html += renderEditor(i, s);
+      }
+    }
+    host.innerHTML = html;
+    buildFormatters(state.slots);
+    tickOnce();  // populate the freshly-painted <div class="clock-time"> spans immediately
+
+    // Wire edit handlers.
+    var btns = host.querySelectorAll('[data-edit]');
+    for (var b = 0; b < btns.length; b++) {
+      btns[b].addEventListener('click', function () {
+        state.editingIdx = parseInt(this.getAttribute('data-edit'), 10);
+        render();
+      });
+    }
+    var saves = host.querySelectorAll('[data-save]');
+    for (var s2 = 0; s2 < saves.length; s2++) {
+      saves[s2].addEventListener('click', function () { commitEdit(parseInt(this.getAttribute('data-save'), 10)); });
+    }
+    var cancels = host.querySelectorAll('[data-cancel]');
+    for (var c = 0; c < cancels.length; c++) {
+      cancels[c].addEventListener('click', function () { state.editingIdx = -1; render(); });
+    }
+    // Enter inside the TZ input commits; Esc cancels.
+    var inps = host.querySelectorAll('input[data-editor-tz]');
+    for (var k = 0; k < inps.length; k++) {
+      var idx = parseInt(inps[k].getAttribute('data-editor-tz'), 10);
+      inps[k].addEventListener('keydown', (function (i) {
+        return function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); commitEdit(i); }
+          if (e.key === 'Escape'){ e.preventDefault(); state.editingIdx = -1; render(); }
+        };
+      })(idx));
+    }
+  }
+
+  function renderEditor(idx, slot) {
+    return '<div class="clock-editor">'
+         + '  <input type="text" class="label" data-editor-label="' + idx + '" '
+         +         'placeholder="Label (e.g. HQ)" value="' + escapeHtml(slot.label) + '">'
+         + '  <input type="text" class="tz" list="clock-tz-list" data-editor-tz="' + idx + '" '
+         +         'placeholder="IANA timezone (e.g. America/New_York)" value="' + escapeHtml(slot.tz) + '">'
+         + '  <button class="save"   data-save="'   + idx + '" type="button">Save</button>'
+         + '  <button class="cancel" data-cancel="' + idx + '" type="button">Cancel</button>'
+         + '  <div class="hint">Pick from the suggestions or type any IANA zone.  Enter to save, Esc to cancel.</div>'
+         + '</div>';
+  }
+
+  function commitEdit(idx) {
+    var host = document.getElementById('clock-rows');
+    var tzEl    = host.querySelector('input[data-editor-tz="'    + idx + '"]');
+    var labelEl = host.querySelector('input[data-editor-label="' + idx + '"]');
+    if (!tzEl) return;
+    var tz    = (tzEl.value || '').trim();
+    var label = (labelEl && labelEl.value || '').trim();
+    if (!isValidTz(tz)) {
+      // Visual signal — turn the input border red briefly.
+      tzEl.style.borderColor = '#dc2626';
+      setTimeout(function () { tzEl.style.borderColor = ''; }, 1500);
+      return;
+    }
+    if (!label) label = labelFromTz(tz);
+    state.slots[idx] = { tz: tz, label: label, locked: false };
+    state.editingIdx = -1;
+    saveSlots(state.slots);
+    render();
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+
+  // ── Timer ─────────────────────────────────────────────────────────
+  // Single shared interval — re-renders just the time spans.  Editing
+  // a slot doesn't disturb the tick because we mutate textContent
+  // only, no DOM teardown.
+  function tickOnce() {
+    var nodes = document.querySelectorAll('[data-clock-time]');
+    for (var i = 0; i < nodes.length; i++) {
+      var idx = parseInt(nodes[i].getAttribute('data-clock-time'), 10);
+      if (!formatters[idx]) continue;
+      nodes[i].textContent = formatNow(idx);
+    }
+  }
+
+  // ── Collapse / expand state ───────────────────────────────────────
+  // Persisted in its own localStorage key so resetting the timezone
+  // choices via `↺ reset` doesn't also flip the collapsed flag (and
+  // vice versa).  Default = expanded.
+  var COLLAPSE_KEY = 'bdsweb.clocks.v1.collapsed';
+  function loadCollapsed() {
+    try { return localStorage.getItem(COLLAPSE_KEY) === '1'; }
+    catch (e) { return false; }
+  }
+  function saveCollapsed(v) {
+    try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); }
+    catch (e) { /* ignore */ }
+  }
+  function applyCollapsed(stack, collapsed) {
+    stack.setAttribute('data-collapsed', collapsed ? 'true' : 'false');
+    var hdr = stack.querySelector('.clock-header');
+    if (hdr) hdr.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+
+  // Reset button — wipes localStorage + restores defaults.
+  document.addEventListener('DOMContentLoaded', function () {
+    populateDatalist();
+    state.slots = loadSlots();
+    state.editingIdx = -1;
+    render();
+    setInterval(tickOnce, 1000);
+
+    var stack = document.getElementById('clock-stack');
+    if (stack) applyCollapsed(stack, loadCollapsed());
+
+    var header = document.getElementById('clock-header');
+    if (header && stack) {
+      // Clicking the header (anywhere except the reset button) toggles.
+      header.addEventListener('click', function (e) {
+        // The reset button stops propagation, but be defensive.
+        if (e.target && e.target.closest('#clock-reset')) return;
+        var collapsed = stack.getAttribute('data-collapsed') === 'true';
+        applyCollapsed(stack, !collapsed);
+        saveCollapsed(!collapsed);
+      });
+      // Space / Enter on the focused header also toggles, for keyboard a11y.
+      header.addEventListener('keydown', function (e) {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          header.click();
+        }
+      });
+    }
+
+    var reset = document.getElementById('clock-reset');
+    if (reset) {
+      reset.addEventListener('click', function (e) {
+        // Don't let the header swallow this into a collapse-toggle.
+        e.stopPropagation();
+        try { localStorage.removeItem(STORE_KEY); } catch (e2) {}
+        state.slots = clone(DEFAULTS);
+        state.editingIdx = -1;
+        render();
+      });
+    }
+  });
+})();
 </script>
 {% endblock %}

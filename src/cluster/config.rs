@@ -52,6 +52,20 @@ pub struct ClusterConfig {
     /// burst 3.  Set to 0 to disable rate limiting entirely
     /// (NOT recommended on internet-facing deployments).
     pub auth_rate_limit_per_minute: u32,
+    /// When `true` (default), `cluster::fanout::fan_out_v2` adapts the
+    /// per-peer RPC deadline using the observed p95 from the
+    /// `fanout.peer.<id>` perf series.  The dynamic deadline is
+    /// `min(peer_rpc_timeout, p95 × multiplier).max(peer_rpc_timeout / 10)`
+    /// — never exceeds the configured timeout, never goes below 10% of
+    /// it.  Falls back to the static timeout when the peer has fewer
+    /// than 20 recent samples.  Self-stabilising: timeouts get
+    /// recorded into p95 too, so a chronically broken peer's p95
+    /// converges to the static timeout and the heuristic stops biting.
+    pub adaptive_peer_timeout_enabled: bool,
+    /// Multiplier applied to the per-peer p95 when computing the
+    /// dynamic deadline.  Default `3.0` — tight enough to bail fast
+    /// on stragglers, loose enough to survive normal jitter.
+    pub adaptive_peer_timeout_multiplier: f64,
 }
 
 impl ClusterConfig {
@@ -80,6 +94,8 @@ impl ClusterConfig {
             scheduler_dedup_window_secs: 300,
             session_ttl_secs:           8 * 3600,
             auth_rate_limit_per_minute: 10,
+            adaptive_peer_timeout_enabled: true,
+            adaptive_peer_timeout_multiplier: 3.0,
         }
     }
 
@@ -184,6 +200,13 @@ impl ClusterConfig {
                 .and_then(|v| v.as_f64())
                 .map(|n| n as u32)
                 .unwrap_or(10),
+            adaptive_peer_timeout_enabled: block.get("adaptive_peer_timeout_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            adaptive_peer_timeout_multiplier: block.get("adaptive_peer_timeout_multiplier")
+                .and_then(|v| v.as_f64())
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .unwrap_or(3.0),
         })
     }
 

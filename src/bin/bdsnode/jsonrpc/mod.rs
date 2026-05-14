@@ -118,6 +118,7 @@ mod v2_llm_cache;
 mod v2_llm_last_executed;
 mod v2_cluster_shards_list;
 mod v2_retention;
+mod v2_perf;
 mod v2_to_bund;
 mod v3_help;
 mod v3_cluster_retention;
@@ -239,6 +240,7 @@ pub fn build_module() -> RpcModule<()> {
     v2_llm_last_executed::register(&mut module);
     v2_cluster_shards_list::register(&mut module);
     v2_retention::register(&mut module);
+    v2_perf::register(&mut module);
     v2_to_bund::register(&mut module);
     v3_cluster_retention::register(&mut module);
     v3_help::register(&mut module);

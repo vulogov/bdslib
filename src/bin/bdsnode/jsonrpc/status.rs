@@ -129,6 +129,34 @@ pub fn register(module: &mut RpcModule<()>) {
                 })
             };
 
+            // Compact perf headline — just the series operators reach
+            // for first when triaging.  Full snapshot lives at v2/perf.
+            // Zeros when a series has never been touched.
+            let perf_block = {
+                let reg = bdslib::perf::registry();
+                // Aggregate fanout/replicate.method.* into a single max p95
+                // so the dashboard tile shows one number even with many
+                // methods.  Per-method drill-down stays in v2/perf.
+                let mut max_fanout_p95 = 0u64;
+                let mut max_replicate_p95 = 0u64;
+                for (name, s) in reg.snapshot_all() {
+                    if name.starts_with("fanout.method.")    { max_fanout_p95    = max_fanout_p95.max(s.p95_us); }
+                    if name.starts_with("replicate.method.") { max_replicate_p95 = max_replicate_p95.max(s.p95_us); }
+                }
+                let flush = reg.snapshot_one("ingest.flush");
+                let lag   = reg.snapshot_one("ingest.lag");
+                serde_json::json!({
+                    "ingest_flush_p50_us":   flush.p50_us,
+                    "ingest_flush_p95_us":   flush.p95_us,
+                    "ingest_flush_p99_us":   flush.p99_us,
+                    "ingest_flush_n_total":  flush.n_total,
+                    "ingest_lag_p50_us":     lag.p50_us,
+                    "ingest_lag_p95_us":     lag.p95_us,
+                    "fanout_p95_us_max":     max_fanout_p95,
+                    "replicate_p95_us_max":  max_replicate_p95,
+                })
+            };
+
             let value = serde_json::json!({
                 "node_id":           state.node_id,
                 "hostname":          state.hostname,
@@ -151,6 +179,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 "cluster":            cluster_info,
                 "retention":          retention_block,
                 "dev_data":           dev_data_block,
+                "perf":               perf_block,
             });
 
             log::debug!("v2/status: done");

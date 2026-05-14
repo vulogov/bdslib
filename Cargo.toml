@@ -1,6 +1,6 @@
 [package]
 name = "bdslib"
-version = "0.12.7"
+version = "0.12.8"
 edition = "2024"
 description = "Multifunctional programmatic data storage"
 license-file = "LICENSE"
@@ -41,7 +41,7 @@ grok = "2.4.1"
 uuid = { version = "1.6", features = ["v4", "v7"] }
 tracing = "0.1.44"
 murmurhash3 = "0.0.5"
-reqwest = { version = "0.11", features = ["blocking"] }
+reqwest = { version = "0.11", features = ["blocking", "gzip"] }
 lazy_static = "1.5.0"
 shadow-rs = "1.7.1"
 dashmap = "6.1.0"

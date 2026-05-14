@@ -222,14 +222,16 @@ r2d2_thread_pool_size:   3
 ### 2.4 Embedding model
 
 ```hjson
-embedding_model:     "AllMiniLML6V2"
-embedding_cache_dir: "/var/lib/bdslib/models"
+embedding_model:      "AllMiniLML6V2"
+embedding_cache_dir:  "/var/lib/bdslib/models"
+embedding_cache_size: 256
 ```
 
 | Field                  | Type             | Default              | Required |
 |------------------------|------------------|----------------------|----------|
 | `embedding_model`      | string           | `"AllMiniLML6V2"`    | no       |
 | `embedding_cache_dir`  | string           | fastembed default    | no       |
+| `embedding_cache_size` | integer          | 256                  | no       |
 
 **fastembed** loads the named model variant; matches Rust's `Debug`
 form of `fastembed::EmbeddingModel`, case-insensitive.
@@ -262,6 +264,15 @@ on the bdsweb Dashboard so you can confirm what's loaded.
   Useful when you want the ~30–340 MB of model weights to live
   next to the data so backups are self-contained, or when running
   in a read-only `$HOME`.
+
+- **`embedding_cache_size`** — capacity of the in-process query
+  embedding cache.  Repeated identical query strings (typical of
+  dashboard polls) skip the ONNX inference call entirely.  Random
+  eviction at capacity.  Memory cost ≈ `cache_size × dim × 4 B`
+  (≈ 400 KiB at the 384-dim default).  Hit ratio is observable
+  via `v2/perf.embed.hit.n_total` / `embed.miss.n_total`.  Set to
+  `0` to disable; the cache is a no-op for the ingest path (each
+  fingerprint is unique) but a clear win for repeated searches.
 
 ### 2.5 Deduplication
 
@@ -351,6 +362,7 @@ ingest_channel_capacity: 100000
 // v2/add — single-record + small-batch ingest
 pipe_batch_size:  500
 pipe_timeout_ms:  500
+pipe_flushers:    1     // concurrent flusher threads; clamp [1, 16]
 
 // v2/add.file — newline-delimited JSON file ingest
 file_batch_size:  500
@@ -366,6 +378,7 @@ syslog_timeout_ms: 5000
 | `ingest_channel_capacity`  | integer | 100000   | no       |
 | `pipe_batch_size`          | integer | 500      | no       |
 | `pipe_timeout_ms`          | integer | 500      | no       |
+| `pipe_flushers`            | integer | 1        | no       |
 | `file_batch_size`          | integer | 100      | no       |
 | `file_timeout_ms`          | integer | 5000     | no       |
 | `syslog_batch_size`        | integer | 100      | no       |
@@ -388,6 +401,26 @@ Tuning:
 | High per-record ONNX embedding overhead | Raise `*_batch_size` (amortize across records)             |
 | Single-record latency visibly bad       | Lower `pipe_timeout_ms` (flush sooner)                     |
 | ONNX runtime memory growth              | Lower `*_batch_size` (smaller per-call working set)        |
+| Bursty traffic — flushes block batch accumulation             | Raise `pipe_flushers` to 2 (lets the next batch accumulate while one flushes) |
+
+**`pipe_flushers`** (default `1`, clamped to `[1, 16]`) spawns N
+`bds-add-<i>` threads that share the `"ingest"` crossbeam MPMC
+channel.  Each thread accumulates its own batch buffer.
+
+**Important constraint:** the flush operation itself is internally
+serialised by `ShardsManager::add_batch` because DuckDB, Tantivy,
+and HNSW are not safe under multiple concurrent same-shard
+writers.  Setting `pipe_flushers > 1` therefore does **not**
+parallelise the flush — extra threads block on the internal lock
+when another flusher is mid-flush.  The benefit, if any, is that
+one thread can be accumulating a new batch while another is
+flushing, which helps only on very bursty workloads.  Within a
+single `add_batch` call, work is already parallelised across
+shards via Rayon, so a lone flusher saturates the engines.
+
+Keep the default `1` unless `v2/perf.ingest.lag.p95_us` is high
+*and* `ingest.flush.p95_us` is low (= the channel is filling
+because batches aren't being accumulated fast enough).
 
 ⚠ **`ingest_channel_capacity: 0`** is the legacy unbounded
 behaviour — the channel will grow until the kernel kills you with
@@ -486,6 +519,31 @@ bund: {
 ```
 
 Category names accept short aliases for ergonomics — `shell` → `os_shell`, `fs_write` → `filesystem_write`, `fs_read` → `filesystem_read`, `eval` → `code_eval`, `cluster_write` → `cluster_admin`, `db_write` → `local_db_write`, `process` → `process_control`. Unknown values are logged at WARN and ignored; bdsnode starts up partially-sandboxed rather than refusing to run.
+
+### 4.2 Performance observability
+
+```hjson
+perf: {
+  slow_query_threshold_ms: 500   // default; 0 disables the slow log
+}
+```
+
+| Field                              | Type    | Default | Required |
+|------------------------------------|---------|---------|----------|
+| `perf.slow_query_threshold_ms`     | integer | 500     | no       |
+
+Every `bdslib::perf::time` call records its elapsed time into the
+latency registry surfaced by `v2/perf`.  When that elapsed time
+exceeds `slow_query_threshold_ms`, the same call also lands in a
+bounded 100-entry **slow-query ring** queryable via
+`v2/perf.slow_queries` (or `bdscmd perf-slow`).  This catches
+outliers that p95 hides — a single 2-second call among 1000 fast
+ones doesn't move the percentile but does move oncall.
+
+Set to `0` to disable the slow-log entirely (the percentile
+registry is still populated).  Production deployments rarely
+need to tune this — the default surfaces real outliers without
+log churn.
 
 ---
 
@@ -777,6 +835,50 @@ peer_rpc_timeout:   "2s"
 **Relationship**: `peer_rpc_timeout < gossip_interval` is the
 right shape — each tick must complete its ping fan-out before the
 next one starts.
+
+#### Adaptive per-peer timeout
+
+```hjson
+adaptive_peer_timeout_enabled:    true
+adaptive_peer_timeout_multiplier: 3.0
+```
+
+| Field                                 | Type    | Default | Required |
+|---------------------------------------|---------|---------|----------|
+| `adaptive_peer_timeout_enabled`       | bool    | true    | no       |
+| `adaptive_peer_timeout_multiplier`    | float   | 3.0     | no       |
+
+When enabled (the default), `cluster::fanout::fan_out_v2` adjusts
+the per-peer RPC deadline using the live `fanout.peer.<node_id>`
+p95 from the perf registry.  Goal: avoid waiting the full
+`peer_rpc_timeout` on a chronically slow peer when historical
+behaviour says it has stopped responding.
+
+The dynamic deadline is:
+
+```
+dynamic_timeout = min(peer_rpc_timeout, p95 × multiplier)
+                  .max(peer_rpc_timeout × 0.1)
+                  .max(1 ms)
+```
+
+So:
+- Never exceeds `peer_rpc_timeout` (the operator's contract).
+- Never drops below 10% of it (avoids pathological tightening
+  when p95 momentarily reads 0).
+- Falls back to the static `peer_rpc_timeout` until the peer
+  has at least 20 recent samples in its ring — small windows
+  produce unstable percentiles.
+
+The heuristic is **self-stabilising**: every RPC outcome
+(including timeouts) is recorded into p95, so a chronically
+broken peer's p95 converges to the static timeout and the
+adaptive logic stops biting it.
+
+⚠ **When to disable**: deployments that prefer "wait the full
+deadline before declaring a peer slow" semantics — typically WAN
+clusters where occasional latency spikes are expected and partial
+reads are unacceptable.
 
 ### 6.3 Replication
 
@@ -1447,6 +1549,38 @@ web: {
 
 Default prompt — 7-step *in-depth-template-level-RCA-insight* frame for `v?/rca.templates` output.  Same Jaccard + lead-time machinery as `web.analyze.rca`, but the unit of evidence is a **drain3-mined log template** (a recurring pattern with `<*>` placeholders) instead of a telemetry key.  Prompt is structurally parallel to the Telemetry RCA prompt (failure identification → precursor analysis → consequence analysis → cluster interpretation → causal story → confidence assessment → validation steps) but with template-specific phrasing throughout: every "key" becomes "template", every quoted citation must preserve `<*>` wildcards so the operator can paste them straight back into the Templates search box.  Supplied payload uses the original `v?/rca.templates` field names (`failure_body`, `body`) rather than renaming them to telemetry-RCA's `failure_key`/`key` shape — keeps the prompt vocabulary aligned with the data the LLM is actually seeing.  Payload contains one `_kind=rca_templates_window_stats` row + N `_kind=rca_templates_cause` rows (each enriched with `rank` and a synthetic `is_precursor` boolean from the lead sign) + M `_kind=rca_templates_cluster` rows.  60/40 split favouring causes; stats row always passes through.
 
+#### `web.analyze.perf` (Administration → Performance page)
+
+```hjson
+web: {
+  analyze: {
+    perf: {
+      timeout_secs:    600
+      max_rows:        200
+      // prompt_template:  '''...'''   (optional override)
+    }
+  }
+}
+```
+
+Default prompt — sharded-mixed-engine performance frame for the
+`v2/perf` + `v2/perf.slow_queries` snapshot.  Teaches the model
+bdslib's series taxonomy (`ingest.*` = DuckDB + Tantivy + HNSW +
+ONNX inside `add_batch`, `shard.*` = per-shard search, `embed.*`
+= ONNX cache, `fanout.*` = read fan-out RTT, `replicate.*` = write
+replication RTT) and asks for a six-point report: headline verdict
+→ hot-path attribution to the responsible engine → cluster shape
+→ embed-cache effectiveness → top slow-log outliers → one
+concrete next step citing a `bds.hjson` knob.
+
+`max_rows` defaults to 200 (higher than the 50 used by other
+targets) because the payload mixes two block types — series
+summaries sorted by p95 desc + slow-log entries newest-first.
+Truncation drops the tail of each block, so the model always sees
+the worst series and the most-recent outliers.  Each row carries a
+`kind` discriminator (`"series"` or `"slow_entry"`) so the model
+can distinguish percentile rows from spike rows.
+
 - **`timeout_secs`** — per-request reqwest timeout for bdsweb → bdsnode
   on the analyze call only.  Default 600 s.  CPU-bound local Ollama
   on llama3.2 + 50 supplied rows + auto-bumped `num_ctx` typically
@@ -1487,6 +1621,7 @@ Active settings are logged at bdsweb startup:
 [INFO] web.analyze.knn:                       timeout=600s, max_rows=50, prompt_chars=2870
 [INFO] web.analyze.rca:                       timeout=600s, max_rows=50, prompt_chars=4290
 [INFO] web.analyze.rca_templates:             timeout=600s, max_rows=50, prompt_chars=4530
+[INFO] web.analyze.perf:                      timeout=600s, max_rows=200, prompt_chars=3870
 ```
 
 ---

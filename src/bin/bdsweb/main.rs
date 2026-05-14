@@ -84,6 +84,8 @@ struct WebConfig {
     rca_analyze:                       state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for RCA → Templates RCA → "Analyze this!".
     rca_templates_analyze:             state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Administration → Performance → "Analyze this!".
+    perf_analyze:                      state::AnalyzeTargetConfig,
 }
 
 fn load_config(config_path: Option<&str>) -> WebConfig {
@@ -106,6 +108,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         knn_analyze:                       state::AnalyzeTargetConfig::knn_default(),
         rca_analyze:                       state::AnalyzeTargetConfig::rca_default(),
         rca_templates_analyze:             state::AnalyzeTargetConfig::rca_templates_default(),
+        perf_analyze:                      state::AnalyzeTargetConfig::perf_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -180,6 +183,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     let knn_analyze                       = parse_target("knn",                       state::AnalyzeTargetConfig::knn_default());
     let rca_analyze                       = parse_target("rca",                       state::AnalyzeTargetConfig::rca_default());
     let rca_templates_analyze             = parse_target("rca_templates",             state::AnalyzeTargetConfig::rca_templates_default());
+    let perf_analyze                      = parse_target("perf",                      state::AnalyzeTargetConfig::perf_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -208,6 +212,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         knn_analyze,
         rca_analyze,
         rca_templates_analyze,
+        perf_analyze,
     }
 }
 
@@ -313,6 +318,12 @@ async fn main() {
         cfg.rca_templates_analyze.max_rows,
         cfg.rca_templates_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.perf: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.perf_analyze.timeout_secs,
+        cfg.perf_analyze.max_rows,
+        cfg.perf_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -332,6 +343,7 @@ async fn main() {
         cfg.knn_analyze,
         cfg.rca_analyze,
         cfg.rca_templates_analyze,
+        cfg.perf_analyze,
     );
 
     // Background poller: refreshes the cached Dashboard snapshot every N seconds.
@@ -392,6 +404,9 @@ async fn main() {
         .route("/cluster",           get(routes::cluster::page))
         .route("/cluster/data",      get(routes::cluster::data))
         .route("/cluster/refresh",   get(routes::cluster::refresh))
+        .route("/perf",              get(routes::perf::page))
+        .route("/perf/data",         get(routes::perf::data))
+        .route("/perf/analyze",      get(routes::perf::analyze))
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))
