@@ -10,6 +10,7 @@ pub mod embedding;
 pub mod frequencytrackingstorage;
 pub mod fts;
 pub mod globals;
+pub mod graphstorage;
 pub mod health;
 pub mod llm;
 pub mod dev_data;
@@ -24,6 +25,7 @@ pub mod shardscache;
 pub mod shardsinfo;
 pub mod shardsmanager;
 pub mod shardsmanager_aggregationsearch;
+pub mod shardsmanager_graph;
 pub mod shardsmanager_docstore;
 pub mod shardsmanager_drain;
 pub mod shardsmanager_lsa_primary_textrank;
@@ -54,6 +56,11 @@ pub use frequencytrackingstorage::FrequencyTracking;
 pub use documentstorage::{results_to_strings, DocumentStorage};
 pub use embedding::EmbeddingEngine;
 pub use fts::FTSEngine;
+pub use graphstorage::{
+    Direction, Edge, EdgeFilter, EdgeSpec, EdgeSummary, GraphFingerprint, GraphIntegrityReport,
+    GraphRepairOpts, GraphRepairReport, GraphStats, GraphStore, Node, NodeRef, NodeSummary, Path,
+    Strategy, TimeScope, TraversalHit, TraversalOpts,
+};
 pub use globals::{dbpath_from_config, get_db, init_db, sync_db};
 pub use observability::{ObservabilityStorage, ObservabilityStorageConfig};
 pub use shard::Shard;
@@ -61,7 +68,7 @@ pub use shardscache::ShardsCache;
 pub use shardsinfo::ShardInfoEngine;
 pub use shardsmanager::ShardsManager;
 pub use cluster::{Cluster, ClusterConfig, ClusterMode};
-pub use storageengine::StorageEngine;
+pub use storageengine::{SqlParam, StorageEngine};
 pub use vectorengine::VectorEngine;
 pub use vm::context;
 pub use scheduler::Scheduler;

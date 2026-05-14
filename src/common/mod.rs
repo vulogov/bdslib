@@ -1,3 +1,4 @@
+pub mod cache_graph;
 pub mod cache_json;
 pub mod drain;
 pub mod error;

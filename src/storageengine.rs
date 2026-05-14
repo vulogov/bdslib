@@ -79,6 +79,34 @@ fn shared_r2d2_thread_pool() -> Arc<ScheduledThreadPool> {
         .clone()
 }
 
+/// Owned scalar parameter for the parameterized `*_params` query
+/// methods.  A small concrete enum (rather than `&dyn ToSql`) keeps
+/// callers free of lifetime juggling — they build `Vec<SqlParam>`
+/// directly.  Covers every scalar the storage layers bind: text
+/// (incl. UUID/JSON serialised to string), integers, floats, bools,
+/// and SQL NULL.
+#[derive(Debug, Clone)]
+pub enum SqlParam {
+    Text(String),
+    Int(i64),
+    Real(f64),
+    Bool(bool),
+    Null,
+}
+
+impl duckdb::ToSql for SqlParam {
+    fn to_sql(&self) -> duckdb::Result<duckdb::types::ToSqlOutput<'_>> {
+        use duckdb::types::{ToSqlOutput, Value};
+        Ok(match self {
+            SqlParam::Text(s) => ToSqlOutput::Owned(Value::Text(s.clone())),
+            SqlParam::Int(i)  => ToSqlOutput::Owned(Value::BigInt(*i)),
+            SqlParam::Real(f) => ToSqlOutput::Owned(Value::Double(*f)),
+            SqlParam::Bool(b) => ToSqlOutput::Owned(Value::Boolean(*b)),
+            SqlParam::Null    => ToSqlOutput::Owned(Value::Null),
+        })
+    }
+}
+
 pub struct StorageEngine {
     pool: Pool<DuckdbConnectionManager>,
 }
@@ -235,5 +263,66 @@ impl StorageEngine {
 
     pub fn sync(&self) -> Result<()> {
         self.execute("CHECKPOINT;")
+    }
+
+    // ── parameterized variants ────────────────────────────────────────────────
+    //
+    // Point-lookup workloads (e.g. the graph layer) bind external,
+    // possibly-untrusted string keys.  These variants pass values as
+    // bound parameters — injection-safe and prepared-statement
+    // friendly — instead of string-interpolated SQL.
+
+    /// `select_all` with bound parameters.  Placeholders in `sql` are
+    /// positional `?`.
+    pub fn select_all_params(
+        &self,
+        sql: &str,
+        params: &[SqlParam],
+    ) -> Result<Vec<Vec<DynamicValue>>> {
+        let conn = self.checkout("select_all_params")?;
+
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| EasyError::new("Query preparation failed", e))?;
+
+        let rows = stmt
+            .query_map(duckdb::params_from_iter(params.iter()), |row| {
+                Self::row_to_dynamic(row)
+            })
+            .map_err(|e| EasyError::new("Execution of select_all_params failed", e))?;
+
+        let mut results: Vec<Vec<DynamicValue>> = Vec::new();
+        for row_result in rows {
+            results.push(row_result.map_err(|e| EasyError::new("Error fetching row", e))?);
+        }
+        Ok(results)
+    }
+
+    /// `execute` with bound parameters.  Returns the number of rows
+    /// affected.
+    pub fn execute_params(&self, sql: &str, params: &[SqlParam]) -> Result<usize> {
+        let conn = self.checkout("execute_params")?;
+        conn.execute(sql, duckdb::params_from_iter(params.iter()))
+            .map_err(|e| EasyError::new("Parameterized SQL execution failed", e))
+    }
+
+    /// Run several parameterized statements inside a single
+    /// `BEGIN … COMMIT` on one pooled connection.  No-op when empty.
+    /// On any statement failure the transaction is rolled back.
+    pub fn execute_many_params(&self, statements: &[(String, Vec<SqlParam>)]) -> Result<()> {
+        if statements.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.checkout("execute_many_params")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| EasyError::new("Could not open transaction", e))?;
+        for (sql, params) in statements {
+            tx.execute(sql, duckdb::params_from_iter(params.iter()))
+                .map_err(|e| EasyError::new("Parameterized batch statement failed", e))?;
+        }
+        tx.commit()
+            .map_err(|e| EasyError::new("Batch transaction commit failed", e))?;
+        Ok(())
     }
 }

@@ -245,6 +245,11 @@ pub struct ShardsManager {
     /// Cluster layer.  `Some` when `cluster.enabled = true` in `bds.hjson`;
     /// `None` for stand-alone deployments (zero overhead — no background tasks).
     pub(crate) cluster: Option<Arc<Cluster>>,
+    /// Lazily-opened relationship graph (`{dbpath}/graph/` — DuckDB +
+    /// Tantivy).  Opened on first graph use; nodes that never touch
+    /// the graph pay nothing.  Shared across all `ShardsManager`
+    /// clones via `Arc`.
+    pub(crate) graph: Arc<crate::graphstorage::LazyGraph>,
     /// Serialises concurrent callers of `add_batch`.
     ///
     /// `add_batch` internally uses Rayon to parallelise across shards, but
@@ -391,6 +396,10 @@ impl ShardsManager {
             // engine — `Self::new` populates this slot after construction.
             embedding_model_name: Arc::new(std::sync::Mutex::new(None)),
             cluster,
+            graph: Arc::new(crate::graphstorage::LazyGraph::new(
+                format!("{}/graph", cfg.dbpath),
+                cfg.pool_size,
+            )),
             add_batch_lock: Arc::new(std::sync::Mutex::new(())),
         };
 

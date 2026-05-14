@@ -224,6 +224,30 @@ impl FTSEngine {
         Ok(())
     }
 
+    /// Wipe the index and reopen it empty — a self-healing primitive
+    /// for callers that rebuild the index from an authoritative store.
+    ///
+    /// Drops the in-memory writer/reader/index, removes the on-disk
+    /// directory, then lazily reopens a fresh empty index on the next
+    /// operation.  Unlike re-adding every document (which leaves
+    /// orphan entries for since-deleted ids), this guarantees the
+    /// index contains *exactly* what the caller re-adds afterwards.
+    /// For a `":memory:"` index it simply drops the state.
+    pub fn rebuild(&self) -> Result<()> {
+        let mut guard = self.state.lock();
+        *guard = None; // drop writer/reader/index handles
+        if self.path != ":memory:" {
+            let dir = Path::new(&self.path);
+            if dir.exists() {
+                std::fs::remove_dir_all(dir)
+                    .map_err(|e| err_msg(format!("cannot wipe FTS index dir {}: {e}", self.path)))?;
+            }
+        }
+        // Reopen eagerly so a failure surfaces here, not on a later op.
+        Self::ensure(&mut guard, &self.path)?;
+        Ok(())
+    }
+
     /// Search the index and return up to `limit` matching UUIDv7s, ranked by relevance.
     ///
     /// `query` uses Tantivy's query syntax (e.g. `"hello world"`, `hello AND world`).
