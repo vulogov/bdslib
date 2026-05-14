@@ -109,9 +109,15 @@ impl Shard {
         let (id, is_primary, opt_emb) = self.observability.add(doc.clone())?;
         if is_primary {
             self.fts.add_document_with_id(id, &fingerprint)?;
+            // `observability.add` guarantees `Some` embedding for a
+            // primary; treat a violation as an error, not a panic —
+            // this runs on the single-threaded ingest flusher.
+            let emb = opt_emb.ok_or_else(|| {
+                err_msg(format!("primary record {id} returned without an embedding"))
+            })?;
             // Reuse the embedding already computed by observability — no second embed.
             self.vector
-                .store_vector(&id.to_string(), opt_emb.unwrap(), Some(doc))?;
+                .store_vector(&id.to_string(), emb, Some(doc))?;
         }
         Ok(id)
     }
@@ -136,8 +142,13 @@ impl Shard {
             ids.push(id);
             if is_primary {
                 fts_batch.push((id, fingerprints[i].clone()));
+                // Same invariant as `add()` — a primary without an
+                // embedding is an error, never a flusher panic.
+                let emb = opt_emb.ok_or_else(|| {
+                    err_msg(format!("primary record {id} returned without an embedding"))
+                })?;
                 // Reuse embedding from observability — no re-embed.
-                vector_batch.push((id.to_string(), opt_emb.unwrap(), Some(docs[i].clone())));
+                vector_batch.push((id.to_string(), emb, Some(docs[i].clone())));
             }
         }
 

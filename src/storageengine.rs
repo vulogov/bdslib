@@ -1,10 +1,42 @@
 use crate::common::error::{Error as EasyError, Result};
 use duckdb::{DuckdbConnectionManager, Error as DuckError, Row};
-use r2d2::Pool;
+use r2d2::{Pool, PooledConnection};
 use rust_dynamic::value::Value as DynamicValue;
 use scheduled_thread_pool::ScheduledThreadPool;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+/// Hard ceiling on how long `pool.get()` will block waiting for a free
+/// connection.  r2d2's default is **30 s** — long enough that a
+/// saturated pool looks like a hang.  10 s fails fast with a clear
+/// error while still riding out a brief, legitimate contention burst.
+///
+/// Every checkout that hits this timeout increments
+/// [`pool_checkout_timeouts`] — a non-zero counter there is the
+/// signal that a pool is undersized for its workload (raise
+/// `pool_size`, or shed the load that's holding connections).
+const POOL_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Process-wide count of `pool.get()` calls that exceeded
+/// [`POOL_CHECKOUT_TIMEOUT`].  Surfaced via `v2/status.pool`.
+static POOL_CHECKOUT_TIMEOUTS: OnceLock<AtomicU64> = OnceLock::new();
+
+/// Lifetime count of connection-pool checkout timeouts across every
+/// `StorageEngine` in the process.  `0` is healthy; non-zero means at
+/// least one DuckDB pool ran out of connections under load.
+pub fn pool_checkout_timeouts() -> u64 {
+    POOL_CHECKOUT_TIMEOUTS
+        .get_or_init(|| AtomicU64::new(0))
+        .load(Ordering::Relaxed)
+}
+
+fn record_checkout_timeout() {
+    POOL_CHECKOUT_TIMEOUTS
+        .get_or_init(|| AtomicU64::new(0))
+        .fetch_add(1, Ordering::Relaxed);
+}
 
 /// Process-wide shared r2d2 maintenance pool.
 ///
@@ -58,6 +90,10 @@ impl StorageEngine {
 
         let pool = Pool::builder()
             .max_size(pool_size)
+            // Fail fast instead of r2d2's 30 s default — a checkout
+            // that can't be satisfied in 10 s means the pool is
+            // saturated, and a clear error beats a silent stall.
+            .connection_timeout(POOL_CHECKOUT_TIMEOUT)
             .thread_pool(shared_r2d2_thread_pool())
             .build(manager)
             .map_err(|e| EasyError::new("Failed to initialize connection pool", e))?;
@@ -72,6 +108,22 @@ impl StorageEngine {
         }
 
         Ok(Self { pool })
+    }
+
+    /// Check a connection out of the pool, bounded by
+    /// [`POOL_CHECKOUT_TIMEOUT`].  A timeout increments the global
+    /// [`pool_checkout_timeouts`] counter and returns a clear error
+    /// naming the calling operation — never an indefinite stall.
+    fn checkout(&self, op: &str) -> Result<PooledConnection<DuckdbConnectionManager>> {
+        self.pool.get().map_err(|e| {
+            // r2d2 surfaces a checkout timeout as its generic pool
+            // error; we can't cleanly distinguish "timed out" from
+            // "manager broken", so we count every checkout failure —
+            // in practice, with a healthy manager, the timeout is the
+            // only way `get()` fails.
+            record_checkout_timeout();
+            EasyError::new(&format!("pool checkout failed for {op} (pool saturated?)"), e)
+        })
     }
 
     fn map_to_duck<E: std::fmt::Display>(e: E) -> DuckError {
@@ -114,10 +166,7 @@ impl StorageEngine {
     }
 
     pub fn select_all(&self, sql: &str) -> Result<Vec<Vec<DynamicValue>>> {
-        let conn = self
-            .pool
-            .get()
-            .map_err(|e| EasyError::new("Pool checkout failed for select_all", e))?;
+        let conn = self.checkout("select_all")?;
 
         let mut stmt = conn
             .prepare(sql)
@@ -139,10 +188,7 @@ impl StorageEngine {
     where
         F: FnMut(Vec<DynamicValue>) -> Result<()>,
     {
-        let conn = self
-            .pool
-            .get()
-            .map_err(|e| EasyError::new("Pool checkout failed for select_foreach", e))?;
+        let conn = self.checkout("select_foreach")?;
 
         let mut stmt = conn
             .prepare(sql)
@@ -164,10 +210,7 @@ impl StorageEngine {
     }
 
     pub fn execute(&self, sql: &str) -> Result<()> {
-        let conn = self
-            .pool
-            .get()
-            .map_err(|e| EasyError::new("Pool checkout failed for execute", e))?;
+        let conn = self.checkout("execute")?;
 
         conn.execute(sql, [])
             .map_err(|e| EasyError::new("SQL execution failed", e))?;
@@ -183,10 +226,7 @@ impl StorageEngine {
         if statements.is_empty() {
             return Ok(());
         }
-        let conn = self
-            .pool
-            .get()
-            .map_err(|e| EasyError::new("Pool checkout failed for execute_many", e))?;
+        let conn = self.checkout("execute_many")?;
         let sql = format!("BEGIN;\n{};\nCOMMIT;", statements.join(";\n"));
         conn.execute_batch(&sql)
             .map_err(|e| EasyError::new("Batch transaction failed", e))?;

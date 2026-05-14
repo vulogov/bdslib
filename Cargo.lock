@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "bdslib"
-version = "0.12.9"
+version = "0.12.10"
 dependencies = [
  "ammonia",
  "anomaly_detection",
@@ -918,6 +918,7 @@ dependencies = [
  "filesystem",
  "flate2",
  "fs_extra",
+ "futures",
  "fuzzy-matcher",
  "fxhash",
  "grok",

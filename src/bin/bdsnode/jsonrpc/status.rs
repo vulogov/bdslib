@@ -113,6 +113,30 @@ pub fn register(module: &mut RpcModule<()>) {
             // can tell at a glance whether retention is running or
             // turned off.  Values are atomic counters maintained by
             // `bdslib::retention::record_run` after every sweep.
+            // DuckDB connection-pool health.  `checkout_timeouts` is
+            // the lifetime count of `pool.get()` calls that hit the
+            // 10 s ceiling — non-zero means a pool ran out of
+            // connections under load (raise `pool_size`).
+            let pool_block = serde_json::json!({
+                "checkout_timeouts": bdslib::storageengine::pool_checkout_timeouts(),
+            });
+
+            // Ingest flusher liveness.  A dead flusher used to be
+            // invisible until shutdown; these counters make it
+            // observable.  `alive < configured` means the supervisor
+            // is mid-respawn or a flusher is wedged; non-zero
+            // `restarts_total` means a flusher panicked at least once.
+            let ingest_flushers_block = {
+                use std::sync::atomic::Ordering;
+                let s = crate::server::add::stats();
+                serde_json::json!({
+                    "alive":           s.alive.load(Ordering::Relaxed),
+                    "configured":      s.configured.load(Ordering::Relaxed),
+                    "restarts_total":  s.restarts_total.load(Ordering::Relaxed),
+                    "records_dropped": s.records_dropped.load(Ordering::Relaxed),
+                })
+            };
+
             // Rebalancer sweeper stats — present even when disabled
             // so operators can tell at a glance whether the task ran.
             // Atomic counters maintained by
@@ -200,6 +224,8 @@ pub fn register(module: &mut RpcModule<()>) {
                 "cluster":            cluster_info,
                 "retention":          retention_block,
                 "rebalancer":         rebalancer_block,
+                "ingest_flushers":    ingest_flushers_block,
+                "pool":               pool_block,
                 "dev_data":           dev_data_block,
                 "perf":               perf_block,
             });

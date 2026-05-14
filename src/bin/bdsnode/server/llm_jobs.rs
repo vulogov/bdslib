@@ -124,7 +124,14 @@ async fn run(cfg: Config, mut shutdown_rx: oneshot::Receiver<()>) {
                 break;
             }
             _ = tokio::time::sleep(poll) => {
-                drain_pending(&semaphore, node_id).await;
+                // Panic-isolate the claim/drain pass (reliability #3)
+                // — a panic in claim_one (DB op on jobs.duckdb) must
+                // not kill the runner loop.  Spawned `run_one` tasks
+                // are already isolated as their own tasks.
+                crate::server::supervise::tick(
+                    "llm_jobs",
+                    drain_pending(&semaphore, node_id),
+                ).await;
             }
         }
     }

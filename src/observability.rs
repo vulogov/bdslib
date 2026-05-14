@@ -250,7 +250,12 @@ impl ObservabilityStorage {
             ))?;
             Ok((id, true, Some(embedding)))
         } else {
-            let primary_id = similar_primary.unwrap();
+            // `classify` guarantees `Some` for a secondary, but an
+            // invariant break here must NOT panic the ingest path —
+            // fail this one record instead.
+            let primary_id = similar_primary.ok_or_else(|| {
+                err_msg("classify() returned secondary with no similar primary")
+            })?;
             self.engine.execute(&format!(
                 "INSERT INTO primary_secondary VALUES ('{primary_id}', '{id}', {ts})"
             ))?;
@@ -374,13 +379,22 @@ impl ObservabilityStorage {
         }
 
         if new_docs.is_empty() {
-            return Ok(states
-                .into_iter()
-                .map(|s| {
-                    let State::Duplicate(id) = s else { unreachable!() };
-                    (id, false, None)
-                })
-                .collect());
+            // Every state must be `Duplicate` here (a `New` state would
+            // have pushed into `new_docs`).  Handle the impossible
+            // `New` case as an error rather than `unreachable!()` so a
+            // future refactor can't turn it into a panic.
+            let mut out = Vec::with_capacity(states.len());
+            for s in states {
+                match s {
+                    State::Duplicate(id) => out.push((id, false, None)),
+                    State::New(_) => {
+                        return Err(err_msg(
+                            "internal: New state with empty new_docs",
+                        ));
+                    }
+                }
+            }
+            return Ok(out);
         }
 
         // ── phase 2: batch-embed all new docs in one ONNX pass ────────────────
@@ -390,6 +404,17 @@ impl ObservabilityStorage {
             .collect();
         let embed_refs: Vec<&str> = embed_inputs.iter().map(|s| s.as_str()).collect();
         let embeddings = self.embedding.embed_batch(&embed_refs)?;
+        // Guard the 1:1 invariant once, here — every downstream
+        // `embeddings[idx]` indexing relies on it.  A short Vec from
+        // the embedding engine would otherwise be an index panic that
+        // kills the flusher.
+        if embeddings.len() != new_docs.len() {
+            return Err(err_msg(format!(
+                "embed_batch returned {} vectors for {} inputs",
+                embeddings.len(),
+                new_docs.len(),
+            )));
+        }
 
         // ── phase 3: classify all using in-memory cache, one lock for batch ───
         struct Classified {
@@ -403,7 +428,9 @@ impl ObservabilityStorage {
             if cache.is_none() {
                 *cache = Some(self.load_primary_embeddings_from_db()?);
             }
-            let entries = cache.as_mut().unwrap();
+            let entries = cache.as_mut().ok_or_else(|| {
+                err_msg("primary_cache unexpectedly empty after populate")
+            })?;
             for (new_doc, emb) in new_docs.iter().zip(embeddings.iter()) {
                 let (is_primary, similar_primary) =
                     Self::classify_in_memory(entries, emb, self.config.similarity_threshold)?;
@@ -447,7 +474,11 @@ impl ObservabilityStorage {
                     new_doc.id, hex
                 ));
             } else {
-                let primary_id = cls.similar_primary.unwrap();
+                // See the matching note in `add()` — never panic the
+                // ingest path on a classify invariant break.
+                let primary_id = cls.similar_primary.ok_or_else(|| {
+                    err_msg("classify() returned secondary with no similar primary")
+                })?;
                 sql_stmts.push(format!(
                     "INSERT INTO primary_secondary VALUES ('{}', '{}', {})",
                     primary_id, new_doc.id, new_doc.ts
@@ -1116,7 +1147,9 @@ impl ObservabilityStorage {
         if cache.is_none() {
             *cache = Some(self.load_primary_embeddings_from_db()?);
         }
-        let entries = cache.as_mut().unwrap();
+        let entries = cache.as_mut().ok_or_else(|| {
+            err_msg("primary_cache unexpectedly empty after populate")
+        })?;
         let result =
             Self::classify_in_memory(entries, embedding, self.config.similarity_threshold)?;
         if result.0 {

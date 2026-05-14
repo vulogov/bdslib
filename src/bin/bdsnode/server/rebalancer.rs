@@ -91,7 +91,13 @@ async fn run(
                 break;
             }
             _ = tokio::time::sleep(cfg.interval) => {
-                run_one_tick(&cfg, &cluster).await;
+                // Panic-isolate the sweep (reliability #3) — a panic
+                // in scan_pass / process_batch must not kill the
+                // rebalancer loop.  Caught + logged; next tick runs.
+                crate::server::supervise::tick(
+                    "rebalancer",
+                    run_one_tick(&cfg, &cluster),
+                ).await;
             }
         }
     }

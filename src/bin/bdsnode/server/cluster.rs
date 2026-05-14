@@ -6,6 +6,7 @@
 
 use bdslib::cluster::{gossip, replication};
 use bdslib::cluster::peer_table::PeerState;
+use crate::server::supervise;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
@@ -105,6 +106,14 @@ async fn run(
             _ = tokio::time::sleep(interval) => {
                 tick_no = tick_no.wrapping_add(1);
 
+                // Panic-isolate the whole tick body (reliability #3):
+                // a panic in gossip / recovery / hint-replay /
+                // anti-entropy must not kill the gossip loop — that
+                // would leave the node blind to peer state until
+                // restart.  `supervise::tick` catches, logs, and
+                // swallows; the timers below are loop-local so the
+                // next tick simply carries on.
+                supervise::tick("cluster", async {
                 // Liveness sweep first so a peer that just transitioned to
                 // Dead is excluded from the random-pick this tick.
                 let changed = gossip::sweep(&cluster.peers, suspect, dead);
@@ -169,6 +178,7 @@ async fn run(
                     s.last_ae_tick_tombstones  = outcome.tombstones;
                     s.last_ae_tick_pruned      = outcome.pruned;
                 }
+                }).await;  // end supervise::tick
             }
         }
     }
