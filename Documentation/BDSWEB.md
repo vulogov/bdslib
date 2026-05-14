@@ -25,6 +25,8 @@ trend analysis, and an interactive BUND scripting workbench.
 12. [Common UI Patterns](#12-common-ui-patterns)
 13. [Authentication](#13-authentication)
 14. [LLM — Chat + Administration](#14-llm--chat--administration)
+15. [Resilience & health](#15-resilience--health)
+16. [TLS / HTTPS](#16-tls--https)
 
 ---
 
@@ -57,7 +59,15 @@ bdsweb --host 0.0.0.0 --port 8888 --node http://prod-node.internal:9000
 | `--host <ADDR>` | | `127.0.0.1` | Address to bind the HTTP server |
 | `--port <PORT>` | `-p` | `8080` | TCP port to listen on |
 | `--node <URL>` | `-n` | `http://127.0.0.1:9000` | bdsnode JSON-RPC endpoint |
+| `--config <PATH>` | `-c` | — | Path to `bds.hjson`.  Supplies the auth shared secret plus the `web.*` keys — cookie / proxy-trust / TLS (see [§ 16](#16-tls--https)) — and the dashboard/cluster refresh intervals.  Also honours env `BDS_CONFIG`.  Without it, bdsweb runs in open-access mode. |
 | `--verbose <LEVEL>` | | `1` | Log verbosity: 0 = warn, 1 = info, 2 = debug |
+
+> **Open-access bind guard.** When bdsweb starts without an auth
+> shared secret (no `--config`, or `cluster.enabled = false`) it
+> **refuses to start** if `--host` is not a loopback address — an
+> unauthenticated admin + Bund-eval surface must never face the
+> network.  Bind `127.0.0.1` for local dev, or configure
+> `cluster.shared_secret` to enable authentication.
 
 ---
 
@@ -66,8 +76,10 @@ bdsweb --host 0.0.0.0 --port 8888 --node http://prod-node.internal:9000
 | Variable | Equivalent flag | Example |
 |----------|-----------------|---------|
 | `BDSNODE_URL` | `--node` | `http://prod-node.internal:9000` |
+| `BDS_CONFIG` | `--config` | `/etc/bdslib/bds.hjson` |
 
-When `BDSNODE_URL` is set, `--node` is not required.
+When `BDSNODE_URL` is set, `--node` is not required.  Likewise
+`BDS_CONFIG` is an alternative to `--config`.
 
 ---
 
@@ -741,9 +753,29 @@ bookmarked or shared.
 
 ### Error Display
 
-RPC errors are rendered as a red bordered box with the error message inline
-(no full page reload). Hard failures (network unreachable, template panic)
-produce a full-page error response with a link back to the dashboard.
+Handler-level RPC errors that a page knows how to absorb (an empty
+result set, an upstream warning) are rendered inline as a red
+bordered box — no full-page reload.
+
+Hard failures (bdsnode unreachable, a handler panic) produce an
+HTTP 500.  Three layers shape what the browser actually sees:
+
+- **Generic client message.** The 500 page never echoes the raw
+  error — it can name the backend node URL or internal response
+  text.  The full detail is logged server-side; the visitor sees a
+  class-appropriate line ("Couldn't reach the bdsnode backend…",
+  "The bdsnode backend returned an error", …).
+- **HTMX-aware fragments.** When the failing request was an HTMX
+  partial swap, a middleware replaces the full `<!doctype html>`
+  error document with a compact inline fragment ("This section
+  couldn't load — Reload page" button) so a transient blip doesn't
+  inject a whole HTML page into a results panel.
+- **Panic boundary.** A `CatchPanicLayer` wraps the entire router,
+  so a panic in any handler or middleware becomes a clean 500
+  instead of a dropped connection.
+
+See [§ 15](#15-resilience--health) for the retry and
+graceful-degradation behaviour behind these.
 
 ### Frontend Libraries
 
@@ -766,32 +798,44 @@ the config file passed via `--config` / `BDS_CONFIG`:
 
 | Mode | Trigger | Behaviour |
 |---|---|---|
-| **Open-access** | No `--config`, or config has no `cluster` block / `cluster.enabled = false` | Auth middleware is a no-op.  Every route is wide open.  The `/login` page renders a yellow banner explaining why no challenge is presented.  Use only on private development networks. |
-| **Authenticated** | Config has `cluster.enabled = true` AND `cluster.shared_secret` populated | Every route except `/login`, `/logout`, `/version` requires a valid `bds_session` cookie.  Unauthenticated requests redirect to `/login?next=<original-path>`. |
+| **Open-access** | No `--config`, or config has no `cluster` block / `cluster.enabled = false` | Auth middleware is a no-op.  Every route is wide open.  The `/login` page renders a yellow banner explaining why no challenge is presented.  **bdsweb refuses to start in this mode on a non-loopback `--host`** — see the open-access bind guard in [§ 2](#2-global-options).  Use only on a loopback dev box. |
+| **Authenticated** | Config has `cluster.enabled = true` AND `cluster.shared_secret` populated | Every route except the public allow-list (`/login`, `/logout`, `/version`, `/whoami`, `/healthz`) requires a valid `bds_session` cookie.  Unauthenticated requests redirect to `/login?next=<original-path>`. |
 
 The bdsweb startup banner says which mode it ended up in:
 
 ```
 [INFO] bdsweb auth enabled — shared_secret loaded (36 bytes)
-# or
-[WARN] bdsweb starting in OPEN-ACCESS mode — no cluster.shared_secret found in config; session auth is disabled
+# or — a loud multi-line banner:
+[WARN] ============================================================
+[WARN]   bdsweb is running in OPEN-ACCESS mode — SESSION AUTH IS OFF
+[WARN]   No cluster.shared_secret configured. Every page, including
+[WARN]   /admin/* and /bund (arbitrary Bund eval), is unauthenticated.
+[WARN]   Bound to loopback (127.0.0.1) only — do not expose this process.
+[WARN] ============================================================
 ```
 
 ### First-user bootstrap
 
-When the cluster's user store is empty (probed via `v3/user.list`,
-cached for 30 s), the middleware passes EVERY request through
-unconditionally so an operator can reach `/admin/users` to mint the
-first admin without a chicken-and-egg login wall.  Once the first
-user lands, the cache flips on the next probe and the login wall
-takes effect.
+When the cluster's user store is empty (probed via `v3/user.list`),
+the middleware passes every request through unconditionally so an
+operator can reach `/admin/users` to mint the first admin without a
+chicken-and-egg login wall.  Two guards keep this window tight:
+
+- **Loopback-only.** The bypass is granted only to loopback peer
+  connections — it is never reachable from the network, even
+  briefly.
+- **Closed result cached, open result is not.** The "store is
+  empty" verdict is *not* cached; bdsweb re-probes on every request
+  while the window is open, so creating the first user closes auth
+  on the very next request rather than up to 30 s later.  Only the
+  "store is non-empty" verdict is cached (30 s).
 
 ### Routes
 
 | Path | Method | Purpose |
 |---|---|---|
-| `/login`         | GET  | Render the login form. Accepts `?next=<encoded path>` for post-login redirect. |
-| `/login`         | POST | Submit `username` + `password` → `v3/user.authenticate` → set `bds_session` cookie → 303 to `next` (or `/`). |
+| `/login`         | GET  | Render the login form. Accepts `?next=<path>` for post-login redirect — the value is validated as a same-origin absolute path (`//host`, `https://…`, scheme-relative URLs are rejected and fall back to `/`). |
+| `/login`         | POST | Submit `username` + `password` → `v3/user.authenticate` → set `bds_session` cookie → 303 to the validated `next` (or `/`).  Per-IP rate-limited (see *Rate limiting* below). |
 | `/logout`        | POST | Clear the cookie and 303 to `/login`. |
 | `/admin/users`   | GET  | Render the User management table.  Read-only — issues `v3/user.list` HMAC-signed. |
 | `/admin/users/add` | POST | Form-encoded `username, password, [display_name]` → `v3/user.add` (HMAC) → 303 with `notice=added` query. |
@@ -802,7 +846,7 @@ takes effect.
 
 ### Cookie
 
-`bds_session=<TOKEN>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<session_ttl>`
+`bds_session=<TOKEN>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<session_ttl>[; Secure]`
 
 The token is a stateless HMAC-signed payload (`<user_id>.<expires_at>.<hmac>`)
 issued by `v3/user.authenticate` and verified offline on each request via
@@ -811,10 +855,48 @@ store; deletion of the cookie is the only logout mechanism.  Set the
 TTL (`cluster.session_ttl` in `bds.hjson`, default `8h`) according to
 your threat model.
 
-**Note on `Secure` flag**: the cookie is NOT marked `Secure` so it
-works on plain-HTTP loopback for local development.  Production
-deployments behind a TLS terminator should add `Secure` via the
-reverse proxy (e.g. nginx `proxy_cookie_flags bds_session secure`).
+**`Secure` flag** — controlled by `web.secure_cookies` (see
+[BDSCONFIG.md § 8.2](BDSCONFIG.md#82-web--security--tls)).  When the
+key is absent it is resolved automatically: `Secure` is set when
+`web.tls` is enabled **or** the bind host is non-loopback, and left
+off only for a plain-HTTP loopback dev box.  Set it explicitly to
+override the heuristic — e.g. `web.secure_cookies: true` when bdsweb
+is HTTP-only on loopback but a TLS-terminating reverse proxy fronts
+it.
+
+### CSRF protection
+
+State-changing requests are protected without a per-form token:
+
+- **No side-effecting GETs.**  Every endpoint that mutates state or
+  triggers work — `/chat/reset`, all `/*/analyze` LLM calls, every
+  admin action — is `POST` (or `DELETE`).  A cross-site `<img src>`
+  or top-level navigation therefore cannot trigger them.
+- **Same-origin enforcement.**  A middleware rejects any
+  `POST`/`PUT`/`PATCH`/`DELETE` whose `Origin` (or, as a fallback,
+  `Referer`) host does not match the request `Host`, with a `403`.
+  A cross-site form auto-submit or `fetch()` always carries the
+  attacker's origin, so it is blocked.
+- The post-login `?next=` redirect target is validated as a
+  same-origin absolute path, closing the open-redirect vector.
+
+### Security response headers
+
+Every response carries: `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`,
+and `Content-Security-Policy: frame-ancestors 'none'` — clickjacking
+and MIME-sniffing protection across the whole surface, including
+`/admin/*`.
+
+### Rate limiting
+
+`POST /login` is rate-limited per client IP
+(`cluster.auth_rate_limit_per_minute`, default 10/min; `0` disables).
+By default the limiter keys on the TCP peer IP.  When bdsweb sits
+behind a reverse proxy, set `web.trusted_proxy: true` so it keys on
+the forwarded client IP (`X-Forwarded-For` / `X-Real-IP`) instead —
+see [BDSCONFIG.md § 8.2](BDSCONFIG.md#82-web--security--tls).  Leave
+it `false` otherwise: the header is spoofable by a direct client.
 
 ### Administration → User management page
 
@@ -942,3 +1024,100 @@ contains two sub-links:
 | `/chat/query` form submit            | `v4/llm.chat`                             | yes  |
 | `/admin/llm` page load               | `v4/llm.providers.list` + `v4/llm.cache.stats` + `v4/llm.jobs.list` | yes |
 | `/admin/llm/purge` form submit       | `v4/llm.cache.purge`                      | yes  |
+
+---
+
+## 15. Resilience & health
+
+bdsweb is built to stay useful while bdsnode is slow, restarting, or
+briefly unreachable — and to make that state visible.
+
+### Graceful degradation
+
+- **Cached snapshots.**  The Dashboard and Cluster pages render from
+  background-poller caches; a failed poll keeps the previous
+  snapshot rather than blanking the page.
+- **Partial dashboard.**  The Dashboard poll fans out four RPCs with
+  `join!` (not `try_join!`).  If only some fail, the surviving
+  sections render fresh and the failed ones carry their last-known
+  value forward, marked by an amber "Showing last-known data for …"
+  banner — one slow `v2/shards` no longer blanks the whole page.
+- **"Backend unreachable" escalation.**  If the cache is still empty
+  ~30 s after startup, the Dashboard / Cluster "Wait…" partial
+  switches to an amber *"bdsnode backend appears unreachable — still
+  retrying"* state instead of spinning silently forever.
+
+### Retry & supervision
+
+- **Bounded RPC retry.**  Transient `reqwest` failures (connection
+  refused, timeout — bdsnode restarting, a TCP blip) are retried up
+  to 3 times with a short backoff.  RPC-level errors are
+  deterministic and are *not* retried.
+- **Supervised pollers.**  The Dashboard and Cluster background
+  pollers run under a supervisor: if a poll task ever panics or
+  exits, it is logged and re-spawned after a short delay — a poller
+  never dies silently and freezes its cache.
+- **Panic boundary.**  `CatchPanicLayer` turns any handler /
+  middleware panic into a clean 500 (see [§ 12](#12-common-ui-patterns)).
+
+### `/healthz` — readiness probe
+
+| Path | Method | Auth | Purpose |
+|---|---|---|---|
+| `/healthz` | GET | public (allow-listed) | Backend-connectivity readiness verdict |
+
+Returns JSON derived purely from the dashboard poller's last
+success — no extra RPC:
+
+```json
+{
+  "status": "ok",
+  "bdsnode": { "last_ok_unix": 1778773114, "age_secs": 12, "poll_interval_secs": 30 },
+  "ts": 1778773126
+}
+```
+
+| `status` | HTTP | Meaning |
+|---|---|---|
+| `starting` | 200 | The poller has not completed a first successful fetch yet. |
+| `ok` | 200 | Last successful poll is within ~3 poll intervals. |
+| `degraded` | 503 | Last success is older than that — bdsnode looks unreachable. |
+
+The `503` on `degraded` lets a load balancer drain a bdsweb whose
+backend is down, while `bdsweb` itself stays up serving cached
+pages and `/login`.
+
+---
+
+## 16. TLS / HTTPS
+
+bdsweb can serve HTTPS directly — no reverse proxy required — via the
+optional `web.tls` block in `bds.hjson`:
+
+```hjson
+web: {
+  tls: {
+    enabled: true
+    cert: "/etc/bdsweb/tls/cert.pem"
+    key:  "/etc/bdsweb/tls/key.pem"
+  }
+}
+```
+
+When enabled, `cert` and `key` are **required**; an incomplete block
+makes bdsweb refuse to start (it never silently downgrades to HTTP),
+and a bad/unreadable cert or key is a hard fail-fast startup error.
+Enabling TLS also flips the `web.secure_cookies` auto-default to
+`true`.
+
+bdsnode binaries embed the `ring` crypto provider, and the listener
+speaks TLS 1.2/1.3.  The startup banner shows the scheme:
+
+```
+[INFO] bdsweb listening on https://127.0.0.1:8080  →  bdsnode at http://127.0.0.1:9000
+```
+
+A full zero-to-running walkthrough — generating a development
+certificate, obtaining a real one, wiring the config, verifying the
+handshake, and the reverse-proxy alternative — is in
+[`BDSWEB_TLS.md`](BDSWEB_TLS.md).

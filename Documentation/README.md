@@ -77,7 +77,9 @@ BUND script execution.
 Dark-themed browser UI with seven pages: system dashboard, telemetry search,
 log search with topic cloud, document retrieval, aggregated search,
 time-series trend analysis, and an interactive BUND scripting workbench.
-→ [BDSWEB.md](BDSWEB.md)
+Session auth, CSRF + security headers, graceful degradation, a `/healthz`
+probe, and optional built-in HTTPS.
+→ [BDSWEB.md](BDSWEB.md) · [BDS_UI.md](BDS_UI.md) · [BDSWEB_TLS.md](BDSWEB_TLS.md)
 
 ---
 
@@ -205,8 +207,9 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 |----------|-------------|
 | [BDSCLI.md](BDSCLI.md) | `bdscli` — local CLI: init, generate, ingest, get, search, analyze |
 | [BDSCMD.md](BDSCMD.md) | `bdscmd` — RPC client: all `v2/*` methods, eval shebang, quick reference |
-| [BDSWEB.md](BDSWEB.md) | `bdsweb` — operator reference: route paths, startup flags, RPC calls behind every page |
+| [BDSWEB.md](BDSWEB.md) | `bdsweb` — operator reference: route paths, startup flags, RPC calls behind every page, auth/CSRF/headers, resilience + `/healthz`, TLS |
 | [BDS_UI.md](BDS_UI.md) | `bdsweb` — **user manual**: walks every UI page in task order, with controls explained, common workflows, and a troubleshooting table |
+| [BDSWEB_TLS.md](BDSWEB_TLS.md) | `bdsweb` — **SSL/TLS setup guide**: zero-to-running HTTPS via the `web.tls` config block — cert generation, verification, the reverse-proxy alternative, renewal, troubleshooting |
 
 ### JSON-RPC API
 

@@ -60,9 +60,20 @@ Open `http://127.0.0.1:8080/` in a browser. You'll land on the
 **Dashboard** — the system-pulse page that auto-refreshes every 30
 seconds (configurable via `dashboard_refresh_secs` in `bds.hjson`).
 
-If the dashboard shows a "Wait…" spinner that never resolves, bdsweb
-can't reach bdsnode. Check `--node` and confirm bdsnode is listening
-with `bdscmd status`.
+If the dashboard shows a "Wait…" spinner, bdsweb hasn't reached
+bdsnode yet. After ~30 seconds with no contact the spinner turns
+amber and reads *"bdsnode backend appears unreachable — still
+retrying"* — at that point check `--node` and confirm bdsnode is
+listening with `bdscmd status`. bdsweb keeps retrying and the page
+recovers on its own once the backend answers.
+
+### Serving over HTTPS
+
+bdsweb can serve HTTPS directly — point `--config` at a `bds.hjson`
+with a `web.tls` block (cert + key paths) and the listener speaks
+TLS, no reverse proxy needed. The startup log line then reads
+`listening on https://…`. See
+[BDSWEB_TLS.md](BDSWEB_TLS.md) for the full setup walkthrough.
 
 ### About the look and feel
 
@@ -1182,6 +1193,17 @@ for results"*). The button is disabled during the request.
 When a query returns no results, the result panel shows a friendly
 empty-state message — never a blank page.
 
+### Failure states
+
+If a panel can't load because bdsnode is briefly unreachable, it
+shows a compact red *"This section couldn't load"* card with a
+**Reload page** button — never a raw error dump or a broken
+half-page. The Dashboard goes further: if only some of its data
+fails to refresh, the healthy tiles still update and the stale ones
+keep their last-known values under an amber *"Showing last-known
+data for …"* banner. Transient blips are retried automatically, so
+panels usually recover on the next refresh without any action.
+
 ### Skeleton placeholders
 
 Heavy pages (Dashboard, Bund Runtime tile) render a skeleton with
@@ -1280,7 +1302,10 @@ table is short — both are quick negative checks.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Dashboard stuck on "Loading…" | bdsweb cannot reach bdsnode | Check `--node` URL; run `bdscmd status` |
+| Dashboard "Wait…" spinner turns amber ("backend appears unreachable") | bdsweb cannot reach bdsnode | Check `--node` URL; run `bdscmd status`. bdsweb keeps retrying — the page recovers on its own once bdsnode answers |
+| Amber "Showing last-known data for …" banner on the Dashboard | One or more dashboard RPCs failed on the last poll | The healthy tiles are still live; the named sections show stale values. Usually clears on the next refresh — investigate bdsnode if it persists |
+| A panel shows "This section couldn't load" | A transient RPC failure on that HTMX request | Click **Reload page**, or just wait — the next auto-refresh / re-submit normally succeeds |
+| `bdsweb` exits immediately with "REFUSING TO START" | Open-access mode (no auth secret) bound to a non-loopback `--host` | Bind `127.0.0.1`, or supply `--config` with `cluster.shared_secret` to enable authentication — see § 25.3 |
 | Search returns nothing | Empty store, or duration too narrow | Increase Duration; verify with `bdscmd count` |
 | Topic cloud is empty | LDA had no scorable corpus | Increase Duration; check that the chosen key has stored records |
 | Run output never arrives | Script took longer than 30 s | Use `bdscmd results-pull --id <queue-id>` to fetch when ready |
@@ -1352,8 +1377,12 @@ yellow banner:
 > in config).  Signing in here is a no-op — you already have full
 > access.
 
-Don't run bdsweb open-access mode against a network-reachable
-bdsnode.  It's safe for local dev only.
+Open-access mode is safe for local dev only — it leaves every page,
+including `/admin/*` and the Bund eval workbench, unauthenticated.
+bdsweb enforces this: **in open-access mode it refuses to start on a
+non-loopback `--host`** and prints a `REFUSING TO START` error. To
+serve bdsweb on a real interface you must give it a `--config` with
+`cluster.shared_secret` so authentication is active.
 
 ### 25.4 Administration → User management
 

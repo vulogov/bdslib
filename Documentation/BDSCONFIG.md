@@ -52,6 +52,7 @@ cross-reference it rather than duplicating tuning advice.
    - 7.5 [`llm.runner`](#75-llmrunner)
 8. [bdsweb-specific keys](#8-bdsweb-specific-keys)
    - 8.1 [`web.analyze.*` — "Analyze this!" buttons](#81-webanalyze--analyze-this-buttons)
+   - 8.2 [`web` — security & TLS](#82-web--security--tls)
 9. [Legacy `v2/chat.ollama` keys](#9-legacy-v2chatollama-keys)
 10. [Tuning matrix](#10-tuning-matrix)
 11. [Required-vs-optional summary](#11-required-vs-optional-summary)
@@ -1818,6 +1819,61 @@ Active settings are logged at bdsweb startup:
 
 ---
 
+## 8.2 `web` — security & TLS
+
+These keys live under a `web:` block and harden / extend the bdsweb
+HTTP server.  All are optional; the defaults keep a loopback dev
+instance working with zero config.
+
+```hjson
+web: {
+  // Mark the bds_session cookie `Secure` (HTTPS-only).  Omit for
+  // "auto": on when TLS is enabled or the bind is non-loopback,
+  // off for a plain-HTTP loopback dev box.
+  secure_cookies: true
+
+  // Trust X-Forwarded-For / X-Real-IP for the POST /login rate
+  // limiter key.  Enable ONLY when bdsweb genuinely sits behind a
+  // reverse proxy that sets those headers — otherwise a client can
+  // spoof them to dodge the limit.  Default false (key on peer IP).
+  trusted_proxy: false
+
+  // Optional HTTPS.  When enabled, bdsweb serves TLS directly using
+  // the PEM cert + key — see BDSWEB_TLS.md for the full setup guide.
+  tls: {
+    enabled: true
+    cert: "/etc/bdsweb/tls/cert.pem"
+    key:  "/etc/bdsweb/tls/key.pem"
+  }
+}
+```
+
+| Field                  | Type    | Default       | Description |
+|------------------------|---------|---------------|-------------|
+| `web.secure_cookies`   | bool    | *auto*        | `Secure` attribute on the `bds_session` cookie.  Absent → auto: `true` when `web.tls.enabled` or the bind host is non-loopback, `false` otherwise.  An explicit value always wins. |
+| `web.trusted_proxy`    | bool    | `false`       | When `true`, the `POST /login` rate limiter keys on the forwarded client IP (`SmartIpKeyExtractor`) instead of the TCP peer IP.  Leave `false` unless a trusted reverse proxy sets `X-Forwarded-For` — the header is otherwise spoofable. |
+| `web.tls.enabled`      | bool    | `false`       | Master switch for built-in HTTPS.  When `true`, `cert` and `key` are **required** — an enabled-but-incomplete block makes bdsweb refuse to start (it never silently falls back to HTTP). |
+| `web.tls.cert`         | string  | —             | Path to the PEM certificate chain (leaf first, then intermediates). |
+| `web.tls.key`          | string  | —             | Path to the PEM private key (PKCS#8 or PKCS#1; must be X.509 v3-compatible). |
+
+**Interactions worth knowing**
+
+- Enabling `web.tls` flips the `secure_cookies` auto-default to
+  `true` — the session cookie should never travel in cleartext once
+  the server speaks TLS.
+- TLS does **not** change the auth model.  Open-access mode (no
+  `cluster.shared_secret`) is still open-access over HTTPS; and
+  bdsweb still refuses to start in open-access mode on a
+  non-loopback bind regardless of TLS.
+- A bad/missing cert or key is a hard, fail-fast startup error —
+  there is no degraded HTTP fallback.
+
+Full walkthrough — generating a cert, wiring the config, verifying,
+and the reverse-proxy alternative — is in
+[`BDSWEB_TLS.md`](BDSWEB_TLS.md).
+
+---
+
 ## 9. Legacy `v2/chat.ollama` keys
 
 Pre-dates the v4/llm.* surface.  Still consumed by the deprecated
@@ -1927,6 +1983,10 @@ Which binary reads which key.  ✓ = directly, ◐ = via shared
 | `llm.runner.*`                 | ✓ | ✗ | ✗ | ✗ |
 | `dashboard_refresh_secs`       | ✗ | ✓ | ✗ | ✗ |
 | `cluster_refresh_secs`         | ✗ | ✓ | ✗ | ✗ |
+| `web.analyze.*`                | ✗ | ✓ | ✗ | ✗ |
+| `web.secure_cookies`           | ✗ | ✓ | ✗ | ✗ |
+| `web.trusted_proxy`            | ✗ | ✓ | ✗ | ✗ |
+| `web.tls.*`                    | ✗ | ✓ | ✗ | ✗ |
 | `ollama_*` (legacy)            | ✓ | ✗ | ✗ | ✗ |
 
 bdscmd uses CLI flags (`--secret`) and environment variables
