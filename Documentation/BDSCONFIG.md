@@ -700,7 +700,75 @@ Companion JSON-RPC surface:
 
 bdscmd CLI: `bdscmd retention-sweep [--duration H] [--dry-run] [--force]` and `bdscmd retention-settings`.
 
-### 5.6 Synthetic data generator (`generate_realistic_data:` block)
+### 5.6 Data rebalancer (`rebalancer:` block)
+
+```hjson
+rebalancer: {
+  enabled:                     false   // opt-in; default off
+  interval:                    "10m"   // humantime cadence between ticks
+  batch_size:                  50      // IDs per has_records probe
+  max_per_run:                 500     // cap on records examined per tick
+  min_replication_factor:      null    // null = inherit cluster.replication_factor
+  pause_if_ingest_lag_p95_ms:  1000    // skip tick when ingest is backed up
+}
+```
+
+| Field                              | Type             | Default | Description |
+|------------------------------------|------------------|---------|-------------|
+| `rebalancer.enabled`               | bool             | false   | Master switch. |
+| `rebalancer.interval`              | humantime string | `"10m"` | Wakeup cadence. |
+| `rebalancer.batch_size`            | integer          | 50      | Records per `v2/cluster.has_records` probe.  Clamped `[1, 1000]`. |
+| `rebalancer.max_per_run`           | integer          | 500     | Cap on records examined per tick — the rest waits for the next tick. |
+| `rebalancer.min_replication_factor`| integer or null  | null    | Target replica count.  `null` inherits `cluster.replication_factor`. |
+| `rebalancer.pause_if_ingest_lag_p95_ms` | integer    | 1000    | Skip tick when `v2/perf.ingest.lag.p95` exceeds this many ms.  Set to 0 to disable throttling. |
+
+The rebalancer is a per-node background tokio task that assists
+replication of **sharded telemetry** records (the `v2/add` /
+`v2/add.batch` path) — distinct from the anti-entropy pull-sync
+that converges fully-replicated stores (docs/signals/scripts/
+users/llm_cache).  Sharded writes pick `replication_factor - 1`
+random Alive peers at write time; a record can end up
+under-replicated when:
+
+- a peer was Suspect/Dead at write time and hints aged out before
+  it recovered;
+- the cluster expanded after the record was written;
+- `replication_factor` was raised in the config.
+
+Each tick the task enumerates shards round-robin, batches IDs,
+fans `v2/cluster.has_records` out to every Alive peer, and for
+each under-replicated record pushes the body to peers that
+don't have it via `v2/cluster.replicate_record` (idempotent —
+re-runs report `was_new=false` and don't store duplicates).
+
+**Unobtrusive by design:**
+
+- Disabled by default — operators opt in explicitly.
+- Throttled by `pause_if_ingest_lag_p95_ms` — if the ingest path
+  is busy, the tick is skipped entirely and the `paused_for_lag`
+  counter increments.
+- Bounded by `max_per_run` so one tick can never starve the
+  next ingest tick.
+- Cooperative cancellation: shutdown is checked between every
+  per-record push.  An interrupted tick leaves the cluster in a
+  valid (partially-rebalanced) state — the next tick resumes
+  where the work was left off.
+- Per-push timing recorded as `rebalancer.replicate_one` in the
+  perf registry; `rebalancer.scan_batch` measures the probe-fan-out
+  + push loop end-to-end.
+
+Surfacing:
+
+- `v2/status` carries a `rebalancer` block — lifetime + last-run
+  counts of records replicated, examined, batches, errors, plus
+  `paused_for_lag_lifetime` so operators can see whether the
+  throttle is biting.
+- The bdsweb dashboard tile reads `v2/status.rebalancer` (TODO
+  in a future PR — counters are in place).
+- All work goes through `perf::record_us`, so per-call latency is
+  in `v2/perf` and slow events land in `v2/perf.slow_queries`.
+
+### 5.7 Synthetic data generator (`generate_realistic_data:` block)
 
 **Dev/demo only.**  When enabled, bdsnode runs a background tokio
 task that pushes batches of fake telemetry into the local ingest

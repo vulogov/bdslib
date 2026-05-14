@@ -6,6 +6,7 @@ pub mod cluster;
 pub mod dev_data;
 pub mod llm_jobs;
 pub mod results_sweeper;
+pub mod rebalancer;
 pub mod retention;
 pub mod scheduler;
 pub mod sync;

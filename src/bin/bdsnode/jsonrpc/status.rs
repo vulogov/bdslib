@@ -113,6 +113,27 @@ pub fn register(module: &mut RpcModule<()>) {
             // can tell at a glance whether retention is running or
             // turned off.  Values are atomic counters maintained by
             // `bdslib::retention::record_run` after every sweep.
+            // Rebalancer sweeper stats — present even when disabled
+            // so operators can tell at a glance whether the task ran.
+            // Atomic counters maintained by
+            // `bdslib::rebalancer::record_run` after every tick.
+            let rebalancer_block = {
+                use std::sync::atomic::Ordering;
+                let s = bdslib::rebalancer::stats();
+                serde_json::json!({
+                    "records_replicated_lifetime": s.records_replicated_lifetime.load(Ordering::Relaxed),
+                    "records_replicated_last_run": s.records_replicated_last_run.load(Ordering::Relaxed),
+                    "records_examined_lifetime":   s.records_examined_lifetime.load(Ordering::Relaxed),
+                    "records_examined_last_run":   s.records_examined_last_run.load(Ordering::Relaxed),
+                    "batches_examined_lifetime":   s.batches_examined_lifetime.load(Ordering::Relaxed),
+                    "batches_examined_last_run":   s.batches_examined_last_run.load(Ordering::Relaxed),
+                    "paused_for_lag_lifetime":     s.paused_for_lag_lifetime.load(Ordering::Relaxed),
+                    "errors_lifetime":             s.errors_lifetime.load(Ordering::Relaxed),
+                    "last_run_ts":                 s.last_run_ts.load(Ordering::Relaxed),
+                    "last_run_ms":                 s.last_run_ms.load(Ordering::Relaxed),
+                })
+            };
+
             let retention_block = {
                 use std::sync::atomic::Ordering;
                 let s = bdslib::retention::stats();
@@ -178,6 +199,7 @@ pub fn register(module: &mut RpcModule<()>) {
                 "running_scripts":    running_scripts,
                 "cluster":            cluster_info,
                 "retention":          retention_block,
+                "rebalancer":         rebalancer_block,
                 "dev_data":           dev_data_block,
                 "perf":               perf_block,
             });

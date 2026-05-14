@@ -1338,6 +1338,68 @@ impl ShardsManager {
         Ok(n)
     }
 
+    // ── rebalancer support ────────────────────────────────────────────────────
+
+    /// Return the subset of `ids` that exist as a primary record on
+    /// this node (across any catalog-registered shard).
+    ///
+    /// Backs `v2/cluster.has_records` for the rebalancer.  Performs
+    /// one DuckDB query per shard the candidate IDs fall into — the
+    /// implementation is deliberately naive (no bloom filters, no
+    /// per-shard partitioning) because the rebalancer's batch size
+    /// is small (default 50) and the read is throttled.
+    pub fn has_records_present(&self, ids: &[Uuid]) -> Result<Vec<Uuid>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Probe every shard.  An ID's natural shard is determined by
+        // its v7 timestamp, but we don't pre-compute that here — a
+        // missed shard would silently report "not present" and trigger
+        // unnecessary replication, which is wasteful but not incorrect.
+        let mut present: Vec<Uuid> = Vec::new();
+        for info in self.cache.info().list_all()? {
+            let shard = self.cache.shard(info.start_time)?;
+            let docs  = shard.observability().get_by_ids(ids)?;
+            for d in docs {
+                if let Some(id) = d.get("id").and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                {
+                    present.push(id);
+                }
+            }
+        }
+        // De-dup in case the same ID ever lands in two shards (should
+        // not happen, but defensive).
+        present.sort();
+        present.dedup();
+        Ok(present)
+    }
+
+    /// Idempotently store a replicated record received from a peer.
+    ///
+    /// Accepts a doc that carries an `id` field; checks
+    /// [`has_records_present`] first and returns `(id, false)` when
+    /// the record is already on this node.  Otherwise inserts via
+    /// `add_batch` (which itself preserves the doc's `id` field) and
+    /// returns `(stored_id, true)`.
+    ///
+    /// **Idempotent**: re-running with the same record is safe and
+    /// reports `was_new=false`.
+    pub fn replicate_record(&self, doc: JsonValue) -> Result<(Uuid, bool)> {
+        let id = doc.get("id").and_then(|v| v.as_str())
+            .ok_or_else(|| err_msg("replicate_record: doc missing 'id' field"))?;
+        let id = Uuid::parse_str(id)
+            .map_err(|e| err_msg(format!("replicate_record: invalid id: {e}")))?;
+
+        let present = self.has_records_present(&[id])?;
+        if !present.is_empty() {
+            return Ok((id, false));
+        }
+        let ids = self.add_batch(vec![doc])?;
+        let stored = ids.into_iter().next().unwrap_or(id);
+        Ok((stored, true))
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].

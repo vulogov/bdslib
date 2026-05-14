@@ -415,6 +415,18 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to read retention config")?;
     let retention_handle = server::retention::start(retention_cfg);
 
+    // Data rebalancer — opt-in background task that scans sharded
+    // telemetry for under-replicated records and pushes them to
+    // peers that don't have them.  No-op when `rebalancer.enabled =
+    // false` (the default) or when the node is standalone.
+    let rebalancer_cfg = bdslib::rebalancer::RebalancerConfig::from_path(
+        cli.config.as_deref().unwrap_or(""))
+        .unwrap_or_else(|e| {
+            log::warn!("[rebalancer] config parse failed ({e}); disabled");
+            bdslib::rebalancer::RebalancerConfig::disabled()
+        });
+    let rebalancer_handle = server::rebalancer::start(rebalancer_cfg);
+
     // Cluster gossip task — bootstraps against `cluster.bootstrap` (if set)
     // then runs a periodic ping/peers exchange + liveness sweep.  No-op when
     // `cluster.enabled = false` in bds.hjson.
@@ -483,6 +495,7 @@ async fn main() -> anyhow::Result<()> {
     scheduler_handle.stop().await;
     llm_runner_handle.stop().await;
     sync_handle.stop().await;
+    rebalancer_handle.stop().await;
     retention_handle.stop().await;
     dev_data_handle.stop().await;
     cluster_handle.stop().await;

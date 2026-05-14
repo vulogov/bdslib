@@ -14,6 +14,7 @@ pub mod llm;
 pub mod dev_data;
 pub mod observability;
 pub mod perf;
+pub mod rebalancer;
 pub mod retention;
 pub mod scheduler;
 pub mod shard;
