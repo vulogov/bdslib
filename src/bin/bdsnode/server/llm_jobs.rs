@@ -115,6 +115,12 @@ async fn run(cfg: Config, mut shutdown_rx: oneshot::Receiver<()>) {
         "[llm_jobs] runner started (node={node_id} max_concurrency={} poll={}s)",
         cfg.max_concurrency, cfg.poll_interval_secs,
     );
+    // Fast poll loop — stale window 10× the poll interval, floored 30s.
+    bdslib::health::register(
+        "llm_jobs",
+        Duration::from_secs(cfg.poll_interval_secs.max(1))
+            .as_secs().saturating_mul(10).max(30),
+    );
 
     loop {
         tokio::select! {
@@ -124,6 +130,7 @@ async fn run(cfg: Config, mut shutdown_rx: oneshot::Receiver<()>) {
                 break;
             }
             _ = tokio::time::sleep(poll) => {
+                bdslib::health::heartbeat("llm_jobs");
                 // Panic-isolate the claim/drain pass (reliability #3)
                 // — a panic in claim_one (DB op on jobs.duckdb) must
                 // not kill the runner loop.  Spawned `run_one` tasks

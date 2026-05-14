@@ -315,6 +315,7 @@ async fn run(
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     let interval = Duration::from_secs(interval_secs);
+    bdslib::health::register("retention", interval_secs.saturating_mul(3).max(120));
     loop {
         tokio::select! {
             biased;
@@ -323,6 +324,7 @@ async fn run(
                 break;
             }
             _ = tokio::time::sleep(interval) => {
+                bdslib::health::heartbeat("retention");
                 run_one_tick(&retention_cfg, drain_reload.as_deref()).await;
             }
         }

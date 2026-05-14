@@ -768,7 +768,68 @@ Surfacing:
 - All work goes through `perf::record_us`, so per-call latency is
   in `v2/perf` and slow events land in `v2/perf.slow_queries`.
 
-### 5.7 Synthetic data generator (`generate_realistic_data:` block)
+### 5.7 Self-healing — shard rebuild healer (`self_healing:` block)
+
+```hjson
+self_healing: {
+  enabled:   true     // on by default — only touches quarantined shards
+  interval:  "60s"    // humantime cadence between heal sweeps
+}
+```
+
+| Field                   | Type             | Default | Description |
+|-------------------------|------------------|---------|-------------|
+| `self_healing.enabled`  | bool             | `true`  | Master switch for the shard rebuild healer. |
+| `self_healing.interval` | humantime string | `"60s"` | Cadence between heal sweeps.  Clamped to `[10s, 1h]`. |
+
+A shard is three engines under one directory — DuckDB (source of
+truth), Tantivy (FTS), HNSW (vector).  When that directory's state
+is corrupt (crash mid-write, disk fault), **every** attempt to open
+the shard fails, and without intervention the failure is permanent:
+ingest and search for that time window are down until an operator
+notices.
+
+The self-healing layer turns that into automatic recovery:
+
+1. **Detection + isolation (quarantine).** `ShardsCache::shard()`
+   counts consecutive open failures per shard.  After 3 in a row
+   (`shardhealth::QUARANTINE_THRESHOLD`) the shard is flagged
+   `quarantined` in the catalog.  Subsequent opens short-circuit —
+   the broken shard is kept out of the read/write path so the rest
+   of the node keeps serving.  A 5-minute cooldown prevents
+   re-quarantine thrash.
+2. **Recovery (this task).** Every `interval` the healer walks the
+   quarantined-shard list and attempts a repair, cheapest tier first:
+   - **Transient retry** — re-open the shard; many quarantines are
+     false positives (a momentary pool saturation that crossed the
+     threshold).  If it opens cleanly now, the quarantine is cleared.
+   - **Index rebuild** — if the re-open still fails but DuckDB itself
+     opens, the corruption is in `fts/` / `vec/`: those directories
+     are deleted and rebuilt by replaying every primary record from
+     DuckDB.  The vector embedding is recovered **exactly** from the
+     `primary_embeddings` table — no ONNX re-embedding.
+   - **Unhealable** — if DuckDB itself won't open, the shard cannot
+     self-heal from local data.  It stays quarantined and is
+     reported `Failed` in the health registry for operator (or a
+     future cluster peer-rebuild phase) intervention.
+
+The healer is **on by default** because it only ever touches shards
+the quarantine layer has *already isolated* — the blast radius is
+small, and the cost of leaving it off is "a corrupt shard never
+recovers on its own."
+
+Surfacing:
+
+- `v2/status.self_healing` — `quarantined_now` (shards currently
+  isolated), plus lifetime `quarantines_total` / `heals_total` /
+  `unhealable_total` counters.
+- `v2/health` + `v2/status.health` — each quarantined shard
+  registers a `shard.<start>_<end>` health source; the aggregate
+  verdict goes `failed` while any shard is unhealable.
+- The healer task itself heartbeats into the health registry as
+  `shard_healer` — a hung healer is detectable.
+
+### 5.8 Synthetic data generator (`generate_realistic_data:` block)
 
 **Dev/demo only.**  When enabled, bdsnode runs a background tokio
 task that pushes batches of fake telemetry into the local ingest

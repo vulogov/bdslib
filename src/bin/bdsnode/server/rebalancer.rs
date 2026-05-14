@@ -83,6 +83,11 @@ async fn run(
     cluster:         Arc<Cluster>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
+    // Health source — stale window 3× the sweep interval.
+    bdslib::health::register(
+        "rebalancer",
+        (cfg.interval.as_secs().saturating_mul(3)).max(60),
+    );
     loop {
         tokio::select! {
             biased;
@@ -91,6 +96,7 @@ async fn run(
                 break;
             }
             _ = tokio::time::sleep(cfg.interval) => {
+                bdslib::health::heartbeat("rebalancer");
                 // Panic-isolate the sweep (reliability #3) — a panic
                 // in scan_pass / process_batch must not kill the
                 // rebalancer loop.  Caught + logged; next tick runs.

@@ -77,6 +77,20 @@ impl Shard {
         let vector = VectorEngine::with_embedding(&vec_path, embedding.clone())?;
         let tplstorage = DocumentStorage::with_embedding(&tpl_path, embedding)?;
 
+        // Validate the lazy engines eagerly.  `FTSEngine::new` /
+        // `VectorEngine::with_embedding` only store a path — a corrupt
+        // Tantivy or HNSW directory wouldn't surface here, it would
+        // surface much later on the first search, *bypassing* the
+        // self-healing quarantine (which keys on shard-open failure).
+        // Forcing the open here makes "the shard opened" mean "all
+        // three engines are usable" — the contract the quarantine
+        // logic relies on.  The cost lands on the cache-miss path
+        // only; the LRU amortises it.
+        fts.probe()
+            .map_err(|e| err_msg(format!("shard '{path}': FTS index unusable: {e}")))?;
+        vector.probe()
+            .map_err(|e| err_msg(format!("shard '{path}': vector index unusable: {e}")))?;
+
         Ok(Self {
             observability,
             fts: Arc::new(fts),
@@ -273,6 +287,41 @@ impl Shard {
     /// Returns the number of templates re-indexed.
     pub fn tpl_reindex(&self) -> Result<usize> {
         self.tplstorage.reindex()
+    }
+
+    /// Rebuild this shard's **FTS and vector** indexes from its DuckDB
+    /// telemetry table — the self-healing repair path.
+    ///
+    /// DuckDB is the source of truth.  This is meant to run on a shard
+    /// whose `fts/` and `vec/` directories were just deleted and
+    /// recreated empty (so a corrupt Tantivy/HNSW file is gone): it
+    /// walks every primary record and re-adds it to both indexes.  The
+    /// vector embedding is recovered **exactly** from
+    /// `primary_embeddings` — no ONNX re-embedding — so a rebuild is
+    /// cheap and deterministic.
+    ///
+    /// Returns the number of primary records re-indexed.  Does **not**
+    /// help when DuckDB itself is corrupt — that case can't self-heal
+    /// from local data and the caller must keep the shard quarantined.
+    pub fn rebuild_indexes(&self) -> Result<usize> {
+        let records = self.observability.primary_records_for_reindex()?;
+        let n = records.len();
+        if n == 0 {
+            return Ok(0);
+        }
+
+        let mut fts_batch:    Vec<(Uuid, String)> = Vec::with_capacity(n);
+        let mut vector_batch: Vec<(String, Vec<f32>, Option<JsonValue>)> =
+            Vec::with_capacity(n);
+        for (id, fingerprint, embedding, doc) in records {
+            fts_batch.push((id, fingerprint));
+            vector_batch.push((id.to_string(), embedding, Some(doc)));
+        }
+
+        // One Tantivy commit + one HNSW upsert pass for the whole shard.
+        self.fts.add_documents_batch(&fts_batch)?;
+        self.vector.store_vectors_batch(vector_batch)?;
+        Ok(n)
     }
 
     // ── passthrough accessors ─────────────────────────────────────────────────

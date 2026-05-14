@@ -96,6 +96,15 @@ async fn run(
     let bootstrap_interval = Duration::from_secs(cfg.bootstrap_retry_interval_secs.max(10));
     let mut last_bootstrap_attempt = Instant::now();
 
+    // Health source — a hung gossip loop means the node has gone
+    // blind to peer state.  Stale window is 6× the gossip interval
+    // (floored at 30s) so a couple of slow ticks don't false-positive.
+    let gossip_interval_secs = cfg.gossip_interval_secs.max(1);
+    bdslib::health::register(
+        "cluster.gossip",
+        (gossip_interval_secs.saturating_mul(6)).max(30),
+    );
+
     loop {
         tokio::select! {
             biased;
@@ -104,6 +113,10 @@ async fn run(
                 break;
             }
             _ = tokio::time::sleep(interval) => {
+                // Heartbeat BEFORE the tick body — proves the loop is
+                // alive even if `supervise::tick` catches a panic in
+                // this tick's work.
+                bdslib::health::heartbeat("cluster.gossip");
                 tick_no = tick_no.wrapping_add(1);
 
                 // Panic-isolate the whole tick body (reliability #3):

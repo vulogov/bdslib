@@ -94,6 +94,7 @@ pub fn start(cfg: Config) -> Handle {
 
 async fn run(interval_secs: u64, mut shutdown_rx: oneshot::Receiver<()>) {
     let interval = Duration::from_secs(interval_secs);
+    bdslib::health::register("scheduler", interval_secs.saturating_mul(3).max(60));
     loop {
         tokio::select! {
             biased;
@@ -102,6 +103,7 @@ async fn run(interval_secs: u64, mut shutdown_rx: oneshot::Receiver<()>) {
                 break;
             }
             _ = tokio::time::sleep(interval) => {
+                bdslib::health::heartbeat("scheduler");
                 // Run on a blocking thread because Scheduler::run() does
                 // synchronous DuckDB lookups via ShardsManager.
                 let join = tokio::task::spawn_blocking(|| {

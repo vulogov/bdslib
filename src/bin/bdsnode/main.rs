@@ -427,6 +427,13 @@ async fn main() -> anyhow::Result<()> {
         });
     let rebalancer_handle = server::rebalancer::start(rebalancer_cfg);
 
+    // Shard rebuild healer — Phase 2 self-healing.  Walks the
+    // quarantined-shard list and repairs each (transient retry →
+    // index rebuild from DuckDB).  On by default; it only ever
+    // touches shards the quarantine layer already isolated.
+    let shard_healer_cfg = server::shard_healer::Config::from_config(cli.config.as_deref());
+    let shard_healer_handle = server::shard_healer::start(shard_healer_cfg);
+
     // Cluster gossip task — bootstraps against `cluster.bootstrap` (if set)
     // then runs a periodic ping/peers exchange + liveness sweep.  No-op when
     // `cluster.enabled = false` in bds.hjson.
@@ -495,6 +502,7 @@ async fn main() -> anyhow::Result<()> {
     scheduler_handle.stop().await;
     llm_runner_handle.stop().await;
     sync_handle.stop().await;
+    shard_healer_handle.stop().await;
     rebalancer_handle.stop().await;
     retention_handle.stop().await;
     dev_data_handle.stop().await;

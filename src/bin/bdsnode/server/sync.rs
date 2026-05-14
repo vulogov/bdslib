@@ -102,6 +102,7 @@ pub fn start(cfg: Config) -> Handle {
 
 async fn run(interval_secs: u64, mut shutdown_rx: oneshot::Receiver<()>) {
     let interval = Duration::from_secs(interval_secs);
+    bdslib::health::register("sync", interval_secs.saturating_mul(3).max(60));
     loop {
         tokio::select! {
             biased;
@@ -110,6 +111,7 @@ async fn run(interval_secs: u64, mut shutdown_rx: oneshot::Receiver<()>) {
                 break;
             }
             _ = tokio::time::sleep(interval) => {
+                bdslib::health::heartbeat("sync");
                 // Run on a blocking thread because sync_db() touches DuckDB,
                 // Tantivy, and HNSW indexes synchronously and may take
                 // seconds on large WALs.

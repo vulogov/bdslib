@@ -113,6 +113,36 @@ pub fn register(module: &mut RpcModule<()>) {
             // can tell at a glance whether retention is running or
             // turned off.  Values are atomic counters maintained by
             // `bdslib::retention::record_run` after every sweep.
+            // Aggregate self-healing verdict.  Folds every registered
+            // health source (background-task heartbeats, quarantined
+            // shards, pool health, …) into one healthy/degraded/failed
+            // verdict.  The full per-source breakdown lives at
+            // `v2/health` — this is the headline for the status tile.
+            let health_block = {
+                let reg = bdslib::health::registry();
+                let verdict = reg.verdict();
+                let snap = reg.snapshot();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let n_degraded = snap.iter()
+                    .filter(|r| matches!(r.effective(now),
+                        bdslib::health::HealthStatus::Degraded(_)))
+                    .count();
+                let n_failed = snap.iter()
+                    .filter(|r| matches!(r.effective(now),
+                        bdslib::health::HealthStatus::Failed(_)))
+                    .count();
+                serde_json::json!({
+                    "status":     verdict.label(),
+                    "reason":     verdict.reason(),
+                    "n_sources":  snap.len(),
+                    "n_degraded": n_degraded,
+                    "n_failed":   n_failed,
+                })
+            };
+
             // DuckDB connection-pool health.  `checkout_timeouts` is
             // the lifetime count of `pool.get()` calls that hit the
             // 10 s ceiling — non-zero means a pool ran out of
@@ -120,6 +150,26 @@ pub fn register(module: &mut RpcModule<()>) {
             let pool_block = serde_json::json!({
                 "checkout_timeouts": bdslib::storageengine::pool_checkout_timeouts(),
             });
+
+            // Self-healing — shard quarantine + rebuild activity.
+            // `quarantined_now` is how many shards are currently
+            // isolated awaiting repair; the lifetime counters show
+            // total quarantine / heal / unhealable decisions.  All
+            // healthy = every counter at 0 (or heals == quarantines).
+            let self_healing_block = {
+                let t = bdslib::shardhealth::tracker();
+                let quarantined_now = bdslib::get_db()
+                    .ok()
+                    .and_then(|db| db.list_quarantined_shards().ok())
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                serde_json::json!({
+                    "quarantined_now":   quarantined_now,
+                    "quarantines_total": t.quarantines_total(),
+                    "heals_total":       t.heals_total(),
+                    "unhealable_total":  t.unhealable_total(),
+                })
+            };
 
             // Ingest flusher liveness.  A dead flusher used to be
             // invisible until shutdown; these counters make it
@@ -226,6 +276,8 @@ pub fn register(module: &mut RpcModule<()>) {
                 "rebalancer":         rebalancer_block,
                 "ingest_flushers":    ingest_flushers_block,
                 "pool":               pool_block,
+                "self_healing":       self_healing_block,
+                "health":             health_block,
                 "dev_data":           dev_data_block,
                 "perf":               perf_block,
             });

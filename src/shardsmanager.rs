@@ -1400,6 +1400,27 @@ impl ShardsManager {
         Ok((stored, true))
     }
 
+    // ── self-healing / shard rebuild ──────────────────────────────────────────
+
+    /// Every shard the self-healing layer has quarantined — failing
+    /// storage awaiting repair.  The shard-rebuild healer walks this
+    /// list each tick.
+    pub fn list_quarantined_shards(&self) -> Result<Vec<crate::shardsinfo::ShardInfo>> {
+        self.cache.info().list_quarantined()
+    }
+
+    /// Attempt to repair one quarantined shard — Tier 1 transient
+    /// retry, then Tier 2 index rebuild from DuckDB.  See
+    /// [`ShardsCache::rebuild_shard`] for the full procedure.  On
+    /// success the shard's `quarantined` flag is cleared and it
+    /// rejoins the normal read/write path.
+    pub fn rebuild_quarantined_shard(
+        &self,
+        info: &crate::shardsinfo::ShardInfo,
+    ) -> Result<crate::shardscache::RebuildOutcome> {
+        self.cache.rebuild_shard(info)
+    }
+
     // ── accessors ─────────────────────────────────────────────────────────────
 
     /// Borrow the underlying [`ShardsCache`].

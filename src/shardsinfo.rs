@@ -9,20 +9,27 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 // Schema for fresh catalogs.  Old catalogs (pre-retention) get patched up
-// by `migrate_evicting_column()` after the table is opened — DuckDB
-// rejects `ALTER TABLE ADD COLUMN` when secondary indexes exist on the
-// table, so the migration drops + recreates them around the ALTER.
+// by `migrate_evicting_column()` / `migrate_quarantined_column()` after the
+// table is opened — DuckDB rejects `ALTER TABLE ADD COLUMN` when secondary
+// indexes exist on the table, so the migrations drop + recreate them
+// around the ALTER.
 //
-// `evicting` is BOOLEAN (no NOT NULL) so the migration's ADD COLUMN works
-// on tables that already hold rows.  SELECTs use COALESCE(evicting, FALSE)
-// to treat any stray NULLs as "not evicting".
+// `evicting` and `quarantined` are BOOLEAN (no NOT NULL) so the migrations'
+// ADD COLUMN works on tables that already hold rows.  SELECTs use
+// COALESCE(col, FALSE) to treat any stray NULLs as "false".
+//
+// `evicting`    — retention is tearing this shard down (§ retention).
+// `quarantined` — the self-healing layer flagged this shard's storage as
+//                 failing; reads/writes skip it and the rebuild healer
+//                 will attempt to repair it (Phase 2 self-healing).
 const INIT_SQL: &str = "
     CREATE TABLE IF NOT EXISTS shards (
-        shard_id TEXT   NOT NULL PRIMARY KEY,
-        path     TEXT   NOT NULL,
-        start_ts BIGINT NOT NULL,
-        end_ts   BIGINT NOT NULL,
-        evicting BOOLEAN DEFAULT FALSE
+        shard_id    TEXT   NOT NULL PRIMARY KEY,
+        path        TEXT   NOT NULL,
+        start_ts    BIGINT NOT NULL,
+        end_ts      BIGINT NOT NULL,
+        evicting    BOOLEAN DEFAULT FALSE,
+        quarantined BOOLEAN DEFAULT FALSE
     );
     CREATE INDEX IF NOT EXISTS idx_shards_start_ts ON shards (start_ts);
     CREATE INDEX IF NOT EXISTS idx_shards_end_ts   ON shards (end_ts);
@@ -55,6 +62,7 @@ impl ShardInfoEngine {
     pub fn new(path: &str, pool_size: u32) -> Result<Self> {
         let engine = StorageEngine::new(path, INIT_SQL, pool_size)?;
         migrate_evicting_column(&engine)?;
+        migrate_quarantined_column(&engine)?;
         Ok(Self {
             engine: Arc::new(engine),
         })
@@ -77,8 +85,8 @@ impl ShardInfoEngine {
         let start_ts = to_unix_secs(start_time)?;
         let end_ts = to_unix_secs(end_time)?;
         self.engine.execute(&format!(
-            "INSERT INTO shards (shard_id, path, start_ts, end_ts, evicting) \
-             VALUES ('{id}', '{}', {start_ts}, {end_ts}, FALSE)",
+            "INSERT INTO shards (shard_id, path, start_ts, end_ts, evicting, quarantined) \
+             VALUES ('{id}', '{}', {start_ts}, {end_ts}, FALSE, FALSE)",
             sql_escape(path),
         ))?;
         Ok(id)
@@ -225,6 +233,57 @@ impl ShardInfoEngine {
             None    => Ok(false),
         }
     }
+
+    // ── self-healing / quarantine surface ─────────────────────────────────────
+    //
+    // The `quarantined` boolean is the source of truth for "this shard's
+    // storage is failing — keep it out of the read/write path until the
+    // rebuild healer has repaired it".  Unlike `evicting` (a one-way trip
+    // to deletion), `quarantined` is **reversible**: the healer clears it
+    // once a rebuild succeeds.  `ShardsCache::shard()` short-circuits a
+    // quarantined shard exactly the way it short-circuits an evicting one.
+
+    /// Flip `quarantined=true` for `shard_id`.  Idempotent.  Errors only
+    /// on a DB failure — a missing row is a silent no-op (UPDATE matches
+    /// zero rows), matching `mark_evicting`.
+    pub fn mark_quarantined(&self, shard_id: Uuid) -> Result<()> {
+        self.engine.execute(&format!(
+            "UPDATE shards SET quarantined = TRUE WHERE shard_id = '{shard_id}'"
+        ))?;
+        Ok(())
+    }
+
+    /// Flip `quarantined=false` for `shard_id`.  Called by the rebuild
+    /// healer after a successful repair.  Idempotent.
+    pub fn clear_quarantined(&self, shard_id: Uuid) -> Result<()> {
+        self.engine.execute(&format!(
+            "UPDATE shards SET quarantined = FALSE WHERE shard_id = '{shard_id}'"
+        ))?;
+        Ok(())
+    }
+
+    /// Is this specific shard quarantined?  Cheap indexed PK lookup —
+    /// `ShardsCache::shard()` calls it on every open.
+    pub fn is_quarantined(&self, shard_id: Uuid) -> Result<bool> {
+        let rows = self.engine.select_all(&format!(
+            "SELECT COALESCE(quarantined, FALSE) FROM shards WHERE shard_id = '{shard_id}'"
+        ))?;
+        match rows.first().and_then(|r| r.first()) {
+            Some(v) => v.cast_bool().map_err(|e| err_msg(e.to_string())),
+            None    => Ok(false),
+        }
+    }
+
+    /// Every shard currently quarantined.  The rebuild healer walks this
+    /// list each sweep to decide what to repair.
+    pub fn list_quarantined(&self) -> Result<Vec<ShardInfo>> {
+        let rows = self.engine.select_all(
+            "SELECT shard_id, path, start_ts, end_ts \
+             FROM shards WHERE COALESCE(quarantined, FALSE) = TRUE \
+             ORDER BY start_ts ASC"
+        )?;
+        rows.into_iter().map(row_to_shard_info).collect()
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -256,6 +315,31 @@ fn migrate_evicting_column(engine: &StorageEngine) -> Result<()> {
         "DROP INDEX IF EXISTS idx_shards_end_ts".into(),
         "ALTER TABLE shards ADD COLUMN evicting BOOLEAN DEFAULT FALSE".into(),
         "UPDATE shards SET evicting = FALSE WHERE evicting IS NULL".into(),
+        "CREATE INDEX idx_shards_start_ts ON shards (start_ts)".into(),
+        "CREATE INDEX idx_shards_end_ts   ON shards (end_ts)".into(),
+    ])?;
+    Ok(())
+}
+
+/// One-shot migration for the `quarantined` column — same drop-index →
+/// ALTER → recreate-index dance as [`migrate_evicting_column`], because
+/// DuckDB rejects `ALTER TABLE ADD COLUMN` while indexes exist.  No-op
+/// when the column is already present.
+fn migrate_quarantined_column(engine: &StorageEngine) -> Result<()> {
+    let cols = engine.select_all("PRAGMA table_info('shards')")?;
+    let has_quarantined = cols.iter().any(|row| {
+        row.get(1)
+            .and_then(|v| v.cast_string().ok())
+            .as_deref() == Some("quarantined")
+    });
+    if has_quarantined {
+        return Ok(());
+    }
+    engine.execute_many(&[
+        "DROP INDEX IF EXISTS idx_shards_start_ts".into(),
+        "DROP INDEX IF EXISTS idx_shards_end_ts".into(),
+        "ALTER TABLE shards ADD COLUMN quarantined BOOLEAN DEFAULT FALSE".into(),
+        "UPDATE shards SET quarantined = FALSE WHERE quarantined IS NULL".into(),
         "CREATE INDEX idx_shards_start_ts ON shards (start_ts)".into(),
         "CREATE INDEX idx_shards_end_ts   ON shards (end_ts)".into(),
     ])?;

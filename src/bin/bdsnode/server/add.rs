@@ -227,7 +227,18 @@ fn supervise(
         .map(|i| spawn_flusher(i, batch_size, timeout))
         .collect();
 
+    // Health source — a hung supervisor means dead flushers stop
+    // being respawned.  Stale window 4× the poll interval.
+    bdslib::health::register(
+        "ingest.flushers",
+        (SUPERVISOR_POLL.as_secs().saturating_mul(4)).max(30),
+    );
+
     loop {
+        // Heartbeat every loop iteration (each `select!` wakeup) —
+        // proves the supervisor itself is alive, independent of the
+        // per-flusher liveness it tracks via `is_finished()`.
+        bdslib::health::heartbeat("ingest.flushers");
         crossbeam::select! {
             recv(shutdown_rx) -> _ => {
                 // Graceful shutdown: signal every flusher to drain +
@@ -268,6 +279,24 @@ fn supervise(
                         stats().restarts_total.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+
+                // Report flusher health into the registry so the
+                // aggregate verdict reflects ingest trouble:
+                //   alive == 0           → Failed (ingest is down)
+                //   alive <  configured  → Degraded (mid-respawn / wedged)
+                //   alive == configured  → Healthy
+                let alive      = stats().alive.load(Ordering::Relaxed);
+                let configured = stats().configured.load(Ordering::Relaxed);
+                let status = if alive == 0 {
+                    bdslib::health::HealthStatus::Failed(
+                        "no ingest flushers alive".to_string())
+                } else if alive < configured {
+                    bdslib::health::HealthStatus::Degraded(format!(
+                        "{alive}/{configured} flushers alive"))
+                } else {
+                    bdslib::health::HealthStatus::Healthy
+                };
+                bdslib::health::report("ingest.flushers", status);
             }
         }
     }

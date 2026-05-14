@@ -64,6 +64,20 @@ impl VectorEngine {
 
     // ── writes ────────────────────────────────────────────────────────────────
 
+    /// Force the lazy HNSW open and report whether it succeeded.
+    ///
+    /// `VectorEngine::new` / `with_embedding` are deliberately lazy —
+    /// the vecstore is not touched until the first read/write.  That
+    /// hides a **corrupt store** from shard-open validation:
+    /// `Shard::with_config` would succeed and the corruption would
+    /// only surface later on a vector search.  [`probe`](VectorEngine::probe)
+    /// lets the shard validate the vector engine eagerly so corruption
+    /// is caught at open time and the self-healing quarantine can act
+    /// on it.
+    pub fn probe(&self) -> Result<()> {
+        self.with_store(|_| Ok(()))
+    }
+
     /// Store an `id → vector` association.
     ///
     /// `metadata` is an optional JSON object whose fields are stored alongside

@@ -1,13 +1,29 @@
 use crate::common::error::{err_msg, Result};
 use crate::common::timerange::align_to_duration;
-use crate::observability::ObservabilityStorageConfig;
+use crate::observability::{ObservabilityStorage, ObservabilityStorageConfig};
 use crate::shard::Shard;
-use crate::shardsinfo::ShardInfoEngine;
+use crate::shardsinfo::{ShardInfo, ShardInfoEngine};
 use crate::EmbeddingEngine;
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Result of a [`ShardsCache::rebuild_shard`] attempt.
+#[derive(Debug, Clone)]
+pub enum RebuildOutcome {
+    /// The quarantine was a transient false positive — the shard
+    /// re-opened cleanly with no rebuild needed.  Quarantine cleared.
+    Transient,
+    /// The index directories were corrupt; they were deleted and
+    /// rebuilt from DuckDB.  `reindexed` is the primary-record count
+    /// replayed into the fresh FTS + vector indexes.  Quarantine cleared.
+    Reindexed { reindexed: usize },
+    /// DuckDB itself — the source of truth — would not open, so the
+    /// shard cannot be rebuilt from local data.  It stays quarantined;
+    /// `reason` is the operator-facing explanation.
+    Unhealable { reason: String },
+}
 
 struct CacheInner {
     map: HashMap<(SystemTime, SystemTime), Shard>,
@@ -152,12 +168,60 @@ impl ShardsCache {
                     info.shard_id, info.path
                 )));
             }
-            let shard = Shard::with_config(
+            // Self-healing short-circuit: a quarantined shard has
+            // failing storage and is awaiting repair by the rebuild
+            // healer.  Refuse to open it so the rest of the node keeps
+            // serving — same transient-failure contract as `evicting`.
+            if self.info.is_quarantined(info.shard_id)? {
+                return Err(err_msg(format!(
+                    "shard {} ({}) is quarantined (failing storage — awaiting rebuild)",
+                    info.shard_id, info.path
+                )));
+            }
+            // Try to open the shard's three engines.  An open failure
+            // is the unambiguous corruption signal — feed it to the
+            // shard-health tracker, which decides when consecutive
+            // failures warrant quarantine.
+            let health_key = crate::shardhealth::key_of(info.start_time, info.end_time);
+            let shard = match Shard::with_config(
                 &info.path,
                 self.pool_size,
                 self.embedding.clone(),
                 self.obs_config.clone(),
-            )?;
+            ) {
+                Ok(s) => {
+                    crate::shardhealth::tracker().record_open_success(health_key);
+                    s
+                }
+                Err(e) => {
+                    if crate::shardhealth::tracker().record_open_failure(health_key) {
+                        // Consecutive open failures crossed the
+                        // threshold — quarantine this shard.  The next
+                        // `shard()` call short-circuits above; the
+                        // rebuild healer will pick it up from
+                        // `list_quarantined()`.
+                        log::error!(
+                            "[shard-health] shard {} ({}) failed to open \
+                             {} times — quarantining for rebuild: {e}",
+                            info.shard_id, info.path,
+                            crate::shardhealth::QUARANTINE_THRESHOLD,
+                        );
+                        if let Err(qe) = self.info.mark_quarantined(info.shard_id) {
+                            log::error!(
+                                "[shard-health] failed to mark shard {} quarantined: {qe}",
+                                info.shard_id
+                            );
+                        }
+                        crate::health::report(
+                            &format!("shard.{}_{}", health_key.0, health_key.1),
+                            crate::health::HealthStatus::Failed(format!(
+                                "quarantined: {e}"
+                            )),
+                        );
+                    }
+                    return Err(e);
+                }
+            };
             ((info.start_time, info.end_time), shard)
         } else {
             // 3. Auto-create.
@@ -280,6 +344,101 @@ impl ShardsCache {
         state.lru.retain(|k| k != &key);
         drop(state);  // release the cache lock before the (potentially slow) sync
         shard.sync()
+    }
+
+    /// Attempt to repair a quarantined shard — the self-healing rebuild
+    /// path (Phase 2).  Called by the shard-rebuild healer task for
+    /// every entry in [`ShardInfoEngine::list_quarantined`].
+    ///
+    /// Two tiers, cheapest first:
+    ///
+    /// 1. **Transient retry.**  Re-open the shard normally.  Many
+    ///    quarantines are false positives — a momentary pool
+    ///    saturation or fs hiccup that crossed the failure threshold.
+    ///    If the shard opens cleanly now, the quarantine is cleared
+    ///    with no further action.
+    /// 2. **Index rebuild.**  If the re-open still fails, probe DuckDB
+    ///    alone.  When DuckDB opens (so the source of truth is intact)
+    ///    the corruption is in the Tantivy / HNSW index directories:
+    ///    delete `{path}/fts` and `{path}/vec`, re-open the shard
+    ///    (which recreates them empty), and replay every primary
+    ///    record from DuckDB via [`Shard::rebuild_indexes`].  When
+    ///    DuckDB itself won't open, the shard cannot self-heal from
+    ///    local data — it stays quarantined and the outcome reports
+    ///    `Unhealable` for the operator (or a future peer-rebuild
+    ///    phase) to act on.
+    ///
+    /// On success the catalog `quarantined` flag is cleared and the
+    /// shard-health tracker is reset, so the shard rejoins the normal
+    /// read/write path on the next access.
+    pub fn rebuild_shard(&self, info: &ShardInfo) -> Result<RebuildOutcome> {
+        let key = (info.start_time, info.end_time);
+        let health_key = crate::shardhealth::key_of(info.start_time, info.end_time);
+
+        // Defensive: drop any stale cached instance for this key.
+        let _ = self.close_if_open(key);
+
+        // ── Tier 1: transient retry ───────────────────────────────────
+        match Shard::with_config(
+            &info.path, self.pool_size,
+            self.embedding.clone(), self.obs_config.clone(),
+        ) {
+            Ok(_shard) => {
+                self.info.clear_quarantined(info.shard_id)?;
+                crate::shardhealth::tracker().clear(health_key);
+                return Ok(RebuildOutcome::Transient);
+            }
+            Err(open_err) => {
+                log::warn!(
+                    "[shard-healer] shard {} re-open still failing ({open_err}); \
+                     attempting index rebuild",
+                    info.shard_id
+                );
+            }
+        }
+
+        // ── Tier 2: is DuckDB (the source of truth) intact? ───────────
+        let obs_path = format!("{}/obs.db", info.path);
+        if let Err(db_err) = ObservabilityStorage::with_config(
+            &obs_path, self.pool_size,
+            self.embedding.clone(), self.obs_config.clone(),
+        ) {
+            // DuckDB itself is corrupt — nothing local can rebuild it.
+            return Ok(RebuildOutcome::Unhealable {
+                reason: format!("DuckDB at {obs_path} will not open: {db_err}"),
+            });
+        }
+
+        // DuckDB is fine → the corruption is in fts/ and/or vec/.
+        // Delete both index directories so the next open recreates
+        // them empty, then replay from DuckDB.
+        let fts_dir = format!("{}/fts", info.path);
+        let vec_dir = format!("{}/vec", info.path);
+        for dir in [&fts_dir, &vec_dir] {
+            if std::path::Path::new(dir).exists() {
+                std::fs::remove_dir_all(dir).map_err(|e| {
+                    err_msg(format!("rebuild: cannot remove corrupt index dir {dir}: {e}"))
+                })?;
+            }
+        }
+
+        // Re-open with the index dirs gone — `FTSEngine::new` /
+        // `VectorEngine::new` recreate them empty — then replay.
+        let shard = Shard::with_config(
+            &info.path, self.pool_size,
+            self.embedding.clone(), self.obs_config.clone(),
+        ).map_err(|e| {
+            err_msg(format!(
+                "rebuild: shard {} still fails to open after clearing index dirs: {e}",
+                info.shard_id
+            ))
+        })?;
+        let reindexed = shard.rebuild_indexes()?;
+        shard.sync()?;
+
+        self.info.clear_quarantined(info.shard_id)?;
+        crate::shardhealth::tracker().clear(health_key);
+        Ok(RebuildOutcome::Reindexed { reindexed })
     }
 
     /// Flush all cached shards to disk and evict them from the in-memory cache.

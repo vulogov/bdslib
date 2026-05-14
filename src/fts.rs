@@ -80,6 +80,21 @@ impl FTSEngine {
         Ok(FTSState { index, writer, reader, id_field, body_field })
     }
 
+    /// Force the lazy Tantivy open and report whether it succeeded.
+    ///
+    /// `FTSEngine::new` is deliberately lazy — the index is not touched
+    /// until the first read/write.  That hides a **corrupt index** from
+    /// shard-open validation: `Shard::with_config` would succeed and
+    /// the corruption would only surface much later on a search.
+    /// [`probe`](FTSEngine::probe) gives the shard a way to validate
+    /// the FTS engine eagerly, so corruption is caught at open time and
+    /// the self-healing quarantine can act on it.
+    pub fn probe(&self) -> Result<()> {
+        let mut guard = self.state.lock();
+        Self::ensure(&mut guard, &self.path)?;
+        Ok(())
+    }
+
     fn ensure<'a>(guard: &'a mut Option<FTSState>, path: &str) -> Result<&'a mut FTSState> {
         if guard.is_none() {
             *guard = Some(Self::open_state(path)?);

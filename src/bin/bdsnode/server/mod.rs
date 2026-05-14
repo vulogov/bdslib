@@ -8,6 +8,7 @@ pub mod llm_jobs;
 pub mod results_sweeper;
 pub mod rebalancer;
 pub mod retention;
+pub mod shard_healer;
 pub mod supervise;
 pub mod scheduler;
 pub mod sync;

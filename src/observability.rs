@@ -690,6 +690,81 @@ impl ObservabilityStorage {
         parse_uuid_column(rows)
     }
 
+    /// Enumerate every **primary** record paired with the data the
+    /// search indexes need to be rebuilt from scratch:
+    /// `(id, fingerprint_text, embedding, reconstructed_doc)`.
+    ///
+    /// Used by the self-healing shard rebuild path
+    /// ([`crate::shard::Shard::rebuild_indexes`]).  DuckDB is the
+    /// source of truth — this walks the `telemetry` table joined to
+    /// `primary_embeddings`, so the **vector** embedding is recovered
+    /// **exactly** (no re-embedding).  The FTS fingerprint is
+    /// recomputed from the decomposed columns
+    /// (`key` / `timestamp` / `data` / `metadata`); it indexes the
+    /// same searchable content as the original even if it is not
+    /// byte-identical to the pre-corruption fingerprint.
+    ///
+    /// Secondary records carry no FTS / vector entry (they ride with
+    /// their primary) so they are intentionally excluded.
+    pub fn primary_records_for_reindex(
+        &self,
+    ) -> Result<Vec<(Uuid, String, Vec<f32>, JsonValue)>> {
+        let rows = self.engine.select_all(
+            "SELECT t.id, t.ts, t.key, t.data, t.metadata, pe.embedding \
+             FROM telemetry t \
+             JOIN primary_embeddings pe ON t.id = pe.primary_id \
+             WHERE t.is_primary = 1 \
+             ORDER BY t.ts ASC",
+        )?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut it = row.into_iter();
+            let id = parse_uuid_value(
+                it.next().ok_or_else(|| err_msg("reindex row missing id"))?,
+                "telemetry.id",
+            )?;
+            let ts = it.next()
+                .ok_or_else(|| err_msg("reindex row missing ts"))?
+                .cast_int().map_err(|e| err_msg(e.to_string()))?;
+            let key = it.next()
+                .ok_or_else(|| err_msg("reindex row missing key"))?
+                .cast_string().map_err(|e| err_msg(e.to_string()))?;
+            let data_s = it.next()
+                .ok_or_else(|| err_msg("reindex row missing data"))?
+                .cast_string().map_err(|e| err_msg(e.to_string()))?;
+            let meta_s = it.next()
+                .ok_or_else(|| err_msg("reindex row missing metadata"))?
+                .cast_string().map_err(|e| err_msg(e.to_string()))?;
+            let emb_bytes = it.next()
+                .ok_or_else(|| err_msg("reindex row missing embedding"))?
+                .cast_bin().map_err(|e| err_msg(e.to_string()))?;
+
+            let data: JsonValue = serde_json::from_str(&data_s)
+                .unwrap_or(JsonValue::Null);
+            let metadata: JsonValue = serde_json::from_str(&meta_s)
+                .unwrap_or(JsonValue::Null);
+            // Reconstruct the doc the same shape ingest fingerprints:
+            // key + timestamp + data, with metadata folded in so any
+            // metadata-derived search terms survive the rebuild.
+            let mut doc = serde_json::json!({
+                "key":       key,
+                "timestamp": ts,
+                "data":      data,
+            });
+            if let (Some(obj), Some(meta_obj)) =
+                (doc.as_object_mut(), metadata.as_object())
+            {
+                for (k, v) in meta_obj {
+                    obj.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            let fingerprint = json_fingerprint(&doc);
+            out.push((id, fingerprint, bytes_to_embedding(&emb_bytes), doc));
+        }
+        Ok(out)
+    }
+
     /// Return `true` if the record for `id` is classified as primary.
     ///
     /// Returns `false` for unknown IDs and for secondary records.
