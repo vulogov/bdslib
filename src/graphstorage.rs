@@ -972,7 +972,12 @@ impl GraphStore {
             walk = e.other(&walk);
             node_ids.push(walk);
         }
-        let nodes = self.hydrate_nodes(&node_ids)?;
+        // `hydrate_nodes` does not preserve input order (it splits cache
+        // hits from batch-fetched misses) — re-order by the path chain.
+        let by_id: HashMap<Uuid, Node> =
+            self.hydrate_nodes(&node_ids)?.into_iter().map(|n| (n.id, n)).collect();
+        let nodes: Vec<Node> =
+            node_ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
         Ok(Some(Path { nodes, edges: edge_chain, total_weight }))
     }
 
