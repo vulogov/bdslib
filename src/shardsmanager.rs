@@ -182,6 +182,18 @@ fn parse_embedding_model(name: &str) -> Result<EmbeddingModel> {
 /// `start_time` / `end_time` are surfaced so the retention sweeper can
 /// invalidate any cache layer keyed by record timestamp (the JsonCache)
 /// without having to re-fetch the catalog row.
+/// Summary of one [`ShardsManager::consistency_sweep`] pass.
+#[derive(Debug, Clone, Default)]
+pub struct ConsistencySweepReport {
+    /// Sealed shards whose cross-engine consistency was checked.
+    pub checked:       usize,
+    /// Of those, how many had drifted engines and were quarantined.
+    pub divergent:     usize,
+    /// Shards that failed to open during the sweep — left to the
+    /// open-failure tracker, not counted as divergent.
+    pub open_failures: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct EvictionOutcome {
     pub shard_id:   Uuid,
@@ -1419,6 +1431,82 @@ impl ShardsManager {
         info: &crate::shardsinfo::ShardInfo,
     ) -> Result<crate::shardscache::RebuildOutcome> {
         self.cache.rebuild_shard(info)
+    }
+
+    /// Tier-3 escalation: destroy a shard that has been unrepairable
+    /// for too long and recreate it empty for the same interval, so
+    /// the cluster rebalancer can repopulate it from peers.  See
+    /// [`ShardsCache::recreate_shard`] — **destructive**; the caller
+    /// (the shard healer) is responsible for enforcing the
+    /// "cluster mode + rebalancer enabled + operator opted in"
+    /// preconditions.
+    pub fn recreate_failed_shard(
+        &self,
+        info: &crate::shardsinfo::ShardInfo,
+    ) -> Result<()> {
+        self.cache.recreate_shard(info)
+    }
+
+    /// Phase-3 cross-engine consistency sweep.
+    ///
+    /// Walks every **sealed** shard (one whose interval has fully
+    /// elapsed — the active write target is skipped because its
+    /// counts legitimately drift mid-flush), opens it, and compares
+    /// the DuckDB primary count against the Tantivy and HNSW counts.
+    /// A shard whose engines have drifted is **quarantined** so the
+    /// rebuild healer re-indexes it from DuckDB on its next pass.
+    ///
+    /// Already-quarantined shards are skipped (the healer owns them).
+    /// A shard that fails to *open* during the sweep is left to the
+    /// open-failure tracker — the sweep doesn't double-count it.
+    ///
+    /// Returns a [`ConsistencySweepReport`] summarising the pass.
+    pub fn consistency_sweep(&self) -> Result<ConsistencySweepReport> {
+        let now = SystemTime::now();
+        let mut report = ConsistencySweepReport::default();
+
+        for info in self.cache.info().list_all()? {
+            // Skip the active write target — its three counts
+            // legitimately diverge for the milliseconds between a
+            // batch's DuckDB commit and its Tantivy commit.
+            if info.end_time > now {
+                continue;
+            }
+            // Skip shards the healer is already working on.
+            if self.cache.info().is_quarantined(info.shard_id)? {
+                continue;
+            }
+            report.checked += 1;
+
+            // Open through the cache so a failure here still feeds the
+            // open-failure tracker / quarantine machinery.
+            let shard = match self.cache.shard(info.start_time) {
+                Ok(s)  => s,
+                Err(_) => {
+                    // Open failed — the open-failure tracker handles
+                    // it; don't also flag it as "divergent".
+                    report.open_failures += 1;
+                    continue;
+                }
+            };
+
+            let cc = shard.consistency_check()?;
+            if !cc.consistent {
+                report.divergent += 1;
+                log::warn!(
+                    "[consistency] shard {} ({}) DRIFTED — \
+                     duckdb={} fts={} hnsw={} — quarantining for rebuild",
+                    info.shard_id, info.path,
+                    cc.primary_count, cc.fts_count, cc.vector_count,
+                );
+                self.cache.info().mark_quarantined(info.shard_id)?;
+                // Drop the cached (now-quarantined) instance so the
+                // next `shard()` short-circuits and the healer's
+                // rebuild path takes over.
+                let _ = self.cache.close_if_open((info.start_time, info.end_time));
+            }
+        }
+        Ok(report)
     }
 
     // ── accessors ─────────────────────────────────────────────────────────────

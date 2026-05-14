@@ -23,7 +23,7 @@ first.
 5. [Schedule control — cluster-aware Scheduler](#5-schedule-control--cluster-aware-scheduler)
 6. [Data distribution](#6-data-distribution)
 7. [Write replication — sharded + fully-replicated](#7-write-replication--sharded--fully-replicated)
-8. [Convergence — hinted handoff, anti-entropy, rebalancer](#8-convergence--hinted-handoff-anti-entropy-rebalancer) — incl. [§8.4 Data rebalancer](#84-data-rebalancer--sharded-convergence)
+8. [Convergence — hinted handoff, anti-entropy, rebalancer](#8-convergence--hinted-handoff-anti-entropy-rebalancer) — incl. [§8.4 Data rebalancer](#84-data-rebalancer--sharded-convergence), [§8.5 Self-healing](#85-self-healing--shard-quarantine-rebuild-and-tier-3-recreation)
 9. [Read fan-out — v3/* surface](#9-read-fan-out--v3-surface) — incl. [§9.2 Coordinator-side query embedding](#92-coordinator-side-query-embedding)
 10. [Bdsweb mode-aware routing](#10-bdsweb-mode-aware-routing)
 11. [Authentication — `v3/user.*` + sessions](#11-authentication--v3user--sessions)
@@ -755,6 +755,130 @@ A clean tick on a converged cluster reports
 `records_examined_last_run` — it scanned, found nothing to do, and
 cost a few tens of milliseconds.
 
+### 8.5 Self-healing — shard quarantine, rebuild, and Tier-3 recreation
+
+The rebalancer (§ 8.4) converges *missing* records across the
+cluster.  The self-healing layer handles the orthogonal failure
+mode: a shard whose **local storage is corrupt**.  A shard is three
+engines under one directory — DuckDB (`obs.db`, the source of
+truth), Tantivy (`fts/`), HNSW (`vec/`).  A crash mid-write or a
+disk fault can corrupt any of them, and without intervention the
+failure is permanent: every operation touching that time window
+fails forever.
+
+Self-healing turns that into automatic recovery, in three escalating
+tiers.  Library: `src/shardhealth.rs`, `ShardsCache::{rebuild,recreate}_shard`.
+Task: `bdsnode/server/shard_healer.rs`.
+
+#### Detection + isolation — quarantine
+
+`ShardsCache::shard()` validates **all three** engines on open —
+`Shard::with_config` eagerly probes the lazily-opened Tantivy/HNSW
+indexes so corruption surfaces at open time, not later on a query.
+Consecutive open failures for one shard interval are counted by the
+process-wide `shardhealth` tracker; after 3 in a row the shard is
+flagged `quarantined` in the catalog (a boolean column alongside
+`evicting`, § 6.3-adjacent).  Subsequent opens **short-circuit** —
+the broken shard is kept out of the read/write path so the rest of
+the node keeps serving.  A 5-minute cooldown prevents
+re-quarantine thrash.
+
+A quarantined shard narrows what this node can answer: cluster reads
+that fan out here (§ 9) get fewer rows, surfaced as `partial: true`
+in `cluster_meta` until the heal completes.
+
+#### Recovery — the rebuild healer
+
+The `shard_healer` background task sweeps the quarantined list every
+`self_healing.interval` (default 60 s) and attempts a repair,
+cheapest tier first:
+
+| Tier | Trigger | Action | Outcome |
+|------|---------|--------|---------|
+| **1 — transient retry** | quarantined shard | re-open it | many quarantines are false positives (a momentary pool saturation that crossed the threshold) — if it opens cleanly now, clear the quarantine |
+| **2 — index rebuild** | re-open still fails, but DuckDB alone opens | delete `fts/` + `vec/`, re-open (recreates them empty), replay every primary record from DuckDB via `Shard::rebuild_indexes` | the vector embedding is recovered **exactly** from the `primary_embeddings` table — no ONNX re-embedding; quarantine cleared |
+| **3 — recreate** | DuckDB *itself* is corrupt (Unhealable) for longer than `failed_shard_recreate_after` | **destroy** the shard + recreate it empty for the same interval | see below — opt-in, destructive, cluster-only |
+
+#### Tier-3 — recreate failed shards
+
+When DuckDB itself won't open, the shard cannot be rebuilt from
+local data.  By default it stays `FAILED` forever, waiting for an
+operator.  **Tier-3 automates that recovery — but only when it is
+safe.**  All four conditions must hold:
+
+1. the shard has been continuously *unhealable* for longer than
+   `self_healing.failed_shard_recreate_after` (default `1h`);
+2. `self_healing.recreate_failed_shards` is `true` (opt-in — it is
+   destructive);
+3. the cluster `rebalancer` is enabled;
+4. the node is **actually in cluster mode** — a hard safety net
+   independent of the config flags.
+
+When all four hold, the healer destroys the failed shard
+(`remove_dir_all` + catalog row delete) and recreates it empty for
+the same `[start, end)` interval via `ShardsCache::recreate_shard`
+(which takes the auto-create path in `shard()`).  The empty shard is
+a valid, healthy catalog member again — and **the peers' rebalancers
+then repopulate it**: their next sweep sees this node missing those
+records and pushes them back via `v2/cluster.replicate_record`
+(§ 8.4).  The chain is:
+
+```
+corrupt obs.db  →  3 failed opens  →  quarantined
+   →  healer Tier-1/2 fail  →  Unhealable
+   →  unhealable > failed_shard_recreate_after  →  Tier-3 recreate (empty)
+   →  peers' rebalancers push the records back  →  shard whole again
+```
+
+The cluster-mode gate (condition 4) is why Tier-3 lives in a
+cluster document: a **standalone** node has no peers to repopulate
+from, so recreating an empty shard there is permanent data loss —
+the healer refuses, regardless of the flags, and logs why.  If
+`recreate_failed_shards` is off, or the rebalancer is disabled, or
+the node is standalone, the shard simply stays `FAILED`.
+
+#### Consistency sweep + circuit breaker
+
+Two further Phase-3 mechanisms harden the detection side:
+
+- **Consistency sweep** — quarantine catches a shard that fails to
+  *open*, but a shard can open cleanly and still be internally
+  inconsistent: a partial flush (DuckDB committed, the Tantivy
+  commit or HNSW upsert failed) leaves the three engines with
+  different record sets, silently degrading search.  Every
+  `self_healing.consistency_interval` (default 10 m) the healer
+  walks every **sealed** shard and compares the DuckDB primary
+  count against the Tantivy and HNSW counts — any divergence
+  quarantines the shard so Tier-2 re-indexes it.  The active write
+  target is skipped (its counts legitimately drift mid-flush).
+- **Per-shard circuit breaker** — between a shard starting to fail
+  and quarantine engaging (3 consecutive open failures), every
+  caller would block the full pool-checkout timeout on each doomed
+  open.  After 2 failures the breaker trips **Open** and `shard()`
+  fast-fails instantly for a 30 s cooldown, then **HalfOpen** lets
+  one probe through.  It paces, not replaces, quarantine — the
+  HalfOpen probes still feed the quarantine tracker.
+
+#### The health registry
+
+Every background loop (gossip, rebalancer, retention, sync,
+scheduler, llm_jobs, the ingest-flusher supervisor, the shard
+healer) registers a source in a process-wide health registry
+(`bdslib::health`, mirrors the `perf` registry) and **heartbeats**
+each tick.  Each source reports `Healthy` / `Degraded` / `Failed`;
+a *stale heartbeat* (no tick within 3-6× the loop interval) is
+treated as `Failed` regardless of the last self-reported status —
+that is how a **hung** loop, which can never update its own status,
+is still caught.  Each quarantined shard also registers a
+`shard.<start>_<end>` source.
+
+| Surface | What |
+|---------|------|
+| `v2/health` | Dedicated readiness/liveness probe — aggregate verdict (`healthy`/`degraded`/`failed`) + per-source breakdown with `stale` flags.  For load balancers and orchestrators. |
+| `v2/status.health` | The same aggregate verdict, embedded in the general status payload. |
+| `v2/status.self_healing` | `quarantined_now` plus lifetime `quarantines_total` / `heals_total` / `unhealable_total` / `recreations_total` / `breaker_trips_total`. |
+| `v2/status.ingest_flushers` | `alive` / `configured` / `restarts_total` / `records_dropped` — the flusher supervisor's own self-healing counters. |
+
 ---
 
 ## 9. Read fan-out — v3/* surface
@@ -1270,3 +1394,9 @@ Sections added or substantially revised:
   rebalance.
 - **§ 9.2 Coordinator-side query embedding** — `v3/search` embeds
   once and ships `query_vec` to peers.
+- **§ 8.5 Self-healing** — shard quarantine + the three-tier rebuild
+  healer (transient retry / index rebuild / Tier-3 recreate), the
+  Phase-3 consistency sweep + per-shard circuit breaker, the health
+  registry, and `v2/health`.  Tier-3 recreation is the
+  cluster-coupled piece: it depends on cluster mode + the rebalancer
+  to repopulate a recreated empty shard from peers.

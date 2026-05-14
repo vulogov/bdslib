@@ -178,11 +178,29 @@ impl ShardsCache {
                     info.shard_id, info.path
                 )));
             }
+            // Circuit-breaker fast-fail: when a shard's opens have
+            // been failing, the breaker trips Open and every call
+            // here returns immediately instead of paying the (up to
+            // 10 s) pool-checkout timeout on a doomed open.  After a
+            // cooldown the breaker goes HalfOpen and lets the next
+            // attempt through as a probe.  Distinct from quarantine:
+            // the breaker is a transient latency guard, quarantine is
+            // the persistent corruption verdict.
+            let health_key = crate::shardhealth::key_of(info.start_time, info.end_time);
+            if crate::shardhealth::tracker().breaker_check(health_key)
+                == crate::shardhealth::BreakerState::Open
+            {
+                return Err(err_msg(format!(
+                    "shard {} ({}) circuit breaker OPEN — fast-failing \
+                     (struggling storage; retry shortly)",
+                    info.shard_id, info.path
+                )));
+            }
+
             // Try to open the shard's three engines.  An open failure
             // is the unambiguous corruption signal — feed it to the
-            // shard-health tracker, which decides when consecutive
-            // failures warrant quarantine.
-            let health_key = crate::shardhealth::key_of(info.start_time, info.end_time);
+            // shard-health tracker, which drives both the circuit
+            // breaker and the quarantine decision.
             let shard = match Shard::with_config(
                 &info.path,
                 self.pool_size,
@@ -379,14 +397,43 @@ impl ShardsCache {
         let _ = self.close_if_open(key);
 
         // ── Tier 1: transient retry ───────────────────────────────────
+        // A shard can be quarantined for two reasons: it failed to
+        // *open* (corruption), or it opened fine but its engines have
+        // *drifted* (the Phase-3 consistency sweep).  Tier-1 only
+        // resolves the first kind — so it must verify consistency
+        // before declaring victory, otherwise a drift quarantine
+        // would be "healed" with the drift still in place.
         match Shard::with_config(
             &info.path, self.pool_size,
             self.embedding.clone(), self.obs_config.clone(),
         ) {
-            Ok(_shard) => {
-                self.info.clear_quarantined(info.shard_id)?;
-                crate::shardhealth::tracker().clear(health_key);
-                return Ok(RebuildOutcome::Transient);
+            Ok(shard) => {
+                match shard.consistency_check() {
+                    Ok(cc) if cc.consistent => {
+                        // Opened cleanly AND consistent — a genuine
+                        // transient false positive.  Done.
+                        self.info.clear_quarantined(info.shard_id)?;
+                        crate::shardhealth::tracker().clear(health_key);
+                        return Ok(RebuildOutcome::Transient);
+                    }
+                    Ok(cc) => {
+                        log::warn!(
+                            "[shard-healer] shard {} opens but engines drifted \
+                             (duckdb={} fts={} hnsw={}) — rebuilding indexes",
+                            info.shard_id,
+                            cc.primary_count, cc.fts_count, cc.vector_count,
+                        );
+                        // fall through to Tier-2 (index rebuild)
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[shard-healer] shard {} opened but consistency \
+                             check failed ({e}); attempting index rebuild",
+                            info.shard_id
+                        );
+                        // fall through to Tier-2
+                    }
+                }
             }
             Err(open_err) => {
                 log::warn!(
@@ -439,6 +486,72 @@ impl ShardsCache {
         self.info.clear_quarantined(info.shard_id)?;
         crate::shardhealth::tracker().clear(health_key);
         Ok(RebuildOutcome::Reindexed { reindexed })
+    }
+
+    /// Tier-3 escalation: **destroy** a failed shard and recreate it
+    /// empty for the same `[start, end)` interval.
+    ///
+    /// Used by the shard healer when a shard has been *unhealable*
+    /// (DuckDB itself corrupt — no local rebuild possible) for longer
+    /// than the configured window AND the operator opted into
+    /// `recreate_failed_shards` AND the cluster rebalancer is enabled.
+    /// The empty shard is a valid, healthy (if empty) member of the
+    /// catalog again; peers' rebalancers then push the missing records
+    /// back into it via `v2/cluster.replicate_record`.
+    ///
+    /// **This is destructive** — the failed shard's local data is gone
+    /// after this call.  It is only safe because the precondition is
+    /// "we are in a cluster whose other nodes hold replicas, and the
+    /// rebalancer will restore them".  The healer enforces those
+    /// preconditions before calling this; the method itself just does
+    /// the mechanical delete + recreate.
+    ///
+    /// Procedure:
+    /// 1. Drop any cached instance.
+    /// 2. Delete the catalog row **first** — so the recreate's
+    ///    `shard()` call doesn't short-circuit on the stale
+    ///    `quarantined` flag.
+    /// 3. `remove_dir_all` the on-disk shard directory.
+    /// 4. Clear the shard-health tracking record.
+    /// 5. `shard()` for a timestamp inside the interval — with no
+    ///    catalog row present this hits the auto-create path,
+    ///    provisioning a fresh empty shard + catalog row at the same
+    ///    path and validating its three engines.
+    pub fn recreate_shard(&self, info: &ShardInfo) -> Result<()> {
+        let key = (info.start_time, info.end_time);
+        let health_key = crate::shardhealth::key_of(info.start_time, info.end_time);
+
+        // 1. drop the cached (broken) instance, if any.
+        let _ = self.close_if_open(key);
+
+        // 2. delete the catalog row before touching disk, so a
+        //    concurrent reader either sees the old row (and fails to
+        //    open the about-to-be-deleted dir — transient) or sees no
+        //    row (and the auto-create in step 5 wins the race).
+        self.info.delete_by_id(info.shard_id)?;
+
+        // 3. remove the on-disk state.  POSIX `remove_dir_all` is safe
+        //    even with FDs still open against the files.
+        if std::path::Path::new(&info.path).exists() {
+            std::fs::remove_dir_all(&info.path).map_err(|e| {
+                err_msg(format!(
+                    "recreate: cannot remove failed shard dir {}: {e}",
+                    info.path
+                ))
+            })?;
+        }
+
+        // 4. forget all failure history for this interval.
+        crate::shardhealth::tracker().clear(health_key);
+
+        // 5. recreate: `shard()` finds no catalog row covering this
+        //    timestamp and takes the auto-create branch, provisioning
+        //    a fresh empty shard for the SAME interval.  `with_config`
+        //    eagerly probes all three engines, so a recreate that
+        //    can't even stand up a fresh shard surfaces as an error
+        //    here rather than silently leaving a gap.
+        self.shard(info.start_time)?;
+        Ok(())
     }
 
     /// Flush all cached shards to disk and evict them from the in-memory cache.

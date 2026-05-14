@@ -78,6 +78,17 @@ impl VectorEngine {
         self.with_store(|_| Ok(()))
     }
 
+    /// Number of **active** (non-soft-deleted) vectors in the HNSW
+    /// store.
+    ///
+    /// Used by the self-healing **consistency sweep** (Phase 3): this
+    /// should track the shard's primary-record count in DuckDB, and a
+    /// divergence means the vector index is stale or corrupt and the
+    /// shard needs a rebuild.
+    pub fn active_count(&self) -> Result<usize> {
+        self.with_store(|s| Ok(s.active_count()))
+    }
+
     /// Store an `id → vector` association.
     ///
     /// `metadata` is an optional JSON object whose fields are stored alongside

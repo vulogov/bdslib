@@ -772,15 +772,21 @@ Surfacing:
 
 ```hjson
 self_healing: {
-  enabled:   true     // on by default — only touches quarantined shards
-  interval:  "60s"    // humantime cadence between heal sweeps
+  enabled:                      true     // on by default — only touches quarantined shards
+  interval:                     "60s"    // humantime cadence between heal sweeps
+  consistency_interval:         "10m"    // cross-engine consistency sweep cadence; "0s" disables
+  recreate_failed_shards:       false    // Tier-3 escalation — destructive, opt-in
+  failed_shard_recreate_after:  "1h"     // unhealable-for-this-long before Tier-3 may act
 }
 ```
 
-| Field                   | Type             | Default | Description |
-|-------------------------|------------------|---------|-------------|
-| `self_healing.enabled`  | bool             | `true`  | Master switch for the shard rebuild healer. |
-| `self_healing.interval` | humantime string | `"60s"` | Cadence between heal sweeps.  Clamped to `[10s, 1h]`. |
+| Field                                   | Type             | Default | Description |
+|------------------------------------------|------------------|---------|-------------|
+| `self_healing.enabled`                   | bool             | `true`  | Master switch for the shard rebuild healer. |
+| `self_healing.interval`                  | humantime string | `"60s"` | Cadence between heal sweeps.  Clamped to `[10s, 1h]`. |
+| `self_healing.consistency_interval`      | humantime string | `"10m"` | Cadence of the cross-engine consistency sweep.  `"0s"` disables it. |
+| `self_healing.recreate_failed_shards`    | bool             | `false` | Tier-3 escalation switch.  **Destructive** — opt-in only. |
+| `self_healing.failed_shard_recreate_after` | humantime string | `"1h"` | How long a shard must stay *unhealable* before Tier-3 may recreate it. |
 
 A shard is three engines under one directory — DuckDB (source of
 truth), Tantivy (FTS), HNSW (vector).  When that directory's state
@@ -810,19 +816,76 @@ The self-healing layer turns that into automatic recovery:
      `primary_embeddings` table — no ONNX re-embedding.
    - **Unhealable** — if DuckDB itself won't open, the shard cannot
      self-heal from local data.  It stays quarantined and is
-     reported `Failed` in the health registry for operator (or a
-     future cluster peer-rebuild phase) intervention.
+     reported `Failed` in the health registry.
+3. **Tier-3 — recreate failed shards (opt-in, destructive).** An
+   *unhealable* shard normally stays `FAILED` forever, waiting for
+   an operator.  Tier-3 automates the recovery **only when it is
+   safe**.  When a shard has been continuously unhealable for longer
+   than `failed_shard_recreate_after`, **and**
+   `recreate_failed_shards` is `true`, **and** the cluster
+   `rebalancer` is enabled, **and** the node is actually in cluster
+   mode, the healer **destroys** the failed shard and recreates it
+   empty for the same interval.  The peers' rebalancers then
+   repopulate it via `v2/cluster.replicate_record`.
 
-The healer is **on by default** because it only ever touches shards
-the quarantine layer has *already isolated* — the blast radius is
-small, and the cost of leaving it off is "a corrupt shard never
-recovers on its own."
+   If `recreate_failed_shards` is off, **or** the rebalancer is
+   disabled, **or** the node is standalone, the shard simply stays
+   `FAILED` — the safe default.  The cluster-mode check is a hard
+   safety net independent of the config flags: a standalone node has
+   no peers to repopulate from, so recreating an empty shard there
+   would be permanent data loss.  Because Tier-3 is destructive
+   (the failed shard's local data is gone the moment it runs), it
+   is **off by default** and the `failed_shard_recreate_after`
+   window defaults to a generous 1 h so transient faults and
+   operator intervention both have time to act first.
+
+The healer is **on by default** (Tiers 1–2) because it only ever
+touches shards the quarantine layer has *already isolated* — the
+blast radius is small, and the cost of leaving it off is "a corrupt
+shard never recovers on its own."  Tier-3 is the one exception:
+opt-in, because it trades local data for an automated cluster
+recovery.
+
+#### Consistency sweep (Phase 3)
+
+Quarantine detects corruption that makes a shard *fail to open*.
+But a shard can open cleanly and still be **internally
+inconsistent**: a partial flush — DuckDB committed, but the Tantivy
+commit or HNSW upsert failed — leaves the three engines holding
+different sets of records, silently degrading search.  The
+consistency sweep catches that.
+
+Every `consistency_interval` (default 10 m) the healer walks every
+**sealed** shard — one whose time interval has fully elapsed; the
+active write target is skipped because its counts legitimately
+diverge for the milliseconds between a batch's DuckDB and Tantivy
+commits — and compares the DuckDB primary-record count against the
+Tantivy doc count and the HNSW vector count.  In a healthy shard
+all three are *exactly equal*; any divergence **quarantines** the
+shard, so the rebuild healer (Tier-2) re-indexes it from DuckDB on
+its next pass.  Set `consistency_interval: "0s"` to disable.
+
+#### Circuit breaker (Phase 3)
+
+Between a shard starting to fail and quarantine kicking in (3
+consecutive open failures), every caller hitting that time window
+would block up to the full DuckDB pool-checkout timeout (10 s) on
+each doomed open.  The per-shard **circuit breaker** bounds that:
+after 2 consecutive open failures it trips **Open** and every
+`shard()` call fast-fails instantly for a 30 s cooldown, then goes
+**HalfOpen** and lets one probe attempt through (which closes the
+breaker on success, or re-arms it on failure).  It is not a
+replacement for quarantine — the HalfOpen probes still feed the
+quarantine tracker, so a genuinely-broken shard still gets
+quarantined — it just stops every caller paying the open cost on
+the way there.  The breaker is automatic, with no config knobs.
 
 Surfacing:
 
 - `v2/status.self_healing` — `quarantined_now` (shards currently
   isolated), plus lifetime `quarantines_total` / `heals_total` /
-  `unhealable_total` counters.
+  `unhealable_total` / `recreations_total` / `breaker_trips_total`
+  counters.
 - `v2/health` + `v2/status.health` — each quarantined shard
   registers a `shard.<start>_<end>` health source; the aggregate
   verdict goes `failed` while any shard is unhealable.

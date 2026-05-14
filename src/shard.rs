@@ -10,6 +10,27 @@ use std::sync::Arc;
 use uuid::Uuid;
 use vecstore::reranking::MMRReranker;
 
+/// Cross-engine consistency snapshot for one shard — produced by
+/// [`Shard::consistency_check`] and consumed by the Phase-3
+/// consistency sweep.
+///
+/// In a healthy sealed shard all three counts are **exactly equal**:
+/// every primary record is one DuckDB row + one Tantivy doc + one
+/// HNSW vector.  `consistent == false` means the engines have drifted
+/// — a partial flush left one of them behind — and the shard should
+/// be re-indexed from DuckDB (the source of truth).
+#[derive(Debug, Clone)]
+pub struct ConsistencyReport {
+    /// Primary rows in DuckDB (`telemetry WHERE is_primary = 1`).
+    pub primary_count: u64,
+    /// Documents in the Tantivy FTS index.
+    pub fts_count: u64,
+    /// Active (non-soft-deleted) vectors in the HNSW index.
+    pub vector_count: u64,
+    /// `true` only when all three counts agree.
+    pub consistent: bool,
+}
+
 /// Combined observability, full-text search, and vector shard.
 ///
 /// `Shard` stores every telemetry event in [`ObservabilityStorage`] and
@@ -287,6 +308,37 @@ impl Shard {
     /// Returns the number of templates re-indexed.
     pub fn tpl_reindex(&self) -> Result<usize> {
         self.tplstorage.reindex()
+    }
+
+    /// Cross-engine consistency snapshot — the Phase-3 consistency
+    /// sweep's per-shard probe.
+    ///
+    /// In a healthy shard the three engines hold exactly the same set
+    /// of primary records: every primary insert writes one DuckDB row,
+    /// one Tantivy doc, and one HNSW vector.  So
+    /// `primary_count == fts_count == vector_count` is the invariant.
+    /// A divergence means a write committed to one engine but not
+    /// another (a partial flush — DuckDB committed, the Tantivy commit
+    /// or HNSW upsert failed) and search results for this shard are
+    /// silently degraded.  The consistency sweep quarantines a
+    /// divergent shard so the rebuild healer re-indexes it from DuckDB.
+    ///
+    /// Caller note: only run this on a **sealed** shard (one whose
+    /// interval has fully elapsed).  The active write-target shard's
+    /// counts legitimately diverge for the few milliseconds between
+    /// the DuckDB commit and the Tantivy commit of an in-flight batch.
+    pub fn consistency_check(&self) -> Result<ConsistencyReport> {
+        let primary_count = self.observability.count_primaries()?;
+        let fts_count     = self.fts.doc_count()?;
+        let vector_count  = self.vector.active_count()? as u64;
+        let consistent    = primary_count == fts_count
+                         && primary_count == vector_count;
+        Ok(ConsistencyReport {
+            primary_count,
+            fts_count,
+            vector_count,
+            consistent,
+        })
     }
 
     /// Rebuild this shard's **FTS and vector** indexes from its DuckDB

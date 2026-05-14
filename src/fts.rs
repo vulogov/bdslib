@@ -95,6 +95,18 @@ impl FTSEngine {
         Ok(())
     }
 
+    /// Number of documents in the Tantivy index.
+    ///
+    /// Used by the self-healing **consistency sweep** (Phase 3) to
+    /// detect index drift: this should track the shard's primary-record
+    /// count in DuckDB, and a divergence means the FTS index is stale
+    /// or corrupt and the shard needs a rebuild.
+    pub fn doc_count(&self) -> Result<u64> {
+        let mut guard = self.state.lock();
+        let s = Self::ensure(&mut guard, &self.path)?;
+        Ok(s.reader.searcher().num_docs())
+    }
+
     fn ensure<'a>(guard: &'a mut Option<FTSState>, path: &str) -> Result<&'a mut FTSState> {
         if guard.is_none() {
             *guard = Some(Self::open_state(path)?);

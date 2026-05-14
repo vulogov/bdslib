@@ -425,13 +425,22 @@ async fn main() -> anyhow::Result<()> {
             log::warn!("[rebalancer] config parse failed ({e}); disabled");
             bdslib::rebalancer::RebalancerConfig::disabled()
         });
+    // Capture `enabled` before the config is moved into `start` — the
+    // shard healer's Tier-3 escalation gates on it.
+    let rebalancer_enabled = rebalancer_cfg.enabled;
     let rebalancer_handle = server::rebalancer::start(rebalancer_cfg);
 
     // Shard rebuild healer — Phase 2 self-healing.  Walks the
     // quarantined-shard list and repairs each (transient retry →
-    // index rebuild from DuckDB).  On by default; it only ever
-    // touches shards the quarantine layer already isolated.
-    let shard_healer_cfg = server::shard_healer::Config::from_config(cli.config.as_deref());
+    // index rebuild from DuckDB → optional Tier-3 recreate).  On by
+    // default; it only ever touches shards the quarantine layer
+    // already isolated.  Tier-3 (recreate failed shards) additionally
+    // requires the rebalancer to be enabled — pass that through so
+    // the healer can gate on it.
+    let shard_healer_cfg = server::shard_healer::Config::from_config(
+        cli.config.as_deref(),
+        rebalancer_enabled,
+    );
     let shard_healer_handle = server::shard_healer::start(shard_healer_cfg);
 
     // Cluster gossip task — bootstraps against `cluster.bootstrap` (if set)

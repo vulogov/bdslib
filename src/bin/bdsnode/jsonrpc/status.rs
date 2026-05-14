@@ -164,10 +164,12 @@ pub fn register(module: &mut RpcModule<()>) {
                     .map(|v| v.len())
                     .unwrap_or(0);
                 serde_json::json!({
-                    "quarantined_now":   quarantined_now,
-                    "quarantines_total": t.quarantines_total(),
-                    "heals_total":       t.heals_total(),
-                    "unhealable_total":  t.unhealable_total(),
+                    "quarantined_now":     quarantined_now,
+                    "quarantines_total":   t.quarantines_total(),
+                    "heals_total":         t.heals_total(),
+                    "unhealable_total":    t.unhealable_total(),
+                    "recreations_total":   t.recreations_total(),
+                    "breaker_trips_total": t.breaker_trips_total(),
                 })
             };
 
