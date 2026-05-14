@@ -136,7 +136,7 @@
     <button id="analyze-btn"
             type="button"
             class="btn-analyze self-center"
-            hx-get="/anomaly_recent/analyze"
+            hx-post="/anomaly_recent/analyze"
             hx-include="[name=duration],[name=n],[name=min_word_len],[name=anomaly_threshold],[name=max_anomalies]"
             hx-target="#analysis-body"
             hx-swap="innerHTML"

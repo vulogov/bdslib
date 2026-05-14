@@ -134,7 +134,7 @@
     <button id="analyze-btn"
             type="button"
             class="btn-analyze self-center"
-            hx-get="/knn/analyze"
+            hx-post="/knn/analyze"
             hx-include="[name=duration],[name=k],[name=min_word_len],[name=anomaly_threshold],[name=max_cluster_members],[name=max_anomalies]"
             hx-target="#analysis-body"
             hx-swap="innerHTML"

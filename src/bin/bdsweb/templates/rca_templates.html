@@ -116,7 +116,7 @@
         <button id="analyze-btn"
                 type="button"
                 class="btn-analyze self-center"
-                hx-get="/rca/templates/analyze"
+                hx-post="/rca/templates/analyze"
                 hx-include="#failure-body-input,[name=duration],[name=bucket_secs],[name=min_support],[name=jaccard_threshold],[name=max_keys]"
                 hx-target="#analysis-body"
                 hx-swap="innerHTML"

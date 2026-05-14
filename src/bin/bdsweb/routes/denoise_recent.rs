@@ -1,5 +1,5 @@
 use askama::Template;
-use axum::{extract::{Query, State}, response::Html};
+use axum::{extract::{Form, Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
@@ -237,7 +237,7 @@ struct DenoiseAnalysis {
 
 pub async fn analyze(
     State(state): State<AppState>,
-    Query(p): Query<Params>,
+    Form(p): Form<Params>,
 ) -> Result<Html<String>, AppError> {
     let cfg = state.denoise_recent_analyze.clone();
 

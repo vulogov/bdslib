@@ -5,6 +5,7 @@ mod error;
 mod error_pretty;
 mod markdown;
 mod routes;
+mod security;
 mod state;
 
 use axum::{middleware, routing::{delete, get, post}, Router};
@@ -12,7 +13,7 @@ use clap::Parser;
 use state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer};
 use tower_http::compression::CompressionLayer;
 
 #[derive(Parser)]
@@ -56,6 +57,12 @@ struct WebConfig {
     /// `cluster.auth_rate_limit_per_minute` — Phase 6 rate limit
     /// applied per-IP to `POST /login`.  `0` disables the limit.
     auth_rate_limit_per_minute: u32,
+    /// `web.trusted_proxy` — when `true`, bdsweb trusts the
+    /// `X-Forwarded-For` / `X-Real-IP` headers for the `POST /login`
+    /// rate-limiter key (`SmartIpKeyExtractor`).  Leave `false` unless
+    /// bdsweb genuinely sits behind a reverse proxy that sets those
+    /// headers — otherwise a client can spoof them to evade the limit.
+    trusted_proxy: bool,
     /// `web.secure_cookies` — whether the `bds_session` cookie carries
     /// the `Secure` attribute.  `None` (key absent) means "auto":
     /// resolved at startup to `false` for a loopback bind and `true`
@@ -113,6 +120,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         shared_secret: String::new(),
         auth_rate_limit_per_minute: 10,
         secure_cookies: None,
+        trusted_proxy: false,
         logs_analyze:                      state::AnalyzeTargetConfig::logs_default(),
         metrics_analyze:                   state::AnalyzeTargetConfig::metrics_default(),
         templates_analyze:                 state::AnalyzeTargetConfig::templates_default(),
@@ -164,6 +172,11 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         .and_then(|v| v.as_object())
         .and_then(|w| w.get("secure_cookies"))
         .and_then(|v| v.as_bool());
+    let trusted_proxy = obj.get("web")
+        .and_then(|v| v.as_object())
+        .and_then(|w| w.get("trusted_proxy"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(defaults.trusted_proxy);
 
     // `web.analyze.<target>.*` — every key is optional; the
     // per-target default factory supplies the fallback values, so a
@@ -222,6 +235,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         shared_secret,
         auth_rate_limit_per_minute,
         secure_cookies,
+        trusted_proxy,
         logs_analyze,
         metrics_analyze,
         templates_analyze,
@@ -459,62 +473,62 @@ async fn main() {
         .route("/cluster/refresh",   get(routes::cluster::refresh))
         .route("/perf",              get(routes::perf::page))
         .route("/perf/data",         get(routes::perf::data))
-        .route("/perf/analyze",      get(routes::perf::analyze))
+        .route("/perf/analyze",      post(routes::perf::analyze))
         .route("/telemetry",         get(routes::telemetry::page))
         .route("/telemetry/results", get(routes::telemetry::results))
         .route("/telemetry/keys",    get(routes::telemetry::keys))
-        .route("/telemetry/analyze", get(routes::telemetry::analyze))
+        .route("/telemetry/analyze", post(routes::telemetry::analyze))
         .route("/logs",              get(routes::logs::page))
         .route("/logs/results",      get(routes::logs::results))
         .route("/logs/keys",         get(routes::logs::keys))
         .route("/logs/topics",       get(routes::logs::topics))
-        .route("/logs/analyze",      get(routes::logs::analyze))
+        .route("/logs/analyze",      post(routes::logs::analyze))
         .route("/docs",           get(routes::docs::page))
         .route("/docs/results",   get(routes::docs::results))
         .route("/search",         get(routes::search::page))
         .route("/search/results", get(routes::search::results))
-        .route("/search/analyze", get(routes::search::analyze))
+        .route("/search/analyze", post(routes::search::analyze))
         .route("/trends",           get(routes::trends::page))
         .route("/trends/results",   get(routes::trends::results))
         .route("/signals",          get(routes::signals::page))
         .route("/signals/results",  get(routes::signals::results))
         .route("/rca",              get(routes::rca::page))
         .route("/rca/results",    get(routes::rca::results))
-        .route("/rca/analyze",    get(routes::rca::analyze))
+        .route("/rca/analyze",    post(routes::rca::analyze))
         .route("/rca/templates",         get(routes::rca_templates::page))
         .route("/rca/templates/results", get(routes::rca_templates::results))
-        .route("/rca/templates/analyze", get(routes::rca_templates::analyze))
+        .route("/rca/templates/analyze", post(routes::rca_templates::analyze))
         .route("/templates",         get(routes::templates::page))
         .route("/templates/results", get(routes::templates::results))
-        .route("/templates/analyze", get(routes::templates::analyze))
+        .route("/templates/analyze", post(routes::templates::analyze))
         .route("/templates_summary",         get(routes::templates_summary::page))
         .route("/templates_summary/results", get(routes::templates_summary::results))
-        .route("/templates_summary/analyze", get(routes::templates_summary::analyze))
+        .route("/templates_summary/analyze", post(routes::templates_summary::analyze))
         .route("/primary_summary",         get(routes::primary_summary::page))
         .route("/primary_summary/results", get(routes::primary_summary::results))
-        .route("/primary_summary/analyze", get(routes::primary_summary::analyze))
+        .route("/primary_summary/analyze", post(routes::primary_summary::analyze))
         .route("/primary_query_summary",         get(routes::primary_query_summary::page))
         .route("/primary_query_summary/results", get(routes::primary_query_summary::results))
-        .route("/primary_query_summary/analyze", get(routes::primary_query_summary::analyze))
+        .route("/primary_query_summary/analyze", post(routes::primary_query_summary::analyze))
         .route("/primary_lsa_summary",         get(routes::primary_lsa_summary::page))
         .route("/primary_lsa_summary/results", get(routes::primary_lsa_summary::results))
-        .route("/primary_lsa_summary/analyze", get(routes::primary_lsa_summary::analyze))
+        .route("/primary_lsa_summary/analyze", post(routes::primary_lsa_summary::analyze))
         .route("/primary_lsa_query_summary",         get(routes::primary_lsa_query_summary::page))
         .route("/primary_lsa_query_summary/results", get(routes::primary_lsa_query_summary::results))
-        .route("/primary_lsa_query_summary/analyze", get(routes::primary_lsa_query_summary::analyze))
+        .route("/primary_lsa_query_summary/analyze", post(routes::primary_lsa_query_summary::analyze))
         .route("/anomaly_recent",         get(routes::anomaly_recent::page))
         .route("/anomaly_recent/results", get(routes::anomaly_recent::results))
-        .route("/anomaly_recent/analyze", get(routes::anomaly_recent::analyze))
+        .route("/anomaly_recent/analyze", post(routes::anomaly_recent::analyze))
         .route("/denoise_recent",         get(routes::denoise_recent::page))
         .route("/denoise_recent/results", get(routes::denoise_recent::results))
-        .route("/denoise_recent/analyze", get(routes::denoise_recent::analyze))
+        .route("/denoise_recent/analyze", post(routes::denoise_recent::analyze))
         .route("/knn",                    get(routes::knn::page))
         .route("/knn/results",            get(routes::knn::results))
-        .route("/knn/analyze",            get(routes::knn::analyze))
+        .route("/knn/analyze",            post(routes::knn::analyze))
         .route("/chat",           get(routes::chat::page))
         .route("/chat/query",     post(routes::chat::query))
         .route("/chat/new",       post(routes::chat::new_session))
-        .route("/chat/reset",     get(routes::chat::reset))
+        .route("/chat/reset",     post(routes::chat::reset))
         .route("/bund",           get(routes::bund::page))
         .route("/bund/eval",      post(routes::bund::eval))
         .route("/bund/translate", post(routes::bund::translate))
@@ -565,20 +579,47 @@ async fn main() {
         app.route("/login", post(routes::login::submit))
     } else {
         let per_request_ms = (60_000_f64 / cfg.auth_rate_limit_per_minute as f64) as u64;
-        let governor_cfg = GovernorConfigBuilder::default()
-            .per_millisecond(per_request_ms.max(1))
-            .burst_size(cfg.auth_rate_limit_per_minute)
-            .finish()
-            .expect("governor config valid");
         log::info!(
-            "bdsweb /login rate limit: {} requests/min/IP (burst={})",
+            "bdsweb /login rate limit: {} requests/min/IP (burst={}, key={})",
             cfg.auth_rate_limit_per_minute, cfg.auth_rate_limit_per_minute,
+            if cfg.trusted_proxy { "X-Forwarded-For (web.trusted_proxy)" } else { "peer IP" },
         );
-        let limited = Router::<AppState>::new()
-            .route("/login", post(routes::login::submit))
-            .layer(GovernorLayer { config: Arc::new(governor_cfg) });
+        // M4: behind a reverse proxy the connection peer IP is the
+        // proxy's — every client would share one bucket.  When
+        // `web.trusted_proxy` is set, key on the forwarded client IP
+        // instead.  Only honour it when explicitly configured: an
+        // untrusted client can spoof `X-Forwarded-For` to dodge the
+        // limit.  Each branch builds a differently-typed config, so
+        // the limited sub-router is constructed inside the branch.
+        let limited = if cfg.trusted_proxy {
+            let mut builder = GovernorConfigBuilder::default().key_extractor(SmartIpKeyExtractor);
+            builder
+                .per_millisecond(per_request_ms.max(1))
+                .burst_size(cfg.auth_rate_limit_per_minute);
+            let governor_cfg = builder.finish().expect("governor config valid");
+            Router::<AppState>::new()
+                .route("/login", post(routes::login::submit))
+                .layer(GovernorLayer { config: Arc::new(governor_cfg) })
+        } else {
+            let governor_cfg = GovernorConfigBuilder::default()
+                .per_millisecond(per_request_ms.max(1))
+                .burst_size(cfg.auth_rate_limit_per_minute)
+                .finish()
+                .expect("governor config valid");
+            Router::<AppState>::new()
+                .route("/login", post(routes::login::submit))
+                .layer(GovernorLayer { config: Arc::new(governor_cfg) })
+        };
         app.merge(limited)
     };
+
+    // CSRF backstop + security headers wrap the fully-composed router
+    // so they also cover /login, /logout, and the rate-limited
+    // sub-router.  `set_security_headers` is added last → outermost,
+    // so it stamps headers even onto a CSRF 403.
+    let app = app
+        .layer(middleware::from_fn(security::require_same_origin))
+        .layer(middleware::from_fn(security::set_security_headers));
 
     // Bind state on the composed Router.  This converts
     // `Router<AppState>` → `Router<()>` so axum::serve can use

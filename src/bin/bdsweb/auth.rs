@@ -23,7 +23,7 @@
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
@@ -31,6 +31,7 @@ use axum::{
 use axum_extra::extract::CookieJar;
 use bdslib::cluster::session::{verify_session_token, SessionClaims};
 use serde_json::json;
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use crate::state::AppState;
@@ -38,9 +39,14 @@ use crate::state::AppState;
 /// Name of the cookie holding the session token.
 pub const SESSION_COOKIE: &str = "bds_session";
 
-/// 30-second cache of whether the user store is empty.  Avoids hitting
-/// `v3/user.list` on every request during the open-window phase, while
-/// still picking up first-user creation promptly.
+/// Cache of whether the user store is empty cluster-wide.
+///
+/// Only the **closed** result (`is_empty = false`) is ever cached, and
+/// only for 30 s.  The *open* state — where auth is fully bypassed —
+/// is deliberately never cached: while the bootstrap window is open we
+/// re-probe `v3/user.list` on every request so that creating the first
+/// user closes the window on the very next request, not up to 30 s
+/// later (security finding M1).
 #[derive(Clone, Copy, Debug)]
 pub struct BootstrapCache {
     pub is_empty:   bool,
@@ -54,17 +60,20 @@ impl Default for BootstrapCache {
     }
 }
 
-/// Check (with 30s cache) whether the user store is empty cluster-wide.
-/// Returns `true` when the bootstrap window is still open.
+/// Check whether the user store is empty cluster-wide.  Returns `true`
+/// when the bootstrap window is still open.
 ///
-/// On any error reaching the node we conservatively return `false`
-/// (no bootstrap bypass) so a transient outage doesn't unintentionally
-/// open the auth wall.
+/// The closed result is cached for 30 s; the open result is not cached
+/// at all — see [`BootstrapCache`].  On any error reaching the node we
+/// conservatively return `false` (no bootstrap bypass) so a transient
+/// outage doesn't unintentionally open the auth wall.
 async fn bootstrap_open(state: &AppState) -> bool {
     {
         let cache = state.bootstrap_cache.read().await;
-        if cache.fetched_at.elapsed() < std::time::Duration::from_secs(30) {
-            return cache.is_empty;
+        // A fresh *closed* verdict short-circuits.  A cached "open"
+        // value is ignored — we always re-probe while open.
+        if !cache.is_empty && cache.fetched_at.elapsed() < std::time::Duration::from_secs(30) {
+            return false;
         }
     }
     // Refresh: HMAC-sign a v3/user.list call.  When the store is
@@ -84,9 +93,12 @@ async fn bootstrap_open(state: &AppState) -> bool {
         .map(|a| a.is_empty())
         .unwrap_or(false);
 
-    let mut cache = state.bootstrap_cache.write().await;
-    cache.fetched_at = Instant::now();
-    cache.is_empty   = is_empty;
+    // Cache only the closed verdict; leave the open state uncached.
+    if !is_empty {
+        let mut cache = state.bootstrap_cache.write().await;
+        cache.fetched_at = Instant::now();
+        cache.is_empty   = false;
+    }
     is_empty
 }
 
@@ -95,10 +107,11 @@ async fn bootstrap_open(state: &AppState) -> bool {
 /// `/login`, `/logout`, and `/version` stay reachable without a
 /// session.
 pub async fn require_session(
-    State(state): State<AppState>,
-    jar:           CookieJar,
-    mut req:       Request<Body>,
-    next:          Next,
+    State(state):       State<AppState>,
+    ConnectInfo(peer):  ConnectInfo<SocketAddr>,
+    jar:                CookieJar,
+    mut req:            Request<Body>,
+    next:               Next,
 ) -> Response {
     // Open-access mode: no shared secret → no auth.
     if state.shared_secret.is_empty() {
@@ -114,11 +127,13 @@ pub async fn require_session(
         return next.run(req).await;
     }
 
-    // First-user bootstrap: while no users exist, every request goes
-    // through.  The /admin/users page lets an operator create the
-    // first user; once that lands the cache flips and this branch
-    // closes.
-    if bootstrap_open(&state).await {
+    // First-user bootstrap: while no users exist, requests go through
+    // so an operator can hit /admin/users to create the first user.
+    // Gated to loopback peers (security finding M1) — the auth-bypass
+    // window must never be reachable from the network, even briefly.
+    // Once the first user lands, the very next request re-probes and
+    // this branch closes (the open state is not cached).
+    if peer.ip().is_loopback() && bootstrap_open(&state).await {
         return next.run(req).await;
     }
 

@@ -138,7 +138,7 @@
     <button id="analyze-btn"
             type="button"
             class="btn-analyze self-center"
-            hx-get="/denoise_recent/analyze"
+            hx-post="/denoise_recent/analyze"
             hx-include="[name=duration],[name=n],[name=min_word_len],[name=noise_threshold],[name=max_kept],[name=max_removed]"
             hx-target="#analysis-body"
             hx-swap="innerHTML"

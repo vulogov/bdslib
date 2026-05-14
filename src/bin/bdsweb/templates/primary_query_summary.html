@@ -109,7 +109,7 @@
     <button id="analyze-btn"
             type="button"
             class="btn-analyze self-center"
-            hx-get="/primary_query_summary/analyze"
+            hx-post="/primary_query_summary/analyze"
             hx-include="#q-input,[name=max_sentences],[name=min_word_len]"
             hx-target="#analysis-body"
             hx-swap="innerHTML"

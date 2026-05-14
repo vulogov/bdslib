@@ -3,7 +3,7 @@ use axum::{extract::{Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{client::{mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, security::json_for_script, state::AppState};
 
 #[derive(Deserialize, Default)]
 pub struct Params {
@@ -299,7 +299,7 @@ pub async fn results(
         }
     }
 
-    let uplot_data_json = serde_json::to_string(&[&timestamps, &values])?;
+    let uplot_data_json = json_for_script(&[&timestamps, &values])?;
     let has_data = !timestamps.is_empty();
 
     // Extract breakouts as [[ts, value], ...] for chart overlay markers.
@@ -316,7 +316,7 @@ pub async fn results(
                 .collect()
         })
         .unwrap_or_default();
-    let breakouts_json = serde_json::to_string(&breakouts)?;
+    let breakouts_json = json_for_script(&breakouts)?;
 
     Ok(Html(TrendsData {
         key:              p.key,

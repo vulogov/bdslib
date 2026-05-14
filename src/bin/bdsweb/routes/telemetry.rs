@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    extract::{Query, State},
+    extract::{Form, Query, State},
     response::Html,
 };
 use serde::Deserialize;
@@ -215,7 +215,7 @@ struct MetricsAnalysis {
 
 pub async fn analyze(
     State(state): State<AppState>,
-    Query(p): Query<Params>,
+    Form(p): Form<Params>,
 ) -> Result<Html<String>, AppError> {
     // No query → nothing to analyze; render a friendly hint.
     if p.q.is_empty() {

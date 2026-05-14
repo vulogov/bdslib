@@ -5,6 +5,7 @@ use serde_json::json;
 use crate::{
     client::{fmt_ts, rpc, str_val, u64_val},
     error::AppError,
+    security::json_for_script,
     state::{AppState, DashboardSnapshot},
 };
 
@@ -228,9 +229,9 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         max_ts:               fmt_ts(u64_val(&snap.timeline, "max_ts")),
         total_shards,
         shards,
-        shard_labels_json:    serde_json::to_string(&labels)?,
-        shard_primary_json:   serde_json::to_string(&primary_cnts)?,
-        shard_secondary_json: serde_json::to_string(&secondary_cnts)?,
+        shard_labels_json:    json_for_script(&labels)?,
+        shard_primary_json:   json_for_script(&primary_cnts)?,
+        shard_secondary_json: json_for_script(&secondary_cnts)?,
         jsoncache_pct:        u64_val(&snap.status, "jsoncache_pct"),
         jsoncache_len:        u64_val(&snap.status, "jsoncache_len"),
         jsoncache_capacity:   u64_val(&snap.status, "jsoncache_capacity"),

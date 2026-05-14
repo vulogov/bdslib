@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "bdslib"
-version = "0.12.10"
+version = "0.12.11"
 dependencies = [
  "ammonia",
  "anomaly_detection",

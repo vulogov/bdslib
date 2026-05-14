@@ -1,5 +1,5 @@
 use askama::Template;
-use axum::{extract::{Query, State}, response::Html};
+use axum::{extract::{Form, Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -147,7 +147,7 @@ struct PrimarySummaryAnalysis {
 
 pub async fn analyze(
     State(state): State<AppState>,
-    Query(p): Query<Params>,
+    Form(p): Form<Params>,
 ) -> Result<Html<String>, AppError> {
     let cfg = state.primary_summary_analyze.clone();
 

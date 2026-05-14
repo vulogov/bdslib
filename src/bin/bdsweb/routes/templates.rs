@@ -1,5 +1,5 @@
 use askama::Template;
-use axum::{extract::{Query, State}, response::Html};
+use axum::{extract::{Form, Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -193,7 +193,7 @@ struct TemplatesAnalysis {
 
 pub async fn analyze(
     State(state): State<AppState>,
-    Query(p): Query<Params>,
+    Form(p): Form<Params>,
 ) -> Result<Html<String>, AppError> {
     let cfg = state.templates_analyze.clone();
     let searched = !p.q.is_empty();

@@ -69,7 +69,7 @@
     <button id="analyze-btn"
             type="button"
             class="btn-analyze"
-            hx-get="/perf/analyze"
+            hx-post="/perf/analyze"
             hx-target="#analysis-body"
             hx-swap="innerHTML"
             hx-indicator="#analysis-spinner"
@@ -143,7 +143,7 @@
 function openAnalysisPanel()  { document.getElementById('analysis-panel').classList.add('open'); }
 function closeAnalysisPanel() { document.getElementById('analysis-panel').classList.remove('open'); }
 
-// Fires alongside the hx-get to /perf/analyze.  Opens the pane
+// Fires alongside the hx-post to /perf/analyze.  Opens the pane
 // immediately and shows a labelled wait banner so the operator
 // knows which provider is being asked.  Mirrors logs.html.
 function onAnalyzeClick() {

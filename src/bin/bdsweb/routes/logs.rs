@@ -1,5 +1,5 @@
 use askama::Template;
-use axum::{extract::{Query, State}, response::Html};
+use axum::{extract::{Form, Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -276,7 +276,7 @@ struct LogAnalysis {
 
 pub async fn analyze(
     State(state): State<AppState>,
-    Query(p): Query<Params>,
+    Form(p): Form<Params>,
 ) -> Result<Html<String>, AppError> {
     // No query → nothing to analyze; render a friendly hint instead
     // of an empty pane.
