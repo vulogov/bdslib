@@ -98,6 +98,16 @@ single-execution dedup, and async jobs.  Full reference:
 | **Cluster-aware Scheduler** | `cluster.scheduler_dedup_window` suppresses duplicate fires of the same stored script across nodes via `v2/scheduler.last_seen` fan-out |
 | **Replicated user store + bdsweb auth** | 4th fully-replicated store (`<dbpath>/users/users.duckdb`); argon2id-hashed passwords; pluggable verifier registry (OAuth/LDAP hook); stateless HMAC-signed session tokens; bdsweb `/login` + Administration → User management; `bdscmd user …` CLI |
 | **LLM surface** | 5th fully-replicated store (`<dbpath>/llm/cache.duckdb`); cluster-wide single-execution dedup via `inference_log` + `v2/llm.last_executed` fan-out; async job runner alongside the existing scheduler / AE loops; HMAC-signed `v4/llm.*` coordinator surface.  See [`Documentation/LLM.md`](Documentation/LLM.md). |
+| **Data rebalancer** | Optional per-node tokio task that restores replication factor — scans sharded telemetry, probes peers via `v2/cluster.has_records`, pushes under-replicated records via `v2/cluster.replicate_record`.  Throttled by ingest-lag p95, bounded per run, cooperatively cancellable.  Opt-in (`rebalancer.enabled`).  See [`Documentation/CLUSTER_DETAILS.md`](Documentation/CLUSTER_DETAILS.md) § 8.4. |
+| **Adaptive per-peer timeout** | Cluster read fan-out derives each peer's RPC deadline from its observed p95 latency — one slow peer no longer makes every cluster read pay the worst-case timeout.  Self-stabilising, bounded by `cluster.peer_rpc_timeout`. |
+
+### Reliability & self-healing
+
+| Capability | Description |
+|---|---|
+| **Performance instrumentation** | Lock-free in-process latency registry — p50/p95/p99 per hot path (`ingest.*`, `shard.*`, `embed.*`, `fanout.*`, `replicate.*`) via `v2/perf`; a bounded slow-query ring (`v2/perf.slow_queries`) catching single-event outliers p95 hides; `bdscmd perf` / `perf-slow`.  See [`Documentation/jsonrpc_api/v2_perf.md`](Documentation/jsonrpc_api/v2_perf.md). |
+| **Fault tolerance** | Hot-path panic elimination, an ingest-flusher supervisor that respawns dead flushers, per-record fallback so one poison record can't drop a 500-record batch, a 10 s bounded DuckDB pool checkout, and `catch_unwind`-wrapped background-task ticks so a panicking tick can't silently kill a subsystem.  See [`Documentation/NODE_RELIABILITY.md`](Documentation/NODE_RELIABILITY.md). |
+| **Self-healing** | A process-wide health registry with heartbeats (a hung loop is detected even though it can't update its own status), exposed via `v2/health`; shard quarantine that isolates a corrupt shard so the rest of the node keeps serving; a three-tier rebuild healer (transient retry → index rebuild from DuckDB → opt-in Tier-3 destroy+recreate for the rebalancer to repopulate); a cross-engine consistency sweep; a per-shard circuit breaker.  Default-on, opt-in only for the destructive Tier-3.  See [`Documentation/NODE_SELF_HEALING.md`](Documentation/NODE_SELF_HEALING.md). |
 
 ---
 
@@ -386,6 +396,9 @@ All methods use JSON-RPC 2.0 over HTTP POST to `/`. Full reference:
 |---|---|
 | [Documentation/README.md](Documentation/README.md) | Architecture, data flow, storage model, BUND overview, full doc index |
 | [Documentation/BDSCONFIG.md](Documentation/BDSCONFIG.md) | **`bds.hjson` reference** — every config key (top-level + `cluster:` + `llm:` + bdsweb knobs + legacy) with type / default / tuning / warnings / per-binary matrix |
+| [Documentation/BDSNODE_TUNING_GUIDE.md](Documentation/BDSNODE_TUNING_GUIDE.md) | **One-stop tuning guide** — goal-oriented (performance / reliability / functionality): which knob for which symptom, why the defaults are what they are, how knobs interact, three ready profiles, and a fully-annotated `bds.hjson` |
+| [Documentation/NODE_RELIABILITY.md](Documentation/NODE_RELIABILITY.md) | **Fault-tolerance layer** — hot-path panic elimination, flusher supervision, per-record batch fallback, bounded pool checkout, background-task panic supervision, adaptive per-peer timeout, SQL hardening, lock-poison recovery — with config examples |
+| [Documentation/NODE_SELF_HEALING.md](Documentation/NODE_SELF_HEALING.md) | **Self-healing layer** — the health registry + `v2/health`, shard quarantine, the three-tier rebuild healer, the consistency sweep, the per-shard circuit breaker, the flusher supervisor — with config examples |
 | [Documentation/BDSCLI.md](Documentation/BDSCLI.md) | `bdscli` local CLI — all subcommands |
 | [Documentation/BDSCMD.md](Documentation/BDSCMD.md) | `bdscmd` RPC client — all subcommands and quick reference |
 | [Documentation/BDSWEB.md](Documentation/BDSWEB.md) | `bdsweb` web interface — all pages, startup flags |
