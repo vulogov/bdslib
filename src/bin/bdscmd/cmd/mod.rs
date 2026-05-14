@@ -74,3 +74,4 @@ pub mod ask;
 pub mod retention;
 pub mod perf;
 pub mod perf_slow;
+pub mod health;

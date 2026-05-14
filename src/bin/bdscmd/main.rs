@@ -299,6 +299,15 @@ enum Commands {
     /// filter (e.g. `fanout.`, `ingest.`) and `--since-secs` to bound
     /// the age window.
     PerfSlow(cmd::perf_slow::Cmd),
+
+    /// Node readiness / liveness probe (`v2/health`).  Returns the
+    /// aggregate self-healing verdict (`healthy`/`degraded`/`failed`)
+    /// plus the per-source breakdown — every background-task
+    /// heartbeat, the flusher supervisor, and one entry per
+    /// quarantined shard.  `--quiet` prints only the verdict word and
+    /// exits non-zero when not healthy, for use as a scriptable /
+    /// k8s exec health check.
+    Health(cmd::health::Cmd),
 }
 
 fn normalise_url(addr: &str) -> String {
@@ -400,6 +409,7 @@ fn main() -> Result<()> {
         Commands::RetentionSettings(a)        => cmd::retention::settings(&url, &session, a),
         Commands::Perf(a)                     => cmd::perf::run(&url, &session, a),
         Commands::PerfSlow(a)                 => cmd::perf_slow::run(&url, &session, a),
+        Commands::Health(a)                   => cmd::health::run(&url, &session, a),
     }?;
 
     if cli.raw {

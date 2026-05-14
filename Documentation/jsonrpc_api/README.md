@@ -95,7 +95,9 @@ Several methods accept an optional time window. Exactly one of the three forms m
 
 | Method | Description |
 |---|---|
-| [`v2/status`](v2_status.md) | Live process snapshot: node identity, uptime, timestamp, hostname, and ingest queue depths |
+| [`v2/status`](v2_status.md) | Live process snapshot: node identity, uptime, timestamp, hostname, ingest queue depths, plus `health` / `self_healing` / `ingest_flushers` / `pool` / `perf` blocks |
+| [`v2/health`](v2_health.md) | Dedicated readiness / liveness probe — aggregate self-healing verdict + per-source breakdown (background-task heartbeats, flusher supervisor, quarantined shards). Cheap, in-process, no DB access. |
+| [`v2/perf`](v2_perf.md) | In-process latency registry — p50/p95/p99 per instrumented series (`ingest.*`, `shard.*`, `embed.*`, `fanout.*`, `replicate.*`); plus `v2/perf.slow_queries`, the slow-event ring buffer |
 | [`v2/cluster.peers`](v2_cluster_peers.md) | Unauthenticated read of the local peer table (mode, peer states, replication knobs). Returns `{enabled: false, peers: []}` when cluster mode is off. Phase 1 of the [cluster layer](../CLUSTER.md). |
 | [`v3/cluster.hello`](v3_cluster_hello.md) | HMAC-authenticated handshake: caller sends identity, receiver registers it and echoes back its own identity + peer view. |
 | [`v3/cluster.peers`](v3_cluster_peers.md) | HMAC-authenticated read of the local peer table (used by the gossip loop every 3rd tick to converge membership). |

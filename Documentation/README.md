@@ -186,7 +186,9 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 | [SHARDSCACHE.md](SHARDSCACHE.md) | `ShardsCache` — LRU open-shard pool |
 | [SHARDSMANAGER.md](SHARDSMANAGER.md) | `ShardsManager` — shard lifecycle, ingestion, cross-shard queries |
 | [CLUSTER.md](CLUSTER.md) | **Cluster mode** — config, on-disk layout, RPC quick reference, scheduler dedup, replication phases, **user store + authentication**, **LLM surface** |
-| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads, **`v3/user.*` + session tokens**, **`v4/llm.*` wire mechanics** — with JSON-RPC examples for every mechanism |
+| [CLUSTER_DETAILS.md](CLUSTER_DETAILS.md) | **Cluster protocol-level reference** — gossip, eviction, re-acceptance, schedule control, data distribution, replication, fan-out reads, **self-healing + Tier-3 recreation**, **`v3/user.*` + session tokens**, **`v4/llm.*` wire mechanics** — with JSON-RPC examples for every mechanism |
+| [NODE_RELIABILITY.md](NODE_RELIABILITY.md) | **Fault-tolerance layer** — hot-path panic elimination, flusher supervision, per-record batch fallback, bounded pool checkout, background-task panic supervision, adaptive per-peer timeout, SQL hardening, lock-poison recovery — with config examples |
+| [NODE_SELF_HEALING.md](NODE_SELF_HEALING.md) | **Self-healing layer** — the health registry + `v2/health`, shard quarantine, the three-tier rebuild healer (transient retry / index rebuild / Tier-3 recreate), the consistency sweep, the per-shard circuit breaker, the flusher supervisor — with config examples |
 | [LLM.md](LLM.md) | **LLM surface** — provider abstraction (Ollama / Anthropic / OpenAI), replicated inference cache, cluster-wide single-execution dedup, async jobs + RESULTS delivery, `v4/llm.*` RPC, `cls.llm.*` Bund words, `bdscmd llm` |
 | [EMBEDDINGENGINE.md](EMBEDDINGENGINE.md) | `EmbeddingEngine` — fastembed vector generation |
 | [FTSENGINE.md](FTSENGINE.md) | `FTSEngine` — Tantivy BM25 indexing |

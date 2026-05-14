@@ -93,6 +93,8 @@ output suitable for piping into `jq`.
 14f. [to-bund — English → Bund translator](#14f-to-bund--english--bund-translator)
 14g. [ask — Docstore-backed Q&A (`v3/help`)](#14g-ask--docstore-backed-qa-v3help)
 14h. [retention-sweep / retention-settings — Shard retention](#14h-retention-sweep--retention-settings--shard-retention)
+14i. [perf / perf-slow — Performance instrumentation](#14i-perf--perf-slow--performance-instrumentation)
+14j. [health — Node readiness / liveness probe](#14j-health--node-readiness--liveness-probe)
 15. [Quick Reference](#15-quick-reference)
 16. [Exit Codes](#16-exit-codes)
 
@@ -3235,6 +3237,110 @@ bdscmd retention-settings | jq '.enabled, .duration, .interval_secs'
 
 ---
 
+## 14i. `perf` / `perf-slow` — Performance instrumentation
+
+bdsnode keeps a lock-free, in-process latency registry: every
+instrumented hot path (`ingest.flush`, `ingest.lag`, `embed.*`,
+`shard.*`, `fanout.*`, `replicate.*`, …) records µs samples into a
+1024-slot ring per series.  These two commands read it.
+
+### `perf`
+
+```bash
+bdscmd perf [--name <substr>]
+```
+
+Returns the full registry — one object per series with
+`p50_us` / `p95_us` / `p99_us` / `min_us` / `max_us` / `mean_us` /
+`n_total` / `n_recent`.  `--name` is a substring filter on the series
+name.
+
+### `perf-slow`
+
+```bash
+bdscmd perf-slow [--name-prefix <prefix>] [--since-secs <n>]
+```
+
+Returns the slow-query ring — every instrumented call whose elapsed
+time exceeded `perf.slow_query_threshold_ms` (default 500 ms), newest
+first, capped at 100 entries.  This surfaces single-event outliers
+that p95 sample-dilution hides.  `--name-prefix` filters by series
+name prefix; `--since-secs` bounds the age window.
+
+### Examples
+
+```bash
+# Full perf snapshot.
+bdscmd perf
+
+# Just the ingest pipeline series.
+bdscmd perf --name ingest
+
+# Per-peer cluster fan-out RTT.
+bdscmd perf --name fanout.peer.
+
+# Headline ingest-flush percentiles.
+bdscmd perf --name ingest.flush | jq '."ingest.flush" | {p50_us, p95_us, p99_us}'
+
+# Every slow event recorded.
+bdscmd perf-slow
+
+# Slow fan-out calls in the last 10 minutes.
+bdscmd perf-slow --name-prefix fanout. --since-secs 600
+
+# Was anything slow at all?
+bdscmd perf-slow | jq '.entries | length'
+```
+
+---
+
+## 14j. `health` — Node readiness / liveness probe
+
+```bash
+bdscmd health [--quiet]
+```
+
+Returns the aggregate self-healing verdict
+(`healthy` / `degraded` / `failed`) plus the per-source breakdown:
+every background-task heartbeat (`cluster.gossip`, `rebalancer`,
+`sync`, `retention`, `scheduler`, `llm_jobs`, `shard_healer`), the
+ingest-flusher supervisor (`ingest.flushers`), and one
+`shard.<start>_<end>` entry per quarantined shard.  A *stale*
+heartbeat — a hung loop — shows as `failed` with `stale: true`.
+
+The probe is cheap and in-process (no DB access), so it is safe to
+call at high frequency from a load balancer or orchestrator.
+
+With `--quiet` it prints only the one-word verdict and exits
+**non-zero** when the verdict is not `healthy` — making it a clean
+scriptable / k8s-exec health check.
+
+### Examples
+
+```bash
+# Full breakdown.
+bdscmd health
+
+# Just the verdict.
+bdscmd health | jq -r '.status'
+
+# Which sources are not healthy?
+bdscmd health | jq '.sources[] | select(.status != "healthy")'
+
+# Scriptable check — exit 0 healthy, 1 otherwise.
+bdscmd health --quiet || echo "node is NOT healthy"
+
+# As a k8s liveness exec probe:
+#   livenessProbe:
+#     exec:
+#       command: ["bdscmd", "-a", "http://127.0.0.1:9000", "health", "--quiet"]
+```
+
+See [`NODE_SELF_HEALING.md`](NODE_SELF_HEALING.md) for what each
+health source means and how the verdict is computed.
+
+---
+
 ## 15. Quick Reference
 
 | Subcommand | JSON-RPC method | Key parameters |
@@ -3308,6 +3414,9 @@ bdscmd retention-settings | jq '.enabled, .duration, .interval_secs'
 | `ask`               | `v3/help`              | `MESSAGE` / `--message-file`, `[--internal-only]`, `[-l/--limit]`, `[--provider]`, `[--model]`, generation opts, `[--answer-only]` |
 | `retention-sweep`   | `v2/retention.sweep`   | `[--duration]`, `[--max-evictions-per-run]`, `[--dry-run]`, `[--force]` |
 | `retention-settings`| `v2/retention.settings`| _none_ |
+| `perf`              | `v2/perf`              | `[--name]` |
+| `perf-slow`         | `v2/perf.slow_queries` | `[--name-prefix]`, `[--since-secs]` |
+| `health`            | `v2/health`            | `[--quiet]` |
 
 ---
 
