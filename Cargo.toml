@@ -105,6 +105,12 @@ anyhow = "1"
 axum = "0.8"
 askama = "0.15"
 tower-http = { version = "0.6", features = ["fs", "compression-gzip", "catch-panic"] }
+# Optional TLS for bdsweb — enabled at runtime via the `web.tls` hjson block.
+# `rustls` is pulled directly so bdsweb can install the `ring` crypto
+# provider explicitly: several crates depend on rustls 0.23, leaving its
+# auto provider selection ambiguous.
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"

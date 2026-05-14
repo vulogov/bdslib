@@ -42,6 +42,15 @@ struct Args {
     verbose: u8,
 }
 
+/// PEM cert + key paths for the optional `web.tls` block.  Presence of
+/// a `TlsConfig` (i.e. `web.tls.enabled = true`) means bdsweb serves
+/// HTTPS instead of HTTP.
+#[derive(Clone)]
+struct TlsConfig {
+    cert: String,
+    key:  String,
+}
+
 struct WebConfig {
     dashboard_refresh_secs: u64,
     /// Background-poll interval for the Cluster page (`/cluster`).
@@ -66,9 +75,14 @@ struct WebConfig {
     trusted_proxy: bool,
     /// `web.secure_cookies` — whether the `bds_session` cookie carries
     /// the `Secure` attribute.  `None` (key absent) means "auto":
-    /// resolved at startup to `false` for a loopback bind and `true`
-    /// otherwise.  An explicit value overrides the heuristic.
+    /// resolved at startup to `true` when TLS is on or the bind is
+    /// non-loopback, `false` otherwise.  An explicit value overrides
+    /// the heuristic.
     secure_cookies: Option<bool>,
+    /// `web.tls` — optional HTTPS.  `Some` only when
+    /// `web.tls.enabled = true`; bdsweb then serves TLS using the PEM
+    /// `cert` + `key` files.  `None` → plain HTTP (the default).
+    tls: Option<TlsConfig>,
     /// Operator-tunable knobs for Telemetry → Logs → "Analyze this!".
     logs_analyze:           state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Telemetry → Metrics → "Analyze this!".
@@ -122,6 +136,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         auth_rate_limit_per_minute: 10,
         secure_cookies: None,
         trusted_proxy: false,
+        tls: None,
         logs_analyze:                      state::AnalyzeTargetConfig::logs_default(),
         metrics_analyze:                   state::AnalyzeTargetConfig::metrics_default(),
         templates_analyze:                 state::AnalyzeTargetConfig::templates_default(),
@@ -178,6 +193,20 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         .and_then(|w| w.get("trusted_proxy"))
         .and_then(|v| v.as_bool())
         .unwrap_or(defaults.trusted_proxy);
+
+    // `web.tls` — optional HTTPS.  Only honoured when the block is
+    // present AND `enabled = true`.  `cert` / `key` are read as-is;
+    // an enabled-but-incomplete block is caught loudly in `main`
+    // rather than silently falling back to plain HTTP.
+    let tls = obj.get("web")
+        .and_then(|v| v.as_object())
+        .and_then(|w| w.get("tls"))
+        .and_then(|v| v.as_object())
+        .filter(|t| t.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false))
+        .map(|t| TlsConfig {
+            cert: t.get("cert").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
+            key:  t.get("key").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
+        });
 
     // `web.analyze.<target>.*` — every key is optional; the
     // per-target default factory supplies the fallback values, so a
@@ -237,6 +266,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         auth_rate_limit_per_minute,
         secure_cookies,
         trusted_proxy,
+        tls,
         logs_analyze,
         metrics_analyze,
         templates_analyze,
@@ -323,6 +353,12 @@ async fn cluster_poll_loop(state: AppState) {
 async fn main() {
     let args = Args::parse();
 
+    // rustls 0.23 needs a process-level crypto provider, and several
+    // crates in the tree pull rustls — leaving its auto-selection
+    // ambiguous.  Install `ring` explicitly so the optional `web.tls`
+    // server has a provider.  `Err` just means it was already set.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let level = match args.verbose {
         0 => "warn",
         1 => "info",
@@ -356,14 +392,30 @@ async fn main() {
         log::info!("bdsweb auth enabled — shared_secret loaded ({} bytes)", cfg.shared_secret.len());
     }
 
+    // Validate the optional TLS config early — an enabled-but-broken
+    // `web.tls` block must fail loudly, never silently fall back to
+    // plain HTTP (an operator who configured TLS would never know).
+    if let Some(tls) = &cfg.tls {
+        if tls.cert.trim().is_empty() || tls.key.trim().is_empty() {
+            log::error!(
+                "REFUSING TO START: web.tls.enabled = true but web.tls.cert / web.tls.key \
+                 are not both set. Provide PEM cert + key paths, or remove web.tls to serve \
+                 plain HTTP.",
+            );
+            std::process::exit(1);
+        }
+    }
+    let tls_enabled = cfg.tls.is_some();
+
     // H2: resolve the effective Secure-cookie policy.  An explicit
-    // `web.secure_cookies` wins; otherwise default to off for a
-    // loopback bind (dev / HTTP-only) and on for any other address.
-    let secure_cookies = cfg.secure_cookies.unwrap_or(!host_is_loopback);
+    // `web.secure_cookies` wins; otherwise default to on when TLS is
+    // enabled or the bind is non-loopback, off only for a plain-HTTP
+    // loopback dev instance.
+    let secure_cookies = cfg.secure_cookies.unwrap_or(tls_enabled || !host_is_loopback);
     log::info!(
         "bdsweb session cookie Secure flag: {}{}",
         secure_cookies,
-        if cfg.secure_cookies.is_some() { " (web.secure_cookies)" } else { " (auto from bind address)" },
+        if cfg.secure_cookies.is_some() { " (web.secure_cookies)" } else { " (auto)" },
     );
     log::info!(
         "web.analyze.logs: timeout={}s, max_rows={}, prompt_chars={}",
@@ -660,15 +712,37 @@ async fn main() {
     let app = app.with_state(state);
 
     let addr = format!("{}:{}", args.host, args.port);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("cannot bind {addr}: {e}"));
-
-    log::info!("bdsweb listening on http://{addr}  →  bdsnode at {}", args.node);
     // ConnectInfo enables tower_governor's PeerIpKeyExtractor on the
-    // /login POST sub-router — without it the per-IP rate limiter
-    // has nothing to key on and rejects every request.
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .expect("server error");
+    // /login POST sub-router — without it the per-IP rate limiter has
+    // nothing to key on and rejects every request.  Both serve paths
+    // below use `into_make_service_with_connect_info`.
+    match cfg.tls {
+        Some(tls) => {
+            // HTTPS (web.tls.enabled = true).  Load the PEM cert+key;
+            // a bad/missing file fails fast here rather than serving
+            // unencrypted by mistake.
+            let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key)
+                .await
+                .unwrap_or_else(|e| panic!(
+                    "cannot load TLS cert/key (cert='{}', key='{}'): {e}", tls.cert, tls.key,
+                ));
+            // std bind keeps hostname resolution (e.g. "localhost").
+            let listener = std::net::TcpListener::bind(&addr)
+                .unwrap_or_else(|e| panic!("cannot bind {addr}: {e}"));
+            log::info!("bdsweb listening on https://{addr}  →  bdsnode at {}", args.node);
+            axum_server::from_tcp_rustls(listener, rustls_config)
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .expect("server error");
+        }
+        None => {
+            let listener = tokio::net::TcpListener::bind(&addr)
+                .await
+                .unwrap_or_else(|e| panic!("cannot bind {addr}: {e}"));
+            log::info!("bdsweb listening on http://{addr}  →  bdsnode at {}", args.node);
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .expect("server error");
+        }
+    }
 }
