@@ -2,10 +2,12 @@
 
 This document complements [`CLUSTER.md`](CLUSTER.md) (configuration +
 operations) with a protocol-level walk-through of every cluster
-mechanism: peer discovery, eviction and re-acceptance, schedule
-control, data distribution, replication, and read fan-out.  Each
-section includes the actual JSON-RPC payloads exchanged between
-peers and what they cause to happen on disk and in memory.
+mechanism: the peer-to-peer transport, peer discovery, eviction and
+re-acceptance, schedule control, data distribution, write
+replication, convergence (hinted handoff / anti-entropy /
+rebalancer), and read fan-out.  Each section includes the actual
+JSON-RPC payloads exchanged between peers and what they cause to
+happen on disk and in memory.
 
 For prerequisites and config knobs, read [`CLUSTER.md`](CLUSTER.md)
 first.
@@ -14,15 +16,15 @@ first.
 
 ## Table of Contents
 
-1. [Authentication primitives](#1-authentication-primitives)
+1. [Authentication primitives](#1-authentication-primitives) — incl. [§1.1 Transport](#11-transport--the-cluster-http-client)
 2. [Peer discovery — gossip protocol](#2-peer-discovery--gossip-protocol)
 3. [Eviction — Suspect → Dead](#3-eviction--suspect--dead)
 4. [Re-acceptance — recovery probe + Hello](#4-re-acceptance--recovery-probe--hello)
 5. [Schedule control — cluster-aware Scheduler](#5-schedule-control--cluster-aware-scheduler)
 6. [Data distribution](#6-data-distribution)
 7. [Write replication — sharded + fully-replicated](#7-write-replication--sharded--fully-replicated)
-8. [Hinted handoff + anti-entropy](#8-hinted-handoff--anti-entropy)
-9. [Read fan-out — v3/* surface](#9-read-fan-out--v3-surface)
+8. [Convergence — hinted handoff, anti-entropy, rebalancer](#8-convergence--hinted-handoff-anti-entropy-rebalancer) — incl. [§8.4 Data rebalancer](#84-data-rebalancer--sharded-convergence)
+9. [Read fan-out — v3/* surface](#9-read-fan-out--v3-surface) — incl. [§9.2 Coordinator-side query embedding](#92-coordinator-side-query-embedding)
 10. [Bdsweb mode-aware routing](#10-bdsweb-mode-aware-routing)
 11. [Authentication — `v3/user.*` + sessions](#11-authentication--v3user--sessions)
 
@@ -63,6 +65,63 @@ NOT HMAC-protected.  They are issued by trusted in-process peers
 during fan-out and rely on the same trust boundary as `v2/*` clients.
 For perimeter control, run mTLS or a reverse proxy in front of
 bdsnode.
+
+### 1.1 Transport — the cluster HTTP client
+
+Every node owns one shared `reqwest::Client`
+([`cluster::Cluster::http`](../src/cluster/mod.rs)) used for **all**
+peer-to-peer RPC: gossip pings, write replication, read fan-out,
+hint replay, anti-entropy, and the rebalancer.  One client means one
+connection pool — peers are not re-dialled per call.
+
+The client is built with three transport-level settings:
+
+| Setting                       | Effect |
+|-------------------------------|--------|
+| `.timeout(peer_rpc_timeout + 2s)` | Floor timeout — a generous grace over the configured deadline.  Individual calls override this with the precise per-call deadline they want. |
+| `.http2_adaptive_window(true)`    | Negotiate HTTP/2 via ALPN when the peer advertises `h2`; multiplex all RPC over one connection per peer instead of one TCP socket per call.  Transparently falls back to HTTP/1.1 — no cluster-wide upgrade required. |
+| `.gzip(true)`                     | Transparently decompress gzip-encoded responses.  Material on WAN clusters where `v3/search` / `v3/primaries` return large result sets. |
+
+#### Adaptive per-peer RPC timeout
+
+`fan_out_v2` (the read-fan-out helper, § 9) does not use a single
+static deadline for every peer.  When
+`cluster.adaptive_peer_timeout_enabled` is `true` (the default), it
+computes a **per-peer** deadline from the peer's observed p95:
+
+```
+series        = "fanout.peer.<node_id>"          // from the perf registry
+p95_us        = perf::registry().p95_us(series, 20)   // None if < 20 samples
+dynamic_us    = min(peer_rpc_timeout, p95_us × multiplier)
+                  .max(peer_rpc_timeout × 0.1)
+                  .max(1_000)                    // never below 1 ms
+```
+
+- `multiplier` is `cluster.adaptive_peer_timeout_multiplier` (default `3.0`).
+- The dynamic deadline **never exceeds** the configured
+  `peer_rpc_timeout` — that remains the operator's hard contract.
+- It **never drops below 10 %** of the configured value (guards
+  against a momentarily-zero p95 on a cold path).
+- Falls back to the static `peer_rpc_timeout` until the peer has
+  ≥ 20 recent samples — small windows produce unstable percentiles.
+
+The heuristic is **self-stabilising**: every RPC outcome, success
+*or* timeout, is recorded back into the `fanout.peer.<id>` series
+via `perf::record_us`.  A chronically broken peer's p95 climbs
+toward the static timeout, so the adaptive logic stops tightening
+and the peer gets the full deadline — the system never traps a
+recovering peer behind a permanently-shrunk window.
+
+Writes (`replicate_to_all`, § 7) do **not** adapt — they always use
+the static `peer_rpc_timeout`.  Write replication is a different
+trust contract: a write is durable or it is hinted, and shortening
+its deadline based on read-path history would just convert
+durable-with-latency into hinted-with-retry for no benefit.
+
+Disable the whole mechanism with
+`cluster.adaptive_peer_timeout_enabled: false` — appropriate for WAN
+clusters where occasional latency spikes are expected and a
+"wait the full deadline" policy is preferred over fail-fast.
 
 ---
 
@@ -373,20 +432,29 @@ Alive peer and merge by UUID dedup.  Replicated copies of the same
 record produce one merged entry; missing replicas (due to past
 partial-mode ingest) silently widen the searched corpus.
 
+Sharded stores have **no automatic background convergence** — hinted
+handoff and anti-entropy (§ 8) only touch the fully-replicated
+family.  The opt-in **data rebalancer** (§ 8.4) is the sharded
+analogue: it scans for under-replicated records and pushes them to
+peers that don't have them.
+
 ### 6.2 Fully-replicated stores
 
-Three stores live on every node:
+Five stores live on every node:
 
-| Store    | Path                  | What                                       |
-|----------|-----------------------|--------------------------------------------|
-| docs     | `<dbpath>/docs/`      | Document store + embeddings                |
-| signals  | `<dbpath>/signals/`   | Signal events + metadata                   |
-| scripts  | `<dbpath>/scripts/`   | Stored Bund scripts + cron schedules       |
+| Store     | Path                   | What                                       |
+|-----------|------------------------|--------------------------------------------|
+| docs      | `<dbpath>/docs/`       | Document store + embeddings                |
+| signals   | `<dbpath>/signals/`    | Signal events + metadata                   |
+| scripts   | `<dbpath>/scripts/`    | Stored Bund scripts + cron schedules       |
+| users     | `<dbpath>/users/`      | Cluster user store (§ 11)                  |
+| llm_cache | `<dbpath>/llm/`        | Replicated LLM inference cache (§ 12.1)     |
 
 Configured via `cluster.full_replication_stores` (default
-`["docs","signals","scripts"]`).  Writes go local-first then fan out
-to **every** Alive peer (see § 7).  Reads are local-only — anti-
-entropy keeps every node's copy converged within a few minutes.
+`["docs","signals","scripts","users","llm_cache"]`).  Writes go
+local-first then fan out to **every** Alive peer (see § 7).  Reads
+are local-only — anti-entropy keeps every node's copy converged
+within a few minutes.
 
 ### 6.3 Per-network state (cluster-only)
 
@@ -442,6 +510,15 @@ The v3/add response includes per-replica outcome:
 }
 ```
 
+**Fan-out memory.** `replicate_to_all` wraps the params payload and
+the canonical serialised hint bytes in an `Arc` **once** before
+spawning the per-peer tasks — each task gets a cheap `Arc::clone`
+(atomic refcount bump) rather than a deep clone of the full document
+tree.  Under a write burst to an N-peer cluster this turns N deep
+JSON clones per write into one.  `cluster::hints::enqueue` takes the
+bytes by `&[u8]`, so the shared `Arc<Vec<u8>>` also covers the
+hint-on-failure path with no extra allocation.
+
 ### 7.2 Fully-replicated path (`v3/doc.add`, `v3/signal.emit`, `v3/script.add`, …)
 
 Same shape, but `replication::replicate_to_all` is used instead of
@@ -462,9 +539,13 @@ updates on partitioned coordinators.
 
 ---
 
-## 8. Hinted handoff + anti-entropy
+## 8. Convergence — hinted handoff, anti-entropy, rebalancer
 
-Two complementary mechanisms recover from delivery failures.
+Three complementary mechanisms drive the cluster toward a converged
+state.  **Hinted handoff** and **anti-entropy** recover the
+fully-replicated stores from delivery failures.  The **rebalancer**
+(§ 8.4) is their analogue for *sharded* telemetry — the one store
+family the first two don't touch.
 
 ### 8.1 Hinted handoff (real-time recovery)
 
@@ -518,11 +599,161 @@ without waiting for the next tick:
 $ bdscmd cluster sync --secret "$BDS_CLUSTER_SECRET"
 {
   "ok": true,
-  "stores": ["docs", "signals", "scripts"],
+  "stores": ["docs", "signals", "scripts", "users", "llm_cache"],
   "hints_replayed": 4,
   "tombstones_propagated": 1
 }
 ```
+
+Note `v3/cluster.sync` covers only the fully-replicated stores.
+Sharded telemetry convergence is the rebalancer's job (§ 8.4) and is
+**not** triggered by this RPC — there is deliberately no
+cluster-wide rebalance pushdown, for the same data-safety reason
+retention has no cluster-wide sweep: a single mis-issued call should
+never be able to move data across the entire cluster at once.
+
+### 8.4 Data rebalancer — sharded convergence
+
+Hinted handoff and anti-entropy converge the **fully-replicated**
+stores.  Sharded telemetry has no such background convergence: a
+`v3/add` lands on the coordinator plus `replication_factor - 1`
+*random* Alive peers (§ 6.1, § 7.1), and once the hints for an
+unreachable peer age out, an under-replicated record stays
+under-replicated forever.  The **rebalancer** closes that gap.
+
+It is a **per-node, opt-in tokio task** — disabled by default,
+enabled with `rebalancer.enabled: true` in `bds.hjson`.  Library
+side: [`src/rebalancer.rs`](../src/rebalancer.rs).  Task side:
+[`src/bin/bdsnode/server/rebalancer.rs`](../src/bin/bdsnode/server/rebalancer.rs).
+
+#### Under-replication causes
+
+A sharded record ends up below `replication_factor` when:
+
+- a peer was Suspect/Dead at write time and the hint aged out
+  (`hint_max_age`) before it recovered;
+- the cluster **expanded** after the record was written — the new
+  peer was never a fan-out target;
+- `replication_factor` was **raised** in the config after the fact.
+
+#### The two receiver RPCs
+
+Both are unauthenticated `v2/*` calls — same trust boundary as
+`v2/cluster.peers` and the rest of the receiver-side cluster surface
+(§ 1).  Library: [`src/bin/bdsnode/jsonrpc/v2_cluster_rebalance.rs`](../src/bin/bdsnode/jsonrpc/v2_cluster_rebalance.rs).
+
+**`v2/cluster.has_records`** — the probe.  The caller asks "which of
+these UUIDs do you hold?"; the receiver answers with the present
+subset.
+
+```json
+// request
+{ "jsonrpc": "2.0", "id": 1, "method": "v2/cluster.has_records",
+  "params": { "ids": ["019e1561-…", "019e1562-…", "019e1563-…"] } }
+
+// response
+{ "n_probed": 3, "n_present": 1, "present": ["019e1562-…"] }
+```
+
+Receiver: `ShardsManager::has_records_present(&[Uuid])` probes every
+catalog-registered shard's observability table.  Invalid UUID
+strings are silently dropped — they can't match anything.
+
+**`v2/cluster.replicate_record`** — the push.  The caller sends a
+full record body; the receiver stores it **idempotently**, preserving
+the source UUID.
+
+```json
+// request
+{ "jsonrpc": "2.0", "id": 1, "method": "v2/cluster.replicate_record",
+  "params": { "record": {
+    "id":        "019e1561-…",
+    "timestamp": 1778464000,
+    "key":       "cpu.user",
+    "data":      0.42
+  } } }
+
+// response — record was newly stored
+{ "id": "019e1561-…", "was_new": true }
+
+// response — record already present (idempotent no-op)
+{ "id": "019e1561-…", "was_new": false }
+```
+
+Receiver: `ShardsManager::replicate_record(JsonValue)` checks
+`has_records_present([id])` first and returns `was_new: false`
+without writing when the record is already local.  Otherwise it
+inserts via `add_batch` — which preserves the doc's `id` field —
+and returns `was_new: true`.  Re-running the same push is always
+safe; the rebalancer relies on this for crash- and
+interrupt-tolerance.
+
+#### The scan protocol
+
+Each tick (`rebalancer.interval`, default `10m`):
+
+1. **Throttle gate.** Read `ingest.lag` p95 from the perf registry
+   (exposed via `v2/perf`).  If it exceeds
+   `rebalancer.pause_if_ingest_lag_p95_ms` (default `1000`), **skip
+   the entire tick** and bump `paused_for_lag_lifetime`.  Ingest
+   always wins.
+2. **Peer snapshot.** Snapshot the Alive peer-ID set *once* — not
+   re-read per record.  Re-reading would create a measurement-vs-
+   action race (peer observed Alive on the probe, Dead on the push).
+3. **Walk shards** round-robin via `cache.info().list_all()`.  For
+   each shard, enumerate primary IDs with
+   `observability.list_ids_by_time_range`.
+4. **Batch.** Slice the IDs into `rebalancer.batch_size` chunks
+   (default 50), capped by the remaining `rebalancer.max_per_run`
+   budget (default 500 records/tick).  When the budget is spent the
+   tick ends — the rest waits for the next tick.
+5. **Probe.** For each batch, `fan_out_v2("v2/cluster.has_records",
+   {ids})` to every Alive peer.  Build a `record_id → {peer_ids that
+   have it}` map from the successful responses.
+6. **Decide.** For each record, call the pure helper
+   `rebalancer::pick_peers_to_push(have, alive_peers, self_id,
+   min_rf)`.  `min_rf` is `rebalancer.min_replication_factor` or, when
+   unset, the inherited `cluster.replication_factor`.  The local copy
+   always counts toward the target; the helper returns the peer IDs
+   that should receive a copy, or empty when the record already
+   meets the target.
+7. **Push.** For each under-replicated record, fetch the full body
+   locally and `call_peer_v2("v2/cluster.replicate_record", …)` to
+   each chosen peer.  A peer that transitioned Alive → Dead since the
+   snapshot is skipped cleanly (its URL is no longer resolvable).
+
+#### Unobtrusiveness contract
+
+The rebalancer is designed to **assist** replication without
+competing with the cluster's real work:
+
+- **Disabled by default.** Operators opt in explicitly.
+- **Ingest has unconditional priority** — the throttle gate (step 1)
+  skips the whole tick when ingest is backed up.
+- **Bounded work per tick** — `max_per_run` guarantees one tick can
+  never starve the next ingest tick.
+- **Cooperative cancellation** — the task's `tokio::select!` checks
+  the shutdown channel between ticks; an in-flight tick completes its
+  current atomic per-record push (one `call_peer_v2`) and the next
+  loop iteration exits.  An interrupted tick leaves the cluster in a
+  valid, partially-rebalanced state — the next run resumes the work.
+- **No write-path change** — `v3/add` is untouched; the rebalancer is
+  purely additive background convergence.
+- **Standalone no-op** — a node with no cluster handle logs
+  "nothing to rebalance" and the task exits immediately.
+
+#### Observability
+
+| Surface | What |
+|---------|------|
+| `v2/status.rebalancer` | Atomic counters: `records_replicated_{lifetime,last_run}`, `records_examined_{lifetime,last_run}`, `batches_examined_{lifetime,last_run}`, `paused_for_lag_lifetime`, `errors_lifetime`, `last_run_ts`, `last_run_ms`. |
+| `v2/perf` series | `rebalancer.scan_batch` (probe-fan-out + push loop, end to end), `rebalancer.replicate_one` (one peer push RTT), `rebalancer.has_records` + `rebalancer.replicate_record_recv` (receiver-side handler timing). |
+| `v2/perf.slow_queries` | Any of the above that breach the slow-query threshold. |
+
+A clean tick on a converged cluster reports
+`records_replicated_last_run: 0` with non-zero
+`records_examined_last_run` — it scanned, found nothing to do, and
+cost a few tens of milliseconds.
 
 ---
 
@@ -591,6 +822,53 @@ Behind the scenes:
 - `dedup_avg_score` → 8 distinct UUIDs, scores averaged across the
   replicas that returned them, sorted by averaged score, truncated
   to `limit=10`.
+
+### 9.2 Coordinator-side query embedding
+
+A naive `v3/search` fan-out has every node — coordinator **and**
+every peer — run the same ONNX embedding inference for the same
+query string.  On an N-peer cluster that's N+1 identical embeds per
+search, each ~2–15 ms of CPU-bound work.
+
+`v3/search` instead embeds the query **once** on the coordinator and
+ships the resulting vector to peers:
+
+1. The coordinator embeds the query string on a blocking thread —
+   `db.cache().embedding().embed(fingerprint)`.
+2. The embedding cache (a per-node LRU keyed by query text) means
+   even the coordinator's own embed is usually a sub-10 µs hit;
+   misses are recorded as `embed.miss`, hits as `embed.hit` in the
+   perf registry.
+3. The fan-out params gain a `query_vec` field — the raw `Vec<f32>`:
+
+```json
+POST http://peerA:9000
+{ "jsonrpc": "2.0", "id": 1, "method": "v2/search",
+  "params": {
+    "session":  "",
+    "query":    "login failed",
+    "duration": "6h",
+    "limit":    10,
+    "query_vec": [0.0123, -0.0481, …]   // 384 floats for AllMiniLML6V2
+  } }
+```
+
+4. Receiver-side, `v2/search` checks for `query_vec`.  When present
+   it calls `ShardsManager::vectorsearch_with_vec` — which skips the
+   embed entirely and feeds the supplied vector straight into the
+   per-shard HNSW search.  When absent (a direct `v2/search` client,
+   or an older peer), it falls back to the normal embed-then-search
+   path.  The field is **optional and backward-compatible** — no
+   coordinated cluster upgrade required.
+
+The coordinator's own local search uses the same pre-computed vector
+via `vectorsearch_with_vec`, so the embed truly happens exactly
+once per cluster-wide search.
+
+The `fingerprint` (used both as the embed-cache key and passed into
+the per-shard MMR reranker) is `json_fingerprint` of the query — a
+deterministic function of the query string, so every node computes
+the same fingerprint locally without it needing to cross the wire.
 
 ---
 
@@ -963,9 +1241,32 @@ mid-flight; that's an accepted tradeoff matching scheduler.
 
 - [`CLUSTER.md`](CLUSTER.md) — configuration, operations, on-disk
   layout, RPC quick reference.
+- [`BDSCONFIG.md`](BDSCONFIG.md) — every `bds.hjson` key, including
+  the `cluster.adaptive_peer_timeout_*` knobs (§ 6.2) and the
+  `rebalancer:` block (§ 5.6).
 - [`jsonrpc_api/`](jsonrpc_api/) — per-method JSON schemas and
-  examples.
+  examples, including [`v2_perf.md`](jsonrpc_api/v2_perf.md) for the
+  perf registry the adaptive timeout and rebalancer throttle both
+  read from.
 - [`BDSCMD.md`](BDSCMD.md) — operator CLI for every `cluster.*`
   subcommand and `scheduler-last-seen`.
 - [`../examples/cluster/`](../examples/cluster/) — runnable Bund
   scripts demonstrating `cls.*` helpers + `?cluster.meta`.
+
+## Change log — this revision
+
+Sections added or substantially revised:
+
+- **§ 1.1 Transport** — the shared `reqwest::Client`, HTTP/2
+  adaptive window, gzip, and the adaptive per-peer RPC timeout.
+- **§ 6.2** — corrected to the current five-store default
+  (`docs, signals, scripts, users, llm_cache`).
+- **§ 7.1** — `Arc`-shared fan-out payload to avoid N deep clones
+  per replicated write.
+- **§ 8** — retitled "Convergence"; **§ 8.4 Data rebalancer** added
+  in full (the two receiver RPCs, the scan protocol, the
+  unobtrusiveness contract, observability surfaces).
+- **§ 8.3** — clarified that `v3/cluster.sync` does not trigger a
+  rebalance.
+- **§ 9.2 Coordinator-side query embedding** — `v3/search` embeds
+  once and ships `query_vec` to peers.
