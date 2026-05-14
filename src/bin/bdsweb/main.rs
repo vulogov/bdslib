@@ -14,6 +14,7 @@ use state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 
 #[derive(Parser)]
@@ -254,6 +255,70 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     }
 }
 
+/// Spawn a never-ending background task and keep it alive.  `make`
+/// produces the task future; if that task ever panics or returns,
+/// `supervise` logs it and re-spawns after a short delay.  The poller
+/// bodies are infinite loops, so a plain return is itself unexpected.
+/// This is the H1 fix: a panic inside a poll iteration no longer
+/// silently kills the poller and freezes its cache forever.
+fn supervise<F, Fut>(name: &'static str, make: F)
+where
+    F:   Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            match tokio::spawn(make()).await {
+                Ok(())                     => log::error!("[{name}] background task exited unexpectedly — restarting in 5s"),
+                Err(e) if e.is_panic()     => log::error!("[{name}] background task panicked — restarting in 5s: {e}"),
+                Err(e)                     => { log::error!("[{name}] background task cancelled, not restarting: {e}"); break; }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
+}
+
+/// Dashboard cache refresher — polls the 4 dashboard RPCs every
+/// `dashboard_refresh_secs` and parks the snapshot in the cache.  On a
+/// poll error the previous snapshot is kept (graceful degradation).
+async fn dashboard_poll_loop(state: AppState) {
+    let interval = std::time::Duration::from_secs(state.dashboard_refresh_secs);
+    log::info!("dashboard background poller started (interval={}s)", state.dashboard_refresh_secs);
+    loop {
+        match routes::dashboard::collect(&state).await {
+            Ok(snap) => {
+                *state.dashboard_cache.write().await = Some(snap);
+                // Stamp the last-success time for the /healthz probe (M4).
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                state.dashboard_last_ok.store(now, std::sync::atomic::Ordering::Relaxed);
+                log::debug!("dashboard cache refreshed");
+            }
+            Err(e) => log::warn!("dashboard background poll failed: {e}"),
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// Cluster cache refresher — same recipe as [`dashboard_poll_loop`] but
+/// polls `v2/cluster.peers` for the `/cluster` page.
+async fn cluster_poll_loop(state: AppState) {
+    let interval = std::time::Duration::from_secs(state.cluster_refresh_secs);
+    log::info!("cluster background poller started (interval={}s)", state.cluster_refresh_secs);
+    loop {
+        match routes::cluster::collect(&state).await {
+            Ok(snap) => {
+                *state.cluster_cache.write().await = Some(snap);
+                log::debug!("cluster cache refreshed");
+            }
+            Err(e) => log::warn!("cluster background poll failed: {e}"),
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -413,55 +478,17 @@ async fn main() {
         cfg.perf_analyze,
     );
 
-    // Background poller: refreshes the cached Dashboard snapshot every N seconds.
+    // Background pollers, each kept alive by `supervise`: a panic in a
+    // poll iteration (e.g. an unwrap on an unexpected JSON shape) would
+    // otherwise kill the spawned task for good and freeze its cache —
+    // `supervise` re-spawns it instead (H1).
     {
-        let poller_state = state.clone();
-        tokio::spawn(async move {
-            let interval = std::time::Duration::from_secs(poller_state.dashboard_refresh_secs);
-            log::info!(
-                "dashboard background poller started (interval={}s)",
-                poller_state.dashboard_refresh_secs
-            );
-            loop {
-                match routes::dashboard::collect(&poller_state).await {
-                    Ok(snap) => {
-                        *poller_state.dashboard_cache.write().await = Some(snap);
-                        log::debug!("dashboard cache refreshed");
-                    }
-                    Err(e) => {
-                        log::warn!("dashboard background poll failed: {e}");
-                    }
-                }
-                tokio::time::sleep(interval).await;
-            }
-        });
+        let s = state.clone();
+        supervise("dashboard-poller", move || dashboard_poll_loop(s.clone()));
     }
-
-    // Background poller: same recipe as the dashboard one but for the
-    // Cluster page.  Polls v2/cluster.peers and parks the response in
-    // `state.cluster_cache` so /cluster/data renders without hitting
-    // bdsnode on every page load.
     {
-        let poller_state = state.clone();
-        tokio::spawn(async move {
-            let interval = std::time::Duration::from_secs(poller_state.cluster_refresh_secs);
-            log::info!(
-                "cluster background poller started (interval={}s)",
-                poller_state.cluster_refresh_secs
-            );
-            loop {
-                match routes::cluster::collect(&poller_state).await {
-                    Ok(snap) => {
-                        *poller_state.cluster_cache.write().await = Some(snap);
-                        log::debug!("cluster cache refreshed");
-                    }
-                    Err(e) => {
-                        log::warn!("cluster background poll failed: {e}");
-                    }
-                }
-                tokio::time::sleep(interval).await;
-            }
-        });
+        let s = state.clone();
+        supervise("cluster-poller", move || cluster_poll_loop(s.clone()));
     }
 
     let app = Router::new()
@@ -541,6 +568,7 @@ async fn main() {
         .route("/scripts/{id}",           delete(routes::scripts::delete))
         .route("/version",        get(routes::version::version))
         .route("/whoami",         get(routes::whoami::whoami))
+        .route("/healthz",        get(routes::healthz::healthz))
 
         // ── Authentication ──────────────────────────────────────────
         // GET stays here (unlimited); POST is split out onto a
@@ -615,11 +643,16 @@ async fn main() {
 
     // CSRF backstop + security headers wrap the fully-composed router
     // so they also cover /login, /logout, and the rate-limited
-    // sub-router.  `set_security_headers` is added last → outermost,
-    // so it stamps headers even onto a CSRF 403.
+    // sub-router.  `CatchPanicLayer` turns a panic in any handler OR
+    // inner middleware into a clean 500 (H2).  `htmx_error_fragment`
+    // is added last → outermost, so it sees the final 500 (whether
+    // from `AppError` or a caught panic) and, for HTMX requests,
+    // swaps the full-page error doc for a compact fragment (H3).
     let app = app
         .layer(middleware::from_fn(security::require_same_origin))
-        .layer(middleware::from_fn(security::set_security_headers));
+        .layer(middleware::from_fn(security::set_security_headers))
+        .layer(CatchPanicLayer::new())
+        .layer(middleware::from_fn(error::htmx_error_fragment));
 
     // Bind state on the composed Router.  This converts
     // `Router<AppState>` → `Router<()>` so axum::serve can use

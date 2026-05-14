@@ -123,7 +123,7 @@ pub async fn require_session(
     // username + Sign out button; it must work BEFORE the visitor
     // has a session cookie (returns `{authenticated: false}` then).
     let path = req.uri().path();
-    if matches!(path, "/login" | "/logout" | "/version" | "/whoami") {
+    if matches!(path, "/login" | "/logout" | "/version" | "/whoami" | "/healthz") {
         return next.run(req).await;
     }
 

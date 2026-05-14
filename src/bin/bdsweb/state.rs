@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
@@ -1084,6 +1085,10 @@ pub struct AppState {
     /// 30-second cache of the default v4/llm analyze provider + model,
     /// shared by every "Analyze this!"-capable page (perf finding P1).
     pub analyze_provider_cache: Arc<RwLock<AnalyzeProviderCache>>,
+    /// Unix-seconds timestamp of the dashboard poller's last *successful*
+    /// fetch — `0` until the first success.  Drives the `/healthz`
+    /// readiness verdict without any extra RPC (resilience finding M4).
+    pub dashboard_last_ok: Arc<AtomicU64>,
     /// Cluster shared secret — same value as `cluster.shared_secret`
     /// in `bds.hjson`.  Used by the auth middleware to verify
     /// `bds_session` cookies and by `/admin/users` to HMAC-sign
@@ -1191,6 +1196,7 @@ impl AppState {
             cluster_cache:   Arc::new(RwLock::new(None)),
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
             analyze_provider_cache: Arc::new(RwLock::new(AnalyzeProviderCache::default())),
+            dashboard_last_ok: Arc::new(AtomicU64::new(0)),
             shared_secret:   Arc::new(shared_secret),
             secure_cookies,
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),

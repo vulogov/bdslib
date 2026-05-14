@@ -8,6 +8,7 @@ pub mod login;
 pub mod dashboard;
 pub mod denoise_recent;
 pub mod docs;
+pub mod healthz;
 pub mod help;
 pub mod knn;
 pub mod logs;

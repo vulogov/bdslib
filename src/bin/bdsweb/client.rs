@@ -230,9 +230,37 @@ pub async fn rpc_with_timeout(
     if let Some(d) = timeout {
         req = req.timeout(d);
     }
-    let resp = req.send().await?;
 
-    let bytes = resp.bytes().await?;
+    // Bounded retry for *transient* failures only — a dropped
+    // connection or timeout (bdsnode restarting, a DNS/TCP blip) is
+    // worth a second look; an RPC-level error is deterministic and is
+    // NOT retried.  Up to 3 attempts with a short linear backoff, so
+    // worst-case added latency is ~300 ms — negligible against the
+    // 120 s client timeout (M1).
+    const MAX_ATTEMPTS: u32 = 3;
+    let bytes = {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            // Body is a `String`, so `try_clone` always succeeds.
+            let this = req.try_clone().expect("rpc request body is cloneable");
+            let outcome = async {
+                let resp = this.send().await?;
+                resp.bytes().await
+            }.await;
+            match outcome {
+                Ok(b) => break b,
+                Err(e) if attempt < MAX_ATTEMPTS && (e.is_connect() || e.is_timeout()) => {
+                    log::warn!(
+                        "rpc {method}: attempt {attempt}/{MAX_ATTEMPTS} failed ({e}) — retrying",
+                    );
+                    tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
     let mut envelope: Value = serde_json::from_slice(&bytes)?;
 
     if let Some(err) = envelope.get("error") {
