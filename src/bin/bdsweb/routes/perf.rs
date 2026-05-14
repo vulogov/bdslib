@@ -31,38 +31,10 @@ struct PerfShell {
     analyze_model:    String,
 }
 
-/// Pull the default LLM provider + its default model from
-/// `v4/llm.providers.list` so the wait banner can name the actual
-/// upstream.  Mirrors the same helper in routes::logs.  All failures
-/// collapse to `("", "")` and the page falls back to a generic message.
-async fn fetch_analyze_provider(state: &AppState) -> (String, String) {
-    if state.shared_secret.is_empty() {
-        return (String::new(), String::new());
-    }
-    let resp = match crate::admin::signed_rpc(
-        state, "v4/llm.providers.list", json!({})).await
-    {
-        Ok(v)  => v,
-        Err(e) => {
-            log::warn!("[perf] v4/llm.providers.list failed: {e}");
-            return (String::new(), String::new());
-        }
-    };
-    let default_id = resp.get("default").and_then(|v| v.as_str()).unwrap_or("");
-    if default_id.is_empty() { return (String::new(), String::new()); }
-    let model = resp.get("providers").and_then(|v| v.as_array())
-        .and_then(|arr| arr.iter().find(|p|
-            p.get("id").and_then(|x| x.as_str()) == Some(default_id)))
-        .and_then(|p| p.get("default_model").and_then(|x| x.as_str()))
-        .unwrap_or("")
-        .to_owned();
-    (default_id.to_owned(), model)
-}
-
 pub async fn page(State(state): State<AppState>) -> Result<Html<String>, AppError> {
     // Reuse the dashboard refresh cadence — perf data updates as
     // frequently as the dashboard's underlying v2/status snapshot.
-    let (analyze_provider, analyze_model) = fetch_analyze_provider(&state).await;
+    let (analyze_provider, analyze_model) = crate::client::analyze_provider(&state).await;
     Ok(Html(PerfShell {
         refresh_secs:     state.dashboard_refresh_secs,
         analyze_provider,

@@ -282,13 +282,18 @@ pub async fn collect(state: &AppState) -> Result<DashboardSnapshot, AppError> {
 /// hasn't populated the cache yet, returns a "Wait" partial that auto-refreshes
 /// every 2 seconds.
 pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppError> {
-    let cached = state.dashboard_cache.read().await.clone();
-    match cached {
-        Some(snap) => Ok(Html(render_snapshot(&snap, state.dashboard_refresh_secs)?)),
-        None => Ok(Html(DashboardWait {
-            poll_url: "/dashboard/data".to_owned(),
-            message:  "Background poller is collecting telemetry…".to_owned(),
-        }.render()?)),
+    // Hold the read guard across the synchronous render instead of
+    // cloning the whole snapshot on every poll (P3).
+    let guard = state.dashboard_cache.read().await;
+    match &*guard {
+        Some(snap) => Ok(Html(render_snapshot(snap, state.dashboard_refresh_secs)?)),
+        None => {
+            drop(guard);
+            Ok(Html(DashboardWait {
+                poll_url: "/dashboard/data".to_owned(),
+                message:  "Background poller is collecting telemetry…".to_owned(),
+            }.render()?))
+        }
     }
 }
 

@@ -43,6 +43,28 @@ impl Default for ClusterModeCache {
     }
 }
 
+/// Cached default `v4/llm` analyze provider + model with a 30-second
+/// TTL.  Avoids a `v4/llm.providers.list` signed RPC on every load of
+/// the 15 "Analyze this!"-capable pages — the provider list barely
+/// changes (perf finding P1).
+#[derive(Clone, Debug)]
+pub struct AnalyzeProviderCache {
+    pub provider:   String,
+    pub model:      String,
+    pub fetched_at: Instant,
+}
+
+impl Default for AnalyzeProviderCache {
+    fn default() -> Self {
+        // Long-past instant so the first read forces a refresh.
+        Self {
+            provider:   String::new(),
+            model:      String::new(),
+            fetched_at: Instant::now() - std::time::Duration::from_secs(3600),
+        }
+    }
+}
+
 /// Runtime settings for one "Analyze this!" button.  Sourced from a
 /// `web.analyze.<target>.*` block of `bds.hjson`; missing keys fall
 /// through to per-target compiled-in defaults (see
@@ -1059,6 +1081,9 @@ pub struct AppState {
     /// Cluster-mode flag (cached).  When true, the per-route handlers
     /// route their RPCs through v3/* (cluster-aware) instead of v2/*.
     pub cluster_mode: Arc<RwLock<ClusterModeCache>>,
+    /// 30-second cache of the default v4/llm analyze provider + model,
+    /// shared by every "Analyze this!"-capable page (perf finding P1).
+    pub analyze_provider_cache: Arc<RwLock<AnalyzeProviderCache>>,
     /// Cluster shared secret — same value as `cluster.shared_secret`
     /// in `bds.hjson`.  Used by the auth middleware to verify
     /// `bds_session` cookies and by `/admin/users` to HMAC-sign
@@ -1165,6 +1190,7 @@ impl AppState {
             cluster_refresh_secs,
             cluster_cache:   Arc::new(RwLock::new(None)),
             cluster_mode:    Arc::new(RwLock::new(ClusterModeCache::default())),
+            analyze_provider_cache: Arc::new(RwLock::new(AnalyzeProviderCache::default())),
             shared_secret:   Arc::new(shared_secret),
             secure_cookies,
             bootstrap_cache: Arc::new(RwLock::new(crate::auth::BootstrapCache::default())),

@@ -207,13 +207,18 @@ pub async fn collect(state: &AppState) -> Result<ClusterSnapshot, AppError> {
 /// partial that auto-refreshes every 2 seconds (same UX as the
 /// dashboard).
 pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppError> {
-    let cached = state.cluster_cache.read().await.clone();
-    match cached {
-        Some(snap) => Ok(Html(render_snapshot(&snap)?)),
-        None       => Ok(Html(ClusterWait {
-            poll_url: "/cluster/data".to_owned(),
-            message:  "Background poller is fetching cluster state…".to_owned(),
-        }.render()?)),
+    // Hold the read guard across the synchronous render instead of
+    // cloning the whole snapshot on every poll (P3).
+    let guard = state.cluster_cache.read().await;
+    match &*guard {
+        Some(snap) => Ok(Html(render_snapshot(snap)?)),
+        None       => {
+            drop(guard);
+            Ok(Html(ClusterWait {
+                poll_url: "/cluster/data".to_owned(),
+                message:  "Background poller is fetching cluster state…".to_owned(),
+            }.render()?))
+        }
     }
 }
 

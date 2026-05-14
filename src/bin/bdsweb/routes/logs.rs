@@ -79,42 +79,14 @@ struct LogsPage {
     analyze_model:    String,
 }
 
-/// Fetch the default v4/llm provider + its default model so the page
-/// can label the "Analyze this!" wait message with the actual
-/// upstream that will run the inference.  All failure modes
-/// (missing HMAC secret, bdsnode unreachable, empty providers list,
-/// configured `default` not registered) collapse to `("", "")` —
-/// the page falls back to a generic "Asking the LLM…" string.
-async fn fetch_analyze_provider(state: &AppState) -> (String, String) {
-    if state.shared_secret.is_empty() {
-        return (String::new(), String::new());
-    }
-    let resp = match crate::admin::signed_rpc(
-        state, "v4/llm.providers.list", json!({})).await
-    {
-        Ok(v)  => v,
-        Err(e) => {
-            log::warn!("[logs] v4/llm.providers.list failed: {e}");
-            return (String::new(), String::new());
-        }
-    };
-    let default_id = resp.get("default").and_then(|v| v.as_str()).unwrap_or("");
-    if default_id.is_empty() { return (String::new(), String::new()); }
-    let model = resp.get("providers").and_then(|v| v.as_array())
-        .and_then(|arr| arr.iter().find(|p|
-            p.get("id").and_then(|x| x.as_str()) == Some(default_id)))
-        .and_then(|p| p.get("default_model").and_then(|x| x.as_str()))
-        .unwrap_or("")
-        .to_owned();
-    (default_id.to_owned(), model)
-}
-
 pub async fn page(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
-    let mode_badge = mode_badge_for_page(&state, true).await;
-    let (analyze_provider, analyze_model) = fetch_analyze_provider(&state).await;
+    let (mode_badge, (analyze_provider, analyze_model)) = tokio::join!(
+        mode_badge_for_page(&state, true),
+        crate::client::analyze_provider(&state),
+    );
     Ok(Html(LogsPage {
         duration: p.duration,
         q:        p.q,

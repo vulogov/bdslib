@@ -36,6 +36,57 @@ pub async fn cluster_enabled(state: &AppState) -> bool {
     enabled
 }
 
+/// TTL for the cached analyze-provider lookup.
+const ANALYZE_PROVIDER_TTL: Duration = Duration::from_secs(30);
+
+/// Default `v4/llm` analyze provider id + model, used by the "Analyze
+/// this!" pages so their wait-message JS can name the actual upstream.
+///
+/// Cached for `ANALYZE_PROVIDER_TTL` so the ~15 analyze-capable pages
+/// don't each pay a signed `v4/llm.providers.list` round-trip on every
+/// load (perf finding P1).  All failure modes — open-access mode (no
+/// HMAC secret), bdsnode unreachable, empty provider list — collapse
+/// to `("", "")` and the page falls back to generic phrasing; the
+/// empty result is cached too, so a provider-less node isn't re-probed
+/// on every load.
+pub async fn analyze_provider(state: &AppState) -> (String, String) {
+    {
+        let r = state.analyze_provider_cache.read().await;
+        if r.fetched_at.elapsed() < ANALYZE_PROVIDER_TTL {
+            return (r.provider.clone(), r.model.clone());
+        }
+    }
+    let (provider, model) = fetch_analyze_provider_uncached(state).await;
+    *state.analyze_provider_cache.write().await = crate::state::AnalyzeProviderCache {
+        provider:   provider.clone(),
+        model:      model.clone(),
+        fetched_at: Instant::now(),
+    };
+    (provider, model)
+}
+
+async fn fetch_analyze_provider_uncached(state: &AppState) -> (String, String) {
+    if state.shared_secret.is_empty() {
+        return (String::new(), String::new());
+    }
+    let resp = match crate::admin::signed_rpc(state, "v4/llm.providers.list", json!({})).await {
+        Ok(v)  => v,
+        Err(e) => {
+            log::warn!("[analyze_provider] v4/llm.providers.list failed: {e}");
+            return (String::new(), String::new());
+        }
+    };
+    let default_id = resp.get("default").and_then(|v| v.as_str()).unwrap_or("");
+    if default_id.is_empty() { return (String::new(), String::new()); }
+    let model = resp.get("providers").and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p|
+            p.get("id").and_then(|x| x.as_str()) == Some(default_id)))
+        .and_then(|p| p.get("default_model").and_then(|x| x.as_str()))
+        .unwrap_or("")
+        .to_owned();
+    (default_id.to_owned(), model)
+}
+
 /// Call `v3_method` when cluster mode is on, otherwise `v2_method`.  Use
 /// for read RPCs that have a cluster-aware v3/* counterpart.  Both
 /// methods must accept the same params shape — hold for every v3/* read
@@ -181,15 +232,17 @@ pub async fn rpc_with_timeout(
     }
     let resp = req.send().await?;
 
-    let text: String = resp.text().await?;
-    let envelope: Value = serde_json::from_str(&text)?;
+    let bytes = resp.bytes().await?;
+    let mut envelope: Value = serde_json::from_slice(&bytes)?;
 
     if let Some(err) = envelope.get("error") {
         let msg = err["message"].as_str().unwrap_or("unknown RPC error").to_owned();
         return Err(AppError::Rpc(msg));
     }
 
-    Ok(envelope["result"].clone())
+    // `envelope` is owned and dropped here, so `take()` the `result`
+    // out instead of deep-cloning a potentially large JSON tree (P2).
+    Ok(envelope.get_mut("result").map(Value::take).unwrap_or(Value::Null))
 }
 
 // ── Small helpers to pull typed scalars out of JSON safely ────────────────────

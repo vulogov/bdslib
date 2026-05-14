@@ -3,7 +3,7 @@ use axum::{extract::{Form, Query, State}, response::Html};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{admin::signed_rpc, admin::signed_rpc_with_timeout, client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
+use crate::{admin::signed_rpc_with_timeout, client::{fmt_ts, mode_badge_for_page, ModeBadge, rpc_versioned, SESSION}, error::AppError, state::AppState};
 use super::rca::{extract_rca, CausalRow, ClusterCard, RcaSummary};
 
 // ── Query parameters ──────────────────────────────────────────────────────────
@@ -48,37 +48,14 @@ struct RcaTemplatesPage {
     analyze_model:     String,
 }
 
-/// Fetch the default v4/llm provider + model so the wait-message JS
-/// can name the actual upstream.  All failure modes collapse to
-/// `("", "")` — the page falls back to generic phrasing.
-async fn fetch_analyze_provider(state: &AppState) -> (String, String) {
-    if state.shared_secret.is_empty() {
-        return (String::new(), String::new());
-    }
-    let resp = match signed_rpc(state, "v4/llm.providers.list", json!({})).await {
-        Ok(v)  => v,
-        Err(e) => {
-            log::warn!("[rca_templates] v4/llm.providers.list failed: {e}");
-            return (String::new(), String::new());
-        }
-    };
-    let default_id = resp.get("default").and_then(|v| v.as_str()).unwrap_or("");
-    if default_id.is_empty() { return (String::new(), String::new()); }
-    let model = resp.get("providers").and_then(|v| v.as_array())
-        .and_then(|arr| arr.iter().find(|p|
-            p.get("id").and_then(|x| x.as_str()) == Some(default_id)))
-        .and_then(|p| p.get("default_model").and_then(|x| x.as_str()))
-        .unwrap_or("")
-        .to_owned();
-    (default_id.to_owned(), model)
-}
-
 pub async fn page(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<Html<String>, AppError> {
-    let mode_badge = mode_badge_for_page(&state, true).await;
-    let (analyze_provider, analyze_model) = fetch_analyze_provider(&state).await;
+    let (mode_badge, (analyze_provider, analyze_model)) = tokio::join!(
+        mode_badge_for_page(&state, true),
+        crate::client::analyze_provider(&state),
+    );
     Ok(Html(RcaTemplatesPage {
         duration:          p.duration,
         failure_body:      p.failure_body,
