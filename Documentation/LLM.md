@@ -122,6 +122,18 @@ llm: {
       api_key_env:   "OPENAI_API_KEY"
       default_model: "gpt-4o-mini"
     }
+    deepseek: {
+      base_url:      "https://api.deepseek.com"
+      api_key_env:   "DEEPSEEK_API_KEY"
+      // api_key:    "sk-…"                        // optional hjson fallback (env var still wins)
+      default_model: "deepseek-chat"
+    }
+    gemini: {
+      base_url:      "https://generativelanguage.googleapis.com"
+      api_key_env:   "GEMINI_API_KEY"
+      // api_key:    "AIza…"                       // optional hjson fallback (env var still wins)
+      default_model: "gemini-2.5-flash"
+    }
   }
 
   // Inference cache.  Stored replicated across the cluster like
@@ -167,6 +179,8 @@ back.
 | Ollama     | ✓    | ✓     | `/api/chat` (non-streaming) + `/api/embed`; honours `num_ctx` |
 | Anthropic  | ✓    | —     | `/v1/messages` with system-prompt lift; `seed` field dropped |
 | OpenAI     | ✓    | ✓     | `/v1/chat/completions` + `/v1/embeddings`                    |
+| DeepSeek   | ✓    | —     | `/v1/chat/completions` (OpenAI-compatible); env-or-hjson key |
+| Gemini     | ✓    | —     | `/v1beta/models/{model}:generateContent`; model in URL path, system prompt under `systemInstruction`, assistant role `"model"`; `x-goog-api-key` header (never URL query); safety-block finish reasons surface as errors so empty responses aren't silent. Embeddings via `:embedContent` exist but aren't wired here yet. |
 
 All providers implement `bdslib::llm::providers::Provider` (async via
 `#[async_trait]`).  The `ProviderManager` (lifecycle = process-wide

@@ -101,6 +101,17 @@
         // api_key:    "sk-…"
         default_model: "deepseek-chat"
       }
+
+      // Google Gemini — chat-only (embeddings exist via :embedContent
+      // but aren't wired yet).  Same env-or-hjson key resolution as
+      // DeepSeek: $GEMINI_API_KEY (preferred) → `api_key` field below.
+      // Get a key at https://aistudio.google.com/apikey
+      gemini: {
+        base_url:      "https://generativelanguage.googleapis.com"
+        api_key_env:   "GEMINI_API_KEY"
+        // api_key:    "AIza…"
+        default_model: "gemini-2.5-flash"
+      }
     }
 
     // ── In-chat Bund snippet execution ──

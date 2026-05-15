@@ -14,7 +14,7 @@
 
 use crate::common::error::{err_msg, Result};
 use crate::llm::providers::{
-    AnthropicProvider, DeepSeekProvider, OllamaProvider, OpenAIProvider, Provider,
+    AnthropicProvider, DeepSeekProvider, GeminiProvider, OllamaProvider, OpenAIProvider, Provider,
 };
 use serde_hjson::Value as HjsonValue;
 use std::collections::BTreeMap;
@@ -31,6 +31,9 @@ const DEFAULT_OPENAI_KEY_ENV:       &str = "OPENAI_API_KEY";
 const DEFAULT_DEEPSEEK_URL:         &str = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL:       &str = "deepseek-chat";
 const DEFAULT_DEEPSEEK_KEY_ENV:     &str = "DEEPSEEK_API_KEY";
+const DEFAULT_GEMINI_URL:           &str = "https://generativelanguage.googleapis.com";
+const DEFAULT_GEMINI_MODEL:         &str = "gemini-2.5-flash";
+const DEFAULT_GEMINI_KEY_ENV:       &str = "GEMINI_API_KEY";
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig    { pub url: String,      pub default_model: String }
@@ -48,6 +51,19 @@ pub struct OpenAIConfig    { pub base_url: String, pub api_key_env: String, pub 
 /// when both are present.  `api_key` is `String::new()` when absent.
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
+    pub base_url:      String,
+    pub api_key_env:   String,
+    pub api_key:       String,
+    pub default_model: String,
+}
+
+/// Google Gemini (`llm.providers.gemini.*`).  Same env-or-hjson key
+/// resolution as [`DeepSeekConfig`] — env var (preferred) wins over
+/// the plaintext `api_key` field when both are present.  The provider
+/// sends the key via the `x-goog-api-key` header so it never lands
+/// in HTTP access logs.
+#[derive(Debug, Clone)]
+pub struct GeminiConfig {
     pub base_url:      String,
     pub api_key_env:   String,
     pub api_key:       String,
@@ -179,6 +195,7 @@ pub struct LlmConfig {
     pub anthropic: Option<AnthropicConfig>,
     pub openai:    Option<OpenAIConfig>,
     pub deepseek:  Option<DeepSeekConfig>,
+    pub gemini:    Option<GeminiConfig>,
     pub cache:     CacheConfig,
     pub dedup:     DedupConfig,
     pub chat:      ChatConfig,
@@ -255,6 +272,19 @@ impl LlmConfig {
                                   .unwrap_or("").to_owned(),
                 default_model: o.get("default_model").and_then(|v| v.as_str())
                                   .unwrap_or(DEFAULT_DEEPSEEK_MODEL).to_owned(),
+            });
+
+        let gemini = providers
+            .and_then(|p| p.get("gemini").and_then(|v| v.as_object()))
+            .map(|o| GeminiConfig {
+                base_url:      o.get("base_url").and_then(|v| v.as_str())
+                                  .unwrap_or(DEFAULT_GEMINI_URL).to_owned(),
+                api_key_env:   o.get("api_key_env").and_then(|v| v.as_str())
+                                  .unwrap_or(DEFAULT_GEMINI_KEY_ENV).to_owned(),
+                api_key:       o.get("api_key").and_then(|v| v.as_str())
+                                  .unwrap_or("").to_owned(),
+                default_model: o.get("default_model").and_then(|v| v.as_str())
+                                  .unwrap_or(DEFAULT_GEMINI_MODEL).to_owned(),
             });
 
         let cache = llm.get("cache").and_then(|v| v.as_object())
@@ -341,7 +371,7 @@ impl LlmConfig {
             })
             .unwrap_or_default();
 
-        Self { default, ollama, anthropic, openai, deepseek, cache, dedup, chat, to_bund }
+        Self { default, ollama, anthropic, openai, deepseek, gemini, cache, dedup, chat, to_bund }
     }
 }
 
@@ -463,6 +493,32 @@ impl ProviderManager {
                         mgr.insert("deepseek", Arc::new(p));
                     }
                     Err(e) => log::warn!("[llm] skip deepseek: {e}"),
+                }
+            }
+        }
+
+        // Gemini follows the same env-or-hjson key resolution as
+        // DeepSeek.  Google API keys rotate often, so the env-var path
+        // is strongly preferred; the plaintext `api_key` field exists
+        // for parity but operators should treat it as a stop-gap.
+        if let Some(g) = cfg.gemini {
+            let (key, source) = match std::env::var(&g.api_key_env) {
+                Ok(k) if !k.is_empty() => (k, format!("${}", g.api_key_env)),
+                _ if !g.api_key.is_empty() => (g.api_key.clone(),
+                    "bds.hjson:llm.providers.gemini.api_key".to_owned()),
+                _ => (String::new(), String::new()),
+            };
+            if key.is_empty() {
+                log::warn!("[llm] skip gemini: env ${} unset and no `api_key` field \
+                            in bds.hjson llm.providers.gemini", g.api_key_env);
+            } else {
+                match GeminiProvider::new(&g.base_url, &key, &g.default_model) {
+                    Ok(p) => {
+                        log::info!("[llm] registered provider 'gemini' model={} (key from {})",
+                            g.default_model, source);
+                        mgr.insert("gemini", Arc::new(p));
+                    }
+                    Err(e) => log::warn!("[llm] skip gemini: {e}"),
                 }
             }
         }

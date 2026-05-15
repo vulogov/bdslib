@@ -77,7 +77,7 @@ single-execution dedup, and async jobs.  Full reference:
 
 | Capability | Description |
 |---|---|
-| **Provider abstraction** | Ollama (`/api/chat` + `/api/embed`), Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions` + `/v1/embeddings`); registry-driven, per-call override |
+| **Provider abstraction** | Ollama (`/api/chat` + `/api/embed`), Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions` + `/v1/embeddings`), DeepSeek (`/v1/chat/completions`, OpenAI-compatible), Google Gemini (`/v1beta/models/{model}:generateContent`); registry-driven, per-call override |
 | **Cluster-aware RAG** | `v4/llm.analyze` over 8 `ContextSource` variants (aggregation / knn / rca / anomaly / templates / telemetry / documents / supplied); each routes through the matching cluster-aware `vm::api::*` helper, so standalone and cluster mode share one code path |
 | **Replicated inference cache** | 5th fully-replicated cluster store (`<dbpath>/llm/cache.duckdb`); sha256 keys with secret-field redaction; anti-entropy convergence under the store name `"llm_cache"`; per-call opt-out + temperature gate |
 | **Cluster-wide single-execution** | `InferenceLog` + `v2/llm.last_executed` fan-out — peer of the cluster-aware Scheduler dedup; prevents two coordinators running the same inference concurrently |

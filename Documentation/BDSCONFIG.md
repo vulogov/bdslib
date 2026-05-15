@@ -1284,6 +1284,10 @@ returns `no providers registered`.
 | `llm.providers.deepseek.api_key_env`      | `"DEEPSEEK_API_KEY"`             | no       |
 | `llm.providers.deepseek.api_key`          | `""` (no fallback)               | no       |
 | `llm.providers.deepseek.default_model`    | `"deepseek-chat"`                | no       |
+| `llm.providers.gemini.base_url`           | `"https://generativelanguage.googleapis.com"` | no |
+| `llm.providers.gemini.api_key_env`        | `"GEMINI_API_KEY"`               | no       |
+| `llm.providers.gemini.api_key`            | `""` (no fallback)               | no       |
+| `llm.providers.gemini.default_model`      | `"gemini-2.5-flash"`             | no       |
 
 - **`api_key_env`** names the **environment variable** holding the
   API key.  For `anthropic` / `openai` this is the *only* source —
@@ -1305,6 +1309,23 @@ returns `no providers registered`.
 - **DeepSeek capabilities**: chat completions only — no embeddings.
   Models: `deepseek-chat` (default) or `deepseek-reasoner` (chain
   of thought).  Wire format is OpenAI-compatible.
+- **Gemini** follows the same env-or-hjson key resolution as
+  DeepSeek (`$GEMINI_API_KEY` wins over the hjson `api_key`
+  fallback).  The provider sends the key via the `x-goog-api-key`
+  HTTP header rather than the `?key=` URL query so the secret
+  never lands in HTTP access logs or proxy buffers.  Get a key at
+  https://aistudio.google.com/apikey
+- **Gemini capabilities**: chat completions only.  Models:
+  `gemini-2.5-flash` (default — fast, the right choice for most
+  analyze prompts), `gemini-2.5-pro` (slower but stronger
+  reasoning), `gemini-2.0-flash` (older / cheaper).  Wire format is
+  Gemini-native — model in the URL path, system prompt under
+  `systemInstruction`, assistant role `"model"` (not `"assistant"`),
+  generation knobs under `generationConfig` in camelCase
+  (`maxOutputTokens`, `topP`, `stopSequences`).  Safety-filter
+  blocks surface as errors so operators don't waste time on silent
+  empty responses; embeddings via `:embedContent` exist on the API
+  but aren't wired here yet.
 - **`llm.default`** — provider name used when a v4/llm.* request
   omits `provider`.  When unset, the first successfully registered
   provider wins.  Misconfigured default (name doesn't match any

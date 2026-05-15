@@ -238,6 +238,19 @@
   //       // api_key:    "sk-…"             // optional hjson fallback
   //       default_model: "deepseek-chat"    // or "deepseek-reasoner"
   //     }
+  //
+  //     // Google Gemini — chat-only (embeddings exist via the
+  //     // :embedContent endpoint but aren't wired yet).  Same env-or-
+  //     // hjson key resolution as DeepSeek; the provider sends the
+  //     // key via the `x-goog-api-key` header so it never lands in
+  //     // HTTP access logs.  Get a key at
+  //     // https://aistudio.google.com/apikey
+  //     gemini: {
+  //       base_url:      "https://generativelanguage.googleapis.com"
+  //       api_key_env:   "GEMINI_API_KEY"
+  //       // api_key:    "AIza…"           // optional hjson fallback
+  //       default_model: "gemini-2.5-flash" // or "gemini-2.5-pro", "gemini-2.0-flash"
+  //     }
   //   }
   //
   //   // ── In-chat Bund snippet execution (llm.chat.bund.*) ──

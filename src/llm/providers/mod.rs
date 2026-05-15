@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod deepseek;
+pub mod gemini;
 pub mod ollama;
 pub mod openai;
 
@@ -34,5 +35,6 @@ pub trait Provider: Send + Sync {
 
 pub use anthropic::AnthropicProvider;
 pub use deepseek::DeepSeekProvider;
+pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAIProvider;
