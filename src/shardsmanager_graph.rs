@@ -8,8 +8,9 @@
 
 use crate::common::error::Result;
 use crate::graphstorage::{
-    Direction, Edge, EdgeFilter, EdgeSpec, GraphFingerprint, GraphIntegrityReport, GraphRepairOpts,
-    GraphRepairReport, GraphStats, GraphStore, Node, NodeRef, Path, TraversalHit, TraversalOpts,
+    Direction, Edge, EdgeFilter, EdgeSpec, EdgeSummary, GraphFingerprint, GraphIntegrityReport,
+    GraphRepairOpts, GraphRepairReport, GraphStats, GraphStore, Node, NodeRef, NodeSummary, Path,
+    TraversalHit, TraversalOpts,
 };
 use crate::shardsmanager::ShardsManager;
 use serde_json::Value as JsonValue;
@@ -31,6 +32,16 @@ impl ShardsManager {
 
     pub fn graph_get_node(&self, n: &NodeRef) -> Result<Option<Node>> {
         self.graph()?.get_node(n)
+    }
+
+    /// Fetch a node by its `Uuid` (used by the replication / AE path).
+    pub fn graph_get_node_by_id(&self, id: &Uuid) -> Result<Option<Node>> {
+        self.graph()?.get_node_by_id(id)
+    }
+
+    /// Fetch an edge by its `Uuid` (used by the replication / AE path).
+    pub fn graph_get_edge(&self, edge_id: &Uuid) -> Result<Option<Edge>> {
+        self.graph()?.get_edge(edge_id)
     }
 
     pub fn graph_remove_node(&self, n: &NodeRef) -> Result<bool> {
@@ -68,17 +79,24 @@ impl ShardsManager {
         self.graph()?.link_batch(links)
     }
 
-    pub fn graph_unlink(&self, from: &NodeRef, to: &NodeRef, edge_type: &str) -> Result<usize> {
+    /// Delete an edge; returns the ids of the removed edge episodes.
+    pub fn graph_unlink(
+        &self,
+        from: &NodeRef,
+        to: &NodeRef,
+        edge_type: &str,
+    ) -> Result<Vec<Uuid>> {
         self.graph()?.unlink(from, to, edge_type)
     }
 
+    /// Close an edge's validity window; returns the ids of the edges updated.
     pub fn graph_expire_edge(
         &self,
         from: &NodeRef,
         to: &NodeRef,
         edge_type: &str,
         at: i64,
-    ) -> Result<usize> {
+    ) -> Result<Vec<Uuid>> {
         self.graph()?.expire_edge(from, to, edge_type, at)
     }
 
@@ -191,5 +209,37 @@ impl ShardsManager {
     /// Cheap whole-store divergence fingerprint (for replica comparison).
     pub fn graph_fingerprint(&self) -> Result<GraphFingerprint> {
         self.graph()?.fingerprint()
+    }
+
+    // ── cluster replication / anti-entropy ────────────────────────────────────
+    //
+    // These back the v2/graph.* receivers and the anti-entropy sweep —
+    // see `src/bin/bdsnode/jsonrpc/v2_graph.rs` and
+    // `src/bin/bdsnode/server/cluster.rs`.
+
+    /// Enumerate every node's natural key + LWW timestamp (AE diff input).
+    pub fn graph_node_summaries(&self) -> Result<Vec<NodeSummary>> {
+        self.graph()?.node_summaries()
+    }
+
+    /// Enumerate every edge's natural key + LWW timestamp (AE diff input).
+    pub fn graph_edge_summaries(&self) -> Result<Vec<EdgeSummary>> {
+        self.graph()?.edge_summaries()
+    }
+
+    /// Idempotent LWW upsert of a replica-sourced node (cache + FTS coherent).
+    pub fn graph_apply_node_lww(&self, node: &Node) -> Result<bool> {
+        self.graph()?.apply_node_lww(node)
+    }
+
+    /// Idempotent LWW upsert of a replica-sourced edge (cache coherent).
+    pub fn graph_apply_edge_lww(&self, edge: &Edge) -> Result<bool> {
+        self.graph()?.apply_edge_lww(edge)
+    }
+
+    /// Delete a single edge by id — used by anti-entropy to apply a
+    /// peer's edge tombstone.
+    pub fn graph_delete_edge(&self, edge_id: &Uuid) -> Result<bool> {
+        self.graph()?.delete_edge(edge_id)
     }
 }

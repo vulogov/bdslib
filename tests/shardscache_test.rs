@@ -443,3 +443,58 @@ fn test_info_accessor_reflects_auto_created_shards() {
     cache.shard(at(1_700_000_000)).unwrap();
     assert!(cache.info().shard_exists_at(at(1_700_000_000)).unwrap());
 }
+
+// ── regression: in-use shards are not evicted (Tantivy LockBusy guard) ────────
+
+fn tmp_cache_capped(duration: &str, max_open: usize) -> (TempDir, ShardsCache) {
+    let dir = TempDir::new().unwrap();
+    let cache = ShardsCache::with_config(
+        dir.path().to_str().unwrap(),
+        duration,
+        4,
+        engine().clone(),
+        ObservabilityStorageConfig::default(),
+        max_open,
+    )
+    .unwrap();
+    (dir, cache)
+}
+
+/// A shard still referenced by a caller's clone must NOT be evicted by
+/// LRU pressure: dropping the cache's copy would not release the
+/// shared `Arc<FTSEngine>` (and its Tantivy writer lock), so a re-open
+/// of the same directory would fail with `LockBusy`.  The cap goes
+/// "soft" while the shard is in use, and is enforced again once the
+/// caller drops its clone.
+#[test]
+fn test_in_use_shard_survives_eviction_pressure() {
+    let (_dir, cache) = tmp_cache_capped("1h", 1);
+
+    // Open shard A and HOLD the clone — this is the "in-use" caller.
+    let _held_a = cache.shard(at(0)).unwrap();
+    assert_eq!(cache.cached_count(), 1);
+
+    // Open shard B: with max_open_shards = 1 the LRU would normally
+    // evict A — but A is in use, so the cap goes soft and A is kept.
+    let _b = cache.shard(at(7_200)).unwrap();
+    assert_eq!(cache.cached_count(), 2, "in-use shard A retained despite the cap");
+
+    // Re-opening A must succeed — before the fix it was evicted, then
+    // re-opened against its own still-live writer lock → LockBusy.
+    let a_again = cache.shard(at(0));
+    assert!(
+        a_again.is_ok(),
+        "re-open of an in-use shard must not LockBusy: {:?}",
+        a_again.as_ref().err().map(|e| e.to_string()),
+    );
+
+    // Once every clone of A is dropped, the cap is enforceable again.
+    drop(_held_a);
+    drop(a_again);
+    let _c = cache.shard(at(14_400)).unwrap();
+    assert!(
+        cache.cached_count() <= 2,
+        "cap re-enforced once A is idle (got {})",
+        cache.cached_count(),
+    );
+}

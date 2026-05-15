@@ -123,6 +123,8 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v3/script.delete`](v3_script_delete.md) | Fully-replicated BUND script delete with tombstone. |
 | [`v3/cluster.sync`](v3_cluster_sync.md) | HMAC-authenticated admin RPC: force an immediate hint replay + anti-entropy tick. Phase 5 of the [cluster layer](../CLUSTER.md). |
 | [`v2/signal.get`](v2_signal_get.md) | Fetch a single signal's metadata by UUID. Used by anti-entropy to pull a missing signal. |
+| [`v5/graph.*`](v5_graph.md) | Relationship graph API of the global `ShardsManager` — typed, weighted, time-bounded nodes/edges; traversal (blast radius / shortest path); node-metadata full-text search; self-healing (`verify` / `repair` / `fingerprint`). A fully-replicated cluster store: writes fan out to every Alive peer, reads are local. |
+| [`v2/graph.apply.batch`](v2_graph.md) · `v2/graph.list_ids` · `v2/graph.node.get` · `v2/graph.edge.get` · `v2/graph.fingerprint` | Inter-node graph replication: the `v2/graph.apply.batch` fan-out receiver plus the anti-entropy enumeration / full-entity getters / divergence fingerprint. |
 | `v3/add.file` | Replicated NDJSON ingest: coordinator parses the file, then submits the records through the `v3/add.batch` path. Phase 6 of the [cluster layer](../CLUSTER.md). |
 | `v3/add.file.syslog` | Replicated RFC 3164 syslog ingest: same recipe as `v3/add.file` but uses the syslog parser. |
 | `v3/fulltext`, `v3/fulltext.get`, `v3/fulltext.recent` | Cluster-wide BM25 full-text search; UUID dedup, score average / first-seen / newest-first per method. |

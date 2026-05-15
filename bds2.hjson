@@ -35,10 +35,12 @@
     // Scheduler dedup window — see bds1.hjson for rationale.
     scheduler_dedup_window:  "60s"
 
-    full_mode_threshold:     3
+    // Full mode at 2 alive peers — see bds1.hjson for the rationale
+    // (a 3-node cluster tops out at 2 alive peers per node).
+    full_mode_threshold:     2
     replication_factor:      3
 
-    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache"]
+    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache", "graph"]
 
     // Floating bootstrap (see bds1.hjson for details).
     floating_bootstrap:      true
@@ -80,13 +82,34 @@
      anomaly_ratio:  0.02       // 0.0–0.10, rare-record fraction
      seed:           null       // null = entropy, integer = deterministic
 }
+// ── Shard retention — see bds1.hjson for the annotated rationale ──
 retention: {
-  enabled:                     true       // required to activate; default false
-  duration:                    "1day"   // humantime; e.g. "7days", "6h"
-  interval_secs:               300        // how often the background sweep runs
-  max_evictions_per_run:       50         // per‑sweep cap; 0 = no cap
-  dry_run:                     false      // log what would be evicted but don't delete
-  reload_drain_after_evict:    true       // re‑run drain mining after eviction
-  quorum_check_enabled:        false      // opt‑in cluster safety net (Phase 3)
+  enabled:                     true
+  duration:                    "1day"
+  interval_secs:               300
+  max_evictions_per_run:       50
+  dry_run:                     false
+  reload_drain_after_evict:    true
+  quorum_check_enabled:        true       // cluster safety net — only evict an interval peers also hold
+  quorum_min_peers:            1
+}
+
+// ── Data rebalancer — repairs under-replicated sharded telemetry ──
+rebalancer: {
+  enabled:                     true
+  interval:                    "2m"
+  batch_size:                  50
+  max_per_run:                 500
+  min_replication_factor:      null       // inherit cluster.replication_factor
+  pause_if_ingest_lag_p95_ms:  1000
+}
+
+// ── Self-healing — shard quarantine + rebuild healer ──
+self_healing: {
+  enabled:                     true
+  interval:                    "30s"
+  consistency_interval:        "5m"
+  recreate_failed_shards:      true       // Tier-3: safe in cluster mode — peers repopulate
+  failed_shard_recreate_after: "10m"
 }
 }

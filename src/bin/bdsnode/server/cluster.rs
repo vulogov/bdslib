@@ -328,6 +328,16 @@ pub async fn antientropy_tick(cluster: &Arc<bdslib::Cluster>) -> AntientropyStat
             Err(e) => log::warn!("[antientropy] {store} <- {}: {e}", peer.url),
         }
     }
+
+    // Graph store — two id-spaces (nodes + edges) plus a fingerprint
+    // pre-check, so it gets its own sync path rather than the generic
+    // one-id-space `sync_store`.
+    if cluster.config.full_replication_stores.iter().any(|s| s == "graph") {
+        match sync_graph(cluster, &peer).await {
+            Ok((pulled, tombs)) => { out.pulled += pulled; out.tombstones += tombs; }
+            Err(e) => log::warn!("[antientropy] graph <- {}: {e}", peer.url),
+        }
+    }
     out
 }
 
@@ -726,4 +736,202 @@ async fn overwrite_one(
         // Signals are append-only — no updates exist.
         _ => Ok(()),
     }
+}
+
+// ── graph anti-entropy ───────────────────────────────────────────────────────
+
+/// Parse a `Node` from the JSON shape `v2/graph.node.get` returns.
+fn json_to_graph_node(v: &serde_json::Value) -> Option<bdslib::graphstorage::Node> {
+    Some(bdslib::graphstorage::Node {
+        id:         uuid::Uuid::parse_str(v.get("id")?.as_str()?).ok()?,
+        node_type:  v.get("node_type")?.as_str()?.to_owned(),
+        ref_id:     v.get("ref_id")?.as_str()?.to_owned(),
+        attrs:      v.get("attrs").cloned().unwrap_or_else(|| serde_json::json!({})),
+        created_at: v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0),
+        updated_at: v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0),
+    })
+}
+
+/// Parse an `Edge` from the JSON shape `v2/graph.edge.get` returns.
+fn json_to_graph_edge(v: &serde_json::Value) -> Option<bdslib::graphstorage::Edge> {
+    Some(bdslib::graphstorage::Edge {
+        id:         uuid::Uuid::parse_str(v.get("id")?.as_str()?).ok()?,
+        src:        uuid::Uuid::parse_str(v.get("src")?.as_str()?).ok()?,
+        dst:        uuid::Uuid::parse_str(v.get("dst")?.as_str()?).ok()?,
+        edge_type:  v.get("edge_type")?.as_str()?.to_owned(),
+        weight:     v.get("weight").and_then(|x| x.as_f64()).unwrap_or(1.0),
+        directed:   v.get("directed").and_then(|x| x.as_bool()).unwrap_or(true),
+        attrs:      v.get("attrs").cloned().unwrap_or_else(|| serde_json::json!({})),
+        valid_from: v.get("valid_from").and_then(|x| x.as_i64()).unwrap_or(0),
+        valid_to:   v.get("valid_to").and_then(|x| x.as_i64()).unwrap_or(0),
+        created_at: v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0),
+        updated_at: v.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0),
+    })
+}
+
+/// Anti-entropy for the fully-replicated graph store.
+///
+/// Step 1 — compare cheap whole-store **fingerprints**; identical means
+/// already converged with this peer, so we skip the diff entirely.
+/// Step 2 — pull the peer's node + edge enumeration (`v2/graph.list_ids`)
+/// and our own; the entity ids are deterministic, so the diff is a pure
+/// id-set + LWW-`updated_at` comparison across two id-spaces.
+/// Step 3 — apply the peer's tombstones we are missing (delete + record).
+/// Step 4 — pull every node, then every edge, that is missing locally or
+/// older than the peer's copy, and apply it through the cache-/FTS-
+/// coherent `apply_*_lww` primitives.  Nodes before edges keeps
+/// referential integrity.
+///
+/// Returns `(entities_pulled, tombstones_applied)`.
+async fn sync_graph(
+    cluster: &Arc<bdslib::Cluster>,
+    peer:    &bdslib::cluster::Peer,
+) -> Result<(u64, u64), String> {
+    use std::collections::{HashMap, HashSet};
+
+    // ── 1. Fingerprint pre-check ──────────────────────────────────────────────
+    let remote_fp = replication::call_peer_v2(cluster, &peer.url, "v2/graph.fingerprint",
+        &serde_json::json!({})).await.map_err(|e| e.to_string())?;
+    let local_fp = tokio::task::spawn_blocking(|| -> Result<serde_json::Value, String> {
+        let db = bdslib::get_db().map_err(|e| e.to_string())?;
+        let f = db.graph_fingerprint().map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({ "nodes_hash": f.nodes_hash, "edges_hash": f.edges_hash }))
+    }).await.map_err(|e| e.to_string())??;
+    if remote_fp.get("nodes_hash") == local_fp.get("nodes_hash")
+        && remote_fp.get("edges_hash") == local_fp.get("edges_hash")
+    {
+        return Ok((0, 0)); // already converged with this peer
+    }
+
+    // ── 2. Enumerate both sides ───────────────────────────────────────────────
+    let remote = replication::call_peer_v2(cluster, &peer.url, "v2/graph.list_ids",
+        &serde_json::json!({})).await.map_err(|e| e.to_string())?;
+    let local = tokio::task::spawn_blocking(|| -> Result<serde_json::Value, String> {
+        let db = bdslib::get_db().map_err(|e| e.to_string())?;
+        let nodes = db.graph_node_summaries().map_err(|e| e.to_string())?;
+        let edges = db.graph_edge_summaries().map_err(|e| e.to_string())?;
+        let (ntomb, etomb) = match db.cluster() {
+            Some(c) => (
+                c.tombstones.list_for_store("graph_nodes").map_err(|e| e.to_string())?,
+                c.tombstones.list_for_store("graph_edges").map_err(|e| e.to_string())?,
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        Ok(serde_json::json!({
+            "nodes": nodes.iter()
+                .map(|n| serde_json::json!({ "id": n.id.to_string(), "updated_at": n.updated_at }))
+                .collect::<Vec<_>>(),
+            "edges": edges.iter()
+                .map(|e| serde_json::json!({ "id": e.id.to_string(), "updated_at": e.updated_at }))
+                .collect::<Vec<_>>(),
+            "node_tombstones": ntomb.iter().map(|t| t.id.to_string()).collect::<Vec<_>>(),
+            "edge_tombstones": etomb.iter().map(|t| t.id.to_string()).collect::<Vec<_>>(),
+        }))
+    }).await.map_err(|e| e.to_string())??;
+
+    let map_of = |v: &serde_json::Value, key: &str| -> HashMap<String, i64> {
+        v.get(key).and_then(|a| a.as_array()).map(|arr| arr.iter().filter_map(|i| {
+            Some((
+                i.get("id")?.as_str()?.to_owned(),
+                i.get("updated_at").and_then(|x| x.as_i64()).unwrap_or(0),
+            ))
+        }).collect()).unwrap_or_default()
+    };
+    let set_of = |v: &serde_json::Value, key: &str| -> HashSet<String> {
+        v.get(key).and_then(|a| a.as_array()).map(|arr| arr.iter()
+            .filter_map(|i| i.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    };
+    let local_nodes      = map_of(&local, "nodes");
+    let local_edges      = map_of(&local, "edges");
+    let local_node_tombs = set_of(&local, "node_tombstones");
+    let local_edge_tombs = set_of(&local, "edge_tombstones");
+
+    let mut pulled = 0u64;
+    let mut tombs_applied = 0u64;
+    let empty: Vec<serde_json::Value> = Vec::new();
+
+    // ── 3. Apply remote tombstones we are missing ─────────────────────────────
+    for t in remote.get("node_tombstones").and_then(|v| v.as_array()).unwrap_or(&empty) {
+        let id = match t.get("id").and_then(|v| v.as_str()) { Some(s) => s.to_owned(), None => continue };
+        if local_node_tombs.contains(&id) { continue; }
+        let id_u = match uuid::Uuid::parse_str(&id) { Ok(u) => u, Err(_) => continue };
+        let deleted_at = t.get("deleted_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let cluster_t = cluster.clone();
+        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let db = bdslib::get_db().map_err(|e| e.to_string())?;
+            if let Some(node) = db.graph_get_node_by_id(&id_u).map_err(|e| e.to_string())? {
+                let _ = db.graph_remove_node(&node.node_ref());
+            }
+            cluster_t.tombstones.mark_deleted("graph_nodes", id_u, deleted_at)
+                .map_err(|e| e.to_string())
+        }).await;
+        tombs_applied += 1;
+    }
+    for t in remote.get("edge_tombstones").and_then(|v| v.as_array()).unwrap_or(&empty) {
+        let id = match t.get("id").and_then(|v| v.as_str()) { Some(s) => s.to_owned(), None => continue };
+        if local_edge_tombs.contains(&id) { continue; }
+        let id_u = match uuid::Uuid::parse_str(&id) { Ok(u) => u, Err(_) => continue };
+        let deleted_at = t.get("deleted_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let cluster_t = cluster.clone();
+        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let db = bdslib::get_db().map_err(|e| e.to_string())?;
+            let _ = db.graph_delete_edge(&id_u);
+            cluster_t.tombstones.mark_deleted("graph_edges", id_u, deleted_at)
+                .map_err(|e| e.to_string())
+        }).await;
+        tombs_applied += 1;
+    }
+
+    // ── 4a. Pull missing / newer nodes ────────────────────────────────────────
+    for n in remote.get("nodes").and_then(|v| v.as_array()).unwrap_or(&empty) {
+        let id = match n.get("id").and_then(|v| v.as_str()) { Some(s) => s.to_owned(), None => continue };
+        if local_node_tombs.contains(&id) { continue; } // locally deleted — don't resurrect
+        let remote_ts = n.get("updated_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let need = match local_nodes.get(&id) { None => true, Some(&lt) => remote_ts > lt };
+        if !need { continue; }
+        let resp = match replication::call_peer_v2(cluster, &peer.url, "v2/graph.node.get",
+            &serde_json::json!({ "id": id })).await
+        {
+            Ok(r) => r,
+            Err(e) => { log::debug!("[antientropy] graph node.get {id}: {e}"); continue; }
+        };
+        let Some(node_json) = resp.get("node").filter(|v| !v.is_null()).cloned() else { continue };
+        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let db = bdslib::get_db().map_err(|e| e.to_string())?;
+            if let Some(node) = json_to_graph_node(&node_json) {
+                db.graph_apply_node_lww(&node).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }).await;
+        pulled += 1;
+    }
+
+    // ── 4b. Pull missing / newer edges (after nodes — referential order) ──────
+    for e in remote.get("edges").and_then(|v| v.as_array()).unwrap_or(&empty) {
+        let id = match e.get("id").and_then(|v| v.as_str()) { Some(s) => s.to_owned(), None => continue };
+        if local_edge_tombs.contains(&id) { continue; }
+        let remote_ts = e.get("updated_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let need = match local_edges.get(&id) { None => true, Some(&lt) => remote_ts > lt };
+        if !need { continue; }
+        let resp = match replication::call_peer_v2(cluster, &peer.url, "v2/graph.edge.get",
+            &serde_json::json!({ "id": id })).await
+        {
+            Ok(r) => r,
+            Err(e) => { log::debug!("[antientropy] graph edge.get {id}: {e}"); continue; }
+        };
+        let Some(edge_json) = resp.get("edge").filter(|v| !v.is_null()).cloned() else { continue };
+        let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let db = bdslib::get_db().map_err(|e| e.to_string())?;
+            if let Some(edge) = json_to_graph_edge(&edge_json) {
+                db.graph_apply_edge_lww(&edge).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }).await;
+        pulled += 1;
+    }
+
+    if pulled > 0 || tombs_applied > 0 {
+        log::info!("[antientropy] graph <- {}: pulled={pulled} tombstones={tombs_applied}", peer.url);
+    }
+    Ok((pulled, tombs_applied))
 }

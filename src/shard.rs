@@ -120,6 +120,19 @@ impl Shard {
         })
     }
 
+    /// True when a `Shard` clone is held outside the caller — i.e.
+    /// more than one `Shard` shares this shard's engines.
+    ///
+    /// `ShardsCache` uses this to avoid evicting a shard that a
+    /// request is still using: dropping the cache's copy would not
+    /// release the shared `Arc<FTSEngine>` (and the Tantivy writer
+    /// lock it holds), so a re-open of the same directory would fail
+    /// with `LockBusy`.  `fts` is the canary — every `Shard` clone
+    /// bumps its strong count by exactly one.
+    pub(crate) fn is_in_use(&self) -> bool {
+        Arc::strong_count(&self.fts) > 1
+    }
+
     // ── writes ────────────────────────────────────────────────────────────────
 
     /// Store a telemetry event and, if the record is classified as primary,

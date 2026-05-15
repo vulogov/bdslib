@@ -265,14 +265,31 @@ impl ShardsCache {
         state.map.insert(insert_key, shard.clone());
         state.lru.push_front(insert_key);
 
-        // Evict LRU shards until we're within the open-shard limit.
-        while state.map.len() > self.max_open_shards {
-            if let Some(oldest) = state.lru.pop_back() {
-                if let Some(evicted) = state.map.remove(&oldest) {
-                    let _ = evicted.sync();
+        // Evict LRU shards until we're within the open-shard limit —
+        // but NEVER evict a shard whose `Shard` is still referenced by
+        // a caller's clone.  Dropping the cache's copy would not
+        // release the shard's underlying engines (the clones share the
+        // same `Arc`s), so a later re-open of the same directory would
+        // fight the still-held Tantivy `IndexWriter` lock and fail with
+        // `LockBusy`.  An in-use shard is therefore kept (the cap is
+        // "soft") and re-checked on the next eviction pass once it goes
+        // idle.  `scanned` bounds the loop when every cached shard is
+        // in use.
+        let mut scanned = 0;
+        while state.map.len() > self.max_open_shards && scanned < state.lru.len() {
+            let Some(candidate) = state.lru.pop_back() else { break; };
+            scanned += 1;
+            match state.map.get(&candidate) {
+                Some(shard) if shard.is_in_use() => {
+                    // Still held outside the cache — can't reclaim it now.
+                    state.lru.push_front(candidate);
                 }
-            } else {
-                break;
+                Some(_) => {
+                    if let Some(evicted) = state.map.remove(&candidate) {
+                        let _ = evicted.sync();
+                    }
+                }
+                None => {} // already gone (raced with close_if_open)
             }
         }
 

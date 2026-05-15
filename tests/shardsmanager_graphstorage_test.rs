@@ -84,7 +84,7 @@ fn graph_nodes_and_edges_through_manager() {
     assert_eq!(mgr.graph_degree(&telem("a"), Direction::Out).unwrap(), 1);
     assert_eq!(mgr.graph_incoming(&telem("b"), &EdgeFilter::new()).unwrap().len(), 1);
 
-    assert_eq!(mgr.graph_unlink(&telem("a"), &telem("b"), "depends_on").unwrap(), 1);
+    assert_eq!(mgr.graph_unlink(&telem("a"), &telem("b"), "depends_on").unwrap().len(), 1);
     assert!(mgr.graph_outgoing(&telem("a"), &EdgeFilter::new()).unwrap().is_empty());
 }
 
@@ -252,7 +252,7 @@ fn graph_temporal_and_batch_through_manager() {
     )
     .unwrap();
     assert_eq!(
-        mgr.graph_expire_edge(&telem("hub"), &telem("transient"), "hot_path", 2_000).unwrap(),
+        mgr.graph_expire_edge(&telem("hub"), &telem("transient"), "hot_path", 2_000).unwrap().len(),
         1
     );
 

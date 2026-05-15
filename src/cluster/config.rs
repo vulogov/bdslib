@@ -83,7 +83,7 @@ impl ClusterConfig {
             full_mode_threshold:      3,
             replication_factor:       3,
             full_replication_stores:  vec!["docs".into(), "signals".into(), "scripts".into(),
-                                          "users".into(), "llm_cache".into()],
+                                          "users".into(), "llm_cache".into(), "graph".into()],
             antientropy_interval_secs: 300,
             hint_replay_interval_secs: 10,
             hint_max_age_secs:        86_400,
@@ -159,7 +159,8 @@ impl ClusterConfig {
                     .filter_map(|x| x.as_str().map(str::to_owned))
                     .collect()
             })
-            .unwrap_or_else(|| vec!["docs".into(), "signals".into(), "scripts".into(), "users".into()]);
+            .unwrap_or_else(|| vec!["docs".into(), "signals".into(), "scripts".into(),
+                                    "users".into(), "graph".into()]);
 
         let floating_bootstrap = block.get("floating_bootstrap")
             .and_then(|v| v.as_bool())

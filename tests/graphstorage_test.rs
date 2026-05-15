@@ -123,8 +123,8 @@ fn link_upserts_on_episode() {
 fn unlink_removes_edge() {
     let (_d, g) = store();
     g.link(&telem("a"), &telem("b"), EdgeSpec::new("calls")).unwrap();
-    assert_eq!(g.unlink(&telem("a"), &telem("b"), "calls").unwrap(), 1);
-    assert_eq!(g.unlink(&telem("a"), &telem("b"), "calls").unwrap(), 0);
+    assert_eq!(g.unlink(&telem("a"), &telem("b"), "calls").unwrap().len(), 1);
+    assert!(g.unlink(&telem("a"), &telem("b"), "calls").unwrap().is_empty());
     assert!(g.outgoing(&telem("a"), &EdgeFilter::new()).unwrap().is_empty());
 }
 
@@ -255,7 +255,7 @@ fn expire_edge_closes_window_preserves_history() {
     )
     .unwrap();
     // relationship ends at t=500
-    assert_eq!(g.expire_edge(&signal("s1"), &signal("s2"), "correlates_with", 500).unwrap(), 1);
+    assert_eq!(g.expire_edge(&signal("s1"), &signal("s2"), "correlates_with", 500).unwrap().len(), 1);
 
     // edge still exists (history preserved), but no longer open at t=1000
     assert_eq!(g.outgoing(&signal("s1"), &EdgeFilter::new()).unwrap().len(), 1);

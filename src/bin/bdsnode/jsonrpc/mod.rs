@@ -126,6 +126,8 @@ mod v3_help;
 mod v3_cluster_retention;
 mod v3_trends;
 mod v4_llm;
+mod v2_graph;
+mod v5_graph;
 
 use jsonrpsee::RpcModule;
 
@@ -249,6 +251,8 @@ pub fn build_module() -> RpcModule<()> {
     v3_cluster_retention::register(&mut module);
     v3_help::register(&mut module);
     v4_llm::register(&mut module);
+    v2_graph::register(&mut module);
+    v5_graph::register(&mut module);
     scheduler_last_seen::register(&mut module);
     v2_user::register(&mut module);
     v3_user::register(&mut module);

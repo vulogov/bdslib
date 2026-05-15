@@ -773,45 +773,82 @@ impl GraphStore {
     }
 
     /// Delete every episode of an edge between `from` and `to` of
-    /// `edge_type`, in either stored orientation.  Returns the row
-    /// count removed.
-    pub fn unlink(&self, from: &NodeRef, to: &NodeRef, edge_type: &str) -> Result<usize> {
+    /// `edge_type`, in either stored orientation.  Returns the ids of
+    /// the edges removed (empty when nothing matched) — the caller uses
+    /// them to write per-edge tombstones for cluster replication.
+    pub fn unlink(&self, from: &NodeRef, to: &NodeRef, edge_type: &str) -> Result<Vec<Uuid>> {
         let (a, b) = match (self.resolve(from)?, self.resolve(to)?) {
             (Some(a), Some(b)) => (a, b),
-            _ => return Ok(0),
+            _ => return Ok(Vec::new()),
         };
-        let n = self.db.execute_params(
+        let rows = self.db.select_all_params(
             "DELETE FROM edges WHERE edge_type = ?
-             AND ((src = ? AND dst = ?) OR (src = ? AND dst = ?))",
+             AND ((src = ? AND dst = ?) OR (src = ? AND dst = ?))
+             RETURNING edge_id",
             &[
                 SqlParam::Text(edge_type.to_owned()),
                 SqlParam::Text(a.to_string()), SqlParam::Text(b.to_string()),
                 SqlParam::Text(b.to_string()), SqlParam::Text(a.to_string()),
             ],
         )?;
-        self.cache.invalidate_edge_endpoints(&a, &b);
-        Ok(n)
+        let ids: Vec<Uuid> = rows.iter().map(|r| dyn_uuid(&r[0])).collect::<Result<_>>()?;
+        if !ids.is_empty() {
+            self.cache.invalidate_edge_endpoints(&a, &b);
+        }
+        Ok(ids)
+    }
+
+    /// Fetch an edge by id.  Used by the replication coordinator to
+    /// read back a just-written edge for fan-out.
+    pub fn get_edge(&self, edge_id: &Uuid) -> Result<Option<Edge>> {
+        let rows = self.db.select_all_params(
+            &format!("SELECT {EDGE_COLS} FROM edges WHERE edge_id = ?"),
+            &[SqlParam::Text(edge_id.to_string())],
+        )?;
+        match rows.first() {
+            Some(r) => Ok(Some(row_to_edge(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a single edge by id.  Returns `false` when it did not
+    /// exist.  Used by anti-entropy to apply a peer's edge tombstone.
+    pub fn delete_edge(&self, edge_id: &Uuid) -> Result<bool> {
+        let rows = self.db.select_all_params(
+            "DELETE FROM edges WHERE edge_id = ? RETURNING src, dst",
+            &[SqlParam::Text(edge_id.to_string())],
+        )?;
+        match rows.first() {
+            Some(r) => {
+                let (src, dst) = (dyn_uuid(&r[0])?, dyn_uuid(&r[1])?);
+                self.cache.invalidate_edge_endpoints(&src, &dst);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Close the validity window of the currently-open episode(s) of an
     /// edge by setting `valid_to = at` — the relationship "ended" but
-    /// stays queryable historically.  Returns the row count updated.
+    /// stays queryable historically.  Returns the ids of the edges
+    /// updated, so the caller can read them back for cluster fan-out.
     pub fn expire_edge(
         &self,
         from: &NodeRef,
         to: &NodeRef,
         edge_type: &str,
         at: i64,
-    ) -> Result<usize> {
+    ) -> Result<Vec<Uuid>> {
         let (a, b) = match (self.resolve(from)?, self.resolve(to)?) {
             (Some(a), Some(b)) => (a, b),
-            _ => return Ok(0),
+            _ => return Ok(Vec::new()),
         };
         let now = now_secs();
-        let n = self.db.execute_params(
+        let rows = self.db.select_all_params(
             "UPDATE edges SET valid_to = ?, updated_at = ?
              WHERE edge_type = ? AND valid_to > ?
-             AND ((src = ? AND dst = ?) OR (src = ? AND dst = ?))",
+             AND ((src = ? AND dst = ?) OR (src = ? AND dst = ?))
+             RETURNING edge_id",
             &[
                 SqlParam::Int(at), SqlParam::Int(now),
                 SqlParam::Text(edge_type.to_owned()), SqlParam::Int(at),
@@ -819,8 +856,11 @@ impl GraphStore {
                 SqlParam::Text(b.to_string()), SqlParam::Text(a.to_string()),
             ],
         )?;
-        self.cache.invalidate_edge_endpoints(&a, &b);
-        Ok(n)
+        let ids: Vec<Uuid> = rows.iter().map(|r| dyn_uuid(&r[0])).collect::<Result<_>>()?;
+        if !ids.is_empty() {
+            self.cache.invalidate_edge_endpoints(&a, &b);
+        }
+        Ok(ids)
     }
 
     /// Set the `weight` of an edge by id.  No-op (returns `false`) when

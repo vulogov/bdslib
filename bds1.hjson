@@ -54,16 +54,20 @@
     // like `* * * * *` can fire once per minute on a different node.
     scheduler_dedup_window:  "60s"
 
-    // Full mode at 3 alive peers — exercises the full→partial transition
-    // when one node goes down.
-    full_mode_threshold:     3
+    // Full mode at 2 alive peers.  In a 3-node cluster every node
+    // sees the other two, so the cluster reaches `full` when all
+    // three are up — and drops to `partial` the moment one node
+    // goes down.  (A threshold of 3 could never be met here:
+    // alive-peer count tops out at 2.)
+    full_mode_threshold:     2
     replication_factor:      3
 
-    // Fully-replicated stores swept by anti-entropy.  Matches the
-    // library default — users (Phase 7) + llm_cache (Phase 3.c) need
-    // to be listed explicitly here because this config overrides the
-    // default list entirely.
-    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache"]
+    // Fully-replicated stores swept by anti-entropy.  This config
+    // overrides the library default entirely, so every replicated
+    // store must be listed explicitly — docs / signals / scripts
+    // (Phase 4), users (Phase 7), llm_cache (Phase 3.c), and the
+    // relationship graph (`v5/graph.*`, see CLUSTER.md § 11.4).
+    full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache", "graph"]
 
     // Floating bootstrap: when n2/n3 restart and find n1 down, they'll
     // try every URL in their persisted peers.json in parallel — any
@@ -156,14 +160,55 @@ generate_realistic_data: {
      anomaly_ratio:  0.02       // 0.0–0.10, rare-record fraction
      seed:           null       // null = entropy, integer = deterministic
 }
+// ── Shard retention — time-based eviction of old sharded telemetry ──
 retention: {
   enabled:                     true       // required to activate; default false
-  duration:                    "1day"   // humantime; e.g. "7days", "6h"
+  duration:                    "1day"     // humantime; e.g. "7days", "6h"
   interval_secs:               300        // how often the background sweep runs
-  max_evictions_per_run:       50         // per‑sweep cap; 0 = no cap
+  max_evictions_per_run:       50         // per-sweep cap; 0 = no cap
   dry_run:                     false      // log what would be evicted but don't delete
-  reload_drain_after_evict:    true       // re‑run drain mining after eviction
-  quorum_check_enabled:        false      // opt‑in cluster safety net (Phase 3)
+  reload_drain_after_evict:    true       // re-run drain mining after eviction
+  // Cluster safety net: only evict a shard interval when at least
+  // `quorum_min_peers` Alive peers also hold it — prevents a sweep
+  // from wiping the cluster's only copy.  Enabled here because this
+  // is a real 3-node cluster.
+  quorum_check_enabled:        true
+  quorum_min_peers:            1
+}
+
+// ── Data rebalancer — repairs under-replicated sharded telemetry ──
+// Sharded writes (v2/add) replicate to replication_factor-1 random
+// Alive peers at write time; a record can end up under-replicated
+// when a peer was down and its hints aged out, or the cluster grew
+// afterwards.  Each tick the rebalancer finds those records and
+// pushes them to peers that don't have them (idempotent).  Distinct
+// from the anti-entropy sweep, which converges the fully-replicated
+// stores.  See BDSCONFIG.md § 5.6.
+rebalancer: {
+  enabled:                     true
+  interval:                    "2m"       // doc default 10m; faster here for test feedback
+  batch_size:                  50         // record IDs per has_records probe; clamped [1, 1000]
+  max_per_run:                 500        // records examined per tick — the rest waits
+  min_replication_factor:      null       // null = inherit cluster.replication_factor
+  pause_if_ingest_lag_p95_ms:  1000       // skip the tick when ingest is backed up; 0 = never pause
+}
+
+// ── Self-healing — shard quarantine + rebuild healer ──
+// A shard is three engines (DuckDB + Tantivy + HNSW) under one
+// directory.  Repeated open failures quarantine it; the healer then
+// repairs it cheapest-tier-first — transient re-open, then index
+// rebuild from DuckDB, then (Tier-3) recreate-empty so the peers'
+// rebalancers repopulate it.  See BDSCONFIG.md § 5.7.
+self_healing: {
+  enabled:                     true       // Tiers 1-2 — only ever touch already-quarantined shards
+  interval:                    "30s"      // heal-sweep cadence; clamped [10s, 1h]
+  consistency_interval:        "5m"       // cross-engine count-divergence sweep; "0s" disables
+  // Tier-3 is destructive — it recreates an unhealable shard empty.
+  // It only ever acts in cluster mode with the rebalancer enabled
+  // (the peers repopulate the fresh shard), so enabling it is
+  // coherent for this full 3-node cluster.
+  recreate_failed_shards:      true
+  failed_shard_recreate_after: "10m"      // unhealable-for-this-long before Tier-3 may act
 }
   // ── bdsweb "Analyze this!" buttons (under web.analyze.<target>) ──
   // Per-target sub-blocks; more targets (rca, signals, …) will slot

@@ -183,7 +183,7 @@ cluster: {
 
   // ── Phase 3+ knobs (parsed now, not yet enforced) ──
   replication_factor:        3
-  full_replication_stores:   ["docs", "signals", "scripts"]
+  full_replication_stores:   ["docs", "signals", "scripts", "users", "llm_cache", "graph"]
   antientropy_interval:      "5min"
   hint_replay_interval:      "10s"
   hint_max_age:              "24h"
@@ -208,7 +208,7 @@ cluster: {
 | `floating_bootstrap` | `true` | When `true`, bootstrap candidates include both `bootstrap` **and** every URL in persisted `peers.json`. When `false` (strict), only `bootstrap` is tried — `bootstrap` becomes mandatory at startup. See § 3.1. |
 | `bootstrap_retry_interval` | `"60s"` | Cadence for re-running the bootstrap pass when `alive_count() == 0`. |
 | `replication_factor` | `3` | (Phase 3) Target replica count for `v3/add`. |
-| `full_replication_stores` | `["docs","signals","scripts"]` | (Phase 4) Stores that replicate to **every** alive peer. |
+| `full_replication_stores` | `["docs","signals","scripts","users","llm_cache","graph"]` | (Phase 4+) Stores that replicate to **every** alive peer. `graph` is the relationship graph (§ 11.4). |
 | `peer_rpc_timeout` | `"2s"` | Per-peer RPC deadline for gossip and (Phase 2) fan-out reads. |
 | `scheduler_dedup_window` | `"5min"` | (Phase 6) How recently a stored script must have fired anywhere in the cluster to suppress this node's fire. See § 12. |
 | `session_ttl` | `"8h"` | (Phase 7) Validity of session cookies issued by `v3/user.authenticate`. See § 13. |
@@ -224,6 +224,7 @@ All cluster artefacts live under `<dbpath>/network/`:
   docs/                    # unchanged
   signals/                 # unchanged
   scripts/                 # unchanged
+  graph/                   # relationship graph — DuckDB + Tantivy; fully replicated (§ 11.4)
   network/
     node_id                # this node's stable UUIDv7 (Phase 1)
     peers.json             # last-known peer table; atomic write via tmp+rename (Phase 1)
@@ -293,6 +294,11 @@ Routes that stay on v2 (no v3 equivalent yet — future work):
 | `v3/count` (extended) | none | 5 | New `distinct: true` mode: UUID-set union for accurate counts under replication. |
 | `v2/doc.update.metadata` (extended) | none | 5 | New `if_newer: true` flag: only apply update when incoming `metadata.updated_at` > existing. |
 | `v2/script_update` (extended) | none | 5 | Same `if_newer` extension. |
+| `v5/graph.*` | none | 8 | Relationship-graph client API — nodes/edges, traversal, metadata search, self-healing. Writes are fully replicated; see [`jsonrpc_api/v5_graph.md`](jsonrpc_api/v5_graph.md). |
+| `v2/graph.apply.batch` | none | 8 | Graph replication receiver — applies a fan-out batch locally only (LWW, cache+FTS-coherent). |
+| `v2/graph.list_ids` | none | 8 | Graph anti-entropy enumeration: node + edge summaries (natural key + `updated_at`) + tombstones, two id-spaces. |
+| `v2/graph.node.get` · `v2/graph.edge.get` | none | 8 | Full-entity getters for the graph anti-entropy pull path. |
+| `v2/graph.fingerprint` | none | 8 | Cheap whole-store digest — the AE sweep's divergence pre-check. |
 
 **Why v3 reads are unauthenticated.** v3/* read methods are
 *client-to-coordinator* — a client hits the coordinator's v3 endpoint the
@@ -317,6 +323,8 @@ Per-method JSON shapes are documented under `Documentation/jsonrpc_api/`:
   [`v3_denoise_recent.md`](jsonrpc_api/v3_denoise_recent.md)
 - Replicated writes (Phase 3): [`v3_add.md`](jsonrpc_api/v3_add.md),
   [`v3_add_batch.md`](jsonrpc_api/v3_add_batch.md)
+- Relationship graph: [`v5_graph.md`](jsonrpc_api/v5_graph.md) (client API),
+  [`v2_graph.md`](jsonrpc_api/v2_graph.md) (replication receiver + anti-entropy)
 - Fully-replicated stores (Phase 4): [`v2_doc_list_ids.md`](jsonrpc_api/v2_doc_list_ids.md),
   [`v3_doc_add.md`](jsonrpc_api/v3_doc_add.md),
   [`v3_doc_update_metadata.md`](jsonrpc_api/v3_doc_update_metadata.md),
@@ -427,8 +435,10 @@ extra rows).
 ## 11. Fully-replicated stores (Phase 4)
 
 Phase 4 makes the docstore, signal store, and script store fully
-replicated across every Alive peer. The configured
-`cluster.full_replication_stores` (default `["docs", "signals", "scripts"]`)
+replicated across every Alive peer; later phases add the user store,
+the LLM inference cache, and the relationship graph (§ 11.4). The
+configured `cluster.full_replication_stores` (default
+`["docs", "signals", "scripts", "users", "llm_cache", "graph"]`)
 controls which stores participate.
 
 ### 11.1 Real-time fan-out
@@ -494,6 +504,38 @@ past `hint_max_age`) and heals partition divergences.
   one call). In practice signals replicate via real-time fan-out and
   hint replay; missing signals are non-critical (they're append-only
   events).
+
+### 11.4 Graph store
+
+The relationship graph (`<dbpath>/graph/`, served by the
+[`v5/graph.*`](jsonrpc_api/v5_graph.md) API) is also a fully-replicated
+store — `"graph"` is in the default `full_replication_stores`.  It
+follows the Phase 4 pattern with two graph-specific properties:
+
+- **Deterministic ids.** Node and edge ids are UUIDv5 of their natural
+  key, so the *same logical entity gets the same id on every node*.
+  The LWW reconciliation is therefore a pure id-set + `updated_at`
+  comparison — there is no id divergence to resolve, and the Phase 4
+  "updates are not re-replicated" limitation does **not** apply: the
+  graph anti-entropy pulls newer entities, not just adds.
+- **Two id-spaces, fingerprint-gated.** A graph is nodes *and* edges,
+  so it gets its own `sync_graph` path rather than the generic
+  one-id-space `sync_store`.  Each AE round first compares a cheap
+  whole-store [`v2/graph.fingerprint`](jsonrpc_api/v2_graph.md);
+  identical hashes mean the replicas have already converged and the
+  full enumeration diff is skipped.  On divergence it pulls
+  `v2/graph.list_ids` (node + edge summaries + tombstones), applies
+  missing tombstones, then pulls missing/newer nodes-then-edges
+  (referential order) via `v2/graph.node.get` / `v2/graph.edge.get`.
+
+Real-time fan-out is one `v2/graph.apply.batch` call per write
+carrying the affected nodes + edges; the receiver applies it locally
+through last-writer-wins primitives that keep the Tantivy index and
+in-memory caches coherent.  Node deletes tombstone under
+`graph_nodes`, edge deletes under `graph_edges`.
+
+Full API + replication detail: [`jsonrpc_api/v5_graph.md`](jsonrpc_api/v5_graph.md)
+and [`jsonrpc_api/v2_graph.md`](jsonrpc_api/v2_graph.md).
 
 ## 12. Cluster-aware Scheduler
 

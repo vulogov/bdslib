@@ -67,9 +67,31 @@ impl FTSEngine {
             }
         };
 
-        let writer: IndexWriter<TantivyDocument> = index
-            .writer(WRITER_HEAP_BYTES)
-            .map_err(|e| err_msg(format!("Cannot create index writer: {e}")))?;
+        // Creating the `IndexWriter` takes Tantivy's directory lock.
+        // Under shard-cache churn (LRU eviction, rebuild, recreate) a
+        // just-closed shard whose `Shard` clone is still briefly held
+        // by a caller keeps that lock until the clone drops — normally
+        // a few milliseconds.  Retry a bounded number of times so a
+        // transient `LockBusy` doesn't fail the whole shard open; a
+        // genuinely corrupt directory still surfaces (a non-lock error,
+        // or the retries exhausting).
+        let writer: IndexWriter<TantivyDocument> = {
+            const MAX_ATTEMPTS: u32 = 10;
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                match index.writer(WRITER_HEAP_BYTES) {
+                    Ok(w) => break w,
+                    Err(tantivy::TantivyError::LockFailure(_, _)) if attempt < MAX_ATTEMPTS => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(err_msg(format!("Cannot create index writer: {e}")));
+                    }
+                }
+            }
+        };
 
         let reader = index
             .reader_builder()
