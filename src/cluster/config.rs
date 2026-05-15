@@ -36,6 +36,21 @@ pub struct ClusterConfig {
     pub floating_bootstrap:        bool,
     /// Cadence for re-attempting bootstrap when no Alive peers exist.
     pub bootstrap_retry_interval_secs: u64,
+    /// Maximum total duration to keep retrying the **startup** bootstrap
+    /// before letting the node continue in standalone mode.  Designed
+    /// for the "the whole cluster is booting at once" case: peers may
+    /// take a few seconds to start listening, so a single first-pass
+    /// bootstrap that finds them all down is a false negative.  Within
+    /// this window we retry every
+    /// [`Self::startup_bootstrap_retry_interval_secs`].  Defaults to
+    /// 30 s.  `0` disables retry — first-pass result is final, same
+    /// behaviour the node had before this knob.
+    pub startup_bootstrap_max_wait_secs:     u64,
+    /// Sleep between startup bootstrap retries.  Tighter than
+    /// `bootstrap_retry_interval_secs` (which governs *steady-state*
+    /// re-bootstrap once the node is up) because we want to join the
+    /// cluster as soon as a peer becomes reachable.  Defaults to 2 s.
+    pub startup_bootstrap_retry_interval_secs: u64,
     /// How recently a stored script must have been executed by **any**
     /// node for the cluster-aware Scheduler to suppress this node's
     /// fire of the same script.  Standalone nodes ignore this knob.
@@ -91,6 +106,8 @@ impl ClusterConfig {
             max_fingerprints_per_peer: 100_000,
             floating_bootstrap:       true,
             bootstrap_retry_interval_secs: 60,
+            startup_bootstrap_max_wait_secs:     30,
+            startup_bootstrap_retry_interval_secs: 2,
             scheduler_dedup_window_secs: 300,
             session_ttl_secs:           8 * 3600,
             auth_rate_limit_per_minute: 10,
@@ -195,6 +212,10 @@ impl ClusterConfig {
             max_fingerprints_per_peer: parse_usize("max_fingerprints_per_peer", 100_000),
             floating_bootstrap,
             bootstrap_retry_interval_secs,
+            startup_bootstrap_max_wait_secs:
+                parse_dur("startup_bootstrap_max_wait", 30)?,
+            startup_bootstrap_retry_interval_secs:
+                parse_dur("startup_bootstrap_retry_interval", 2)?,
             scheduler_dedup_window_secs: parse_dur("scheduler_dedup_window", 300)?,
             session_ttl_secs:           parse_dur("session_ttl", 8 * 3600)?,
             auth_rate_limit_per_minute: block.get("auth_rate_limit_per_minute")
@@ -308,5 +329,55 @@ mod tests {
         assert_eq!(cfg.gossip_interval_secs, 10);
         assert_eq!(cfg.replication_factor, 5);
         assert_eq!(cfg.full_mode_threshold, 3);  // default
+    }
+
+    #[test]
+    fn startup_bootstrap_retry_defaults() {
+        let raw = r#"{
+            "cluster": {
+                "enabled":       true,
+                "shared_secret": "thisisalongenoughsecret-32",
+                "bind_url":      "http://10.0.0.7:9000",
+                "bootstrap":     "http://10.0.0.5:9000"
+            }
+        }"#;
+        let cfg = ClusterConfig::from_hjson_str(raw).unwrap();
+        assert_eq!(cfg.startup_bootstrap_max_wait_secs, 30);
+        assert_eq!(cfg.startup_bootstrap_retry_interval_secs, 2);
+    }
+
+    #[test]
+    fn startup_bootstrap_retry_humantime_parses() {
+        let raw = r#"{
+            "cluster": {
+                "enabled":                          true,
+                "shared_secret":                    "thisisalongenoughsecret-32",
+                "bind_url":                         "http://10.0.0.7:9000",
+                "bootstrap":                        "http://10.0.0.5:9000",
+                "startup_bootstrap_max_wait":       "2min",
+                "startup_bootstrap_retry_interval": "500ms"
+            }
+        }"#;
+        let cfg = ClusterConfig::from_hjson_str(raw).unwrap();
+        assert_eq!(cfg.startup_bootstrap_max_wait_secs, 120);
+        // humantime rounds sub-second values to 0 when as_secs() is
+        // called — that's fine, the cluster code floors retry interval
+        // at 1 s so the operator never accidentally tight-loops.
+        assert_eq!(cfg.startup_bootstrap_retry_interval_secs, 0);
+    }
+
+    #[test]
+    fn startup_bootstrap_retry_can_be_disabled() {
+        let raw = r#"{
+            "cluster": {
+                "enabled":                    true,
+                "shared_secret":              "thisisalongenoughsecret-32",
+                "bind_url":                   "http://10.0.0.7:9000",
+                "bootstrap":                  "http://10.0.0.5:9000",
+                "startup_bootstrap_max_wait": "0s"
+            }
+        }"#;
+        let cfg = ClusterConfig::from_hjson_str(raw).unwrap();
+        assert_eq!(cfg.startup_bootstrap_max_wait_secs, 0);
     }
 }

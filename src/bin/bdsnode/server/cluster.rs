@@ -71,9 +71,84 @@ async fn run(
     let cfg  = cluster.config.clone();
     let http = cluster.http.clone();
 
-    // One-shot bootstrap.  Best-effort: failures are logged and we keep
-    // ticking; gossip will reconcile when peers reappear.
-    record_bootstrap(&cluster, gossip::bootstrap(&cluster, &http).await);
+    // Startup bootstrap with bounded retry.
+    //
+    // The whole cluster commonly boots at once — peer URLs may not be
+    // listening for a few seconds after this node starts.  Without
+    // retry, the very first bootstrap pass sees "all targets refused
+    // connection" and the node enters standalone mode for up to
+    // `bootstrap_retry_interval_secs` (default 60 s) before the
+    // steady-state retry loop fires.
+    //
+    // Loop here:
+    //   - first pass always runs (preserves "standalone — no targets"
+    //     behaviour and the existing first-pass log line);
+    //   - if it joined ≥1 peer OR there were no candidates OR retry is
+    //     disabled (`startup_bootstrap_max_wait_secs == 0`), we're done;
+    //   - otherwise retry every `startup_bootstrap_retry_interval_secs`
+    //     until either a pass joins a peer or the total wall-clock
+    //     elapsed exceeds `startup_bootstrap_max_wait_secs`.
+    //   - shutdown signal aborts the retry cleanly.
+    //
+    // The steady-state floating re-bootstrap loop further down still
+    // runs as a safety net; this window just shortens the time-to-join
+    // on coordinated cluster startup from O(bootstrap_retry_interval)
+    // down to O(startup_bootstrap_retry_interval).
+    {
+        let max_wait = Duration::from_secs(cfg.startup_bootstrap_max_wait_secs);
+        let retry_interval = Duration::from_secs(
+            cfg.startup_bootstrap_retry_interval_secs.max(1),
+        );
+        let outcome = gossip::bootstrap(&cluster, &http).await;
+        let attempted_first = outcome.attempted;
+        let joined_first    = outcome.joined;
+        record_bootstrap(&cluster, outcome);
+
+        // Skip retry when: operator disabled it, there's nothing to
+        // bootstrap against (standalone), or we already succeeded.
+        if max_wait.is_zero() || attempted_first == 0 || joined_first > 0 {
+            // nothing to do — first pass was authoritative
+        } else {
+            log::info!(
+                "[cluster] startup bootstrap: 0/{attempted_first} target(s) reachable; \
+                 retrying every {retry_interval:?} for up to {max_wait:?} \
+                 (cluster may be booting)"
+            );
+            let started_at = Instant::now();
+            let mut attempt: u32 = 1;
+            'startup: loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown_rx => {
+                        log::debug!("[cluster] shutdown during startup bootstrap retry");
+                        return;
+                    }
+                    _ = tokio::time::sleep(retry_interval) => {}
+                }
+                attempt += 1;
+                let elapsed = started_at.elapsed();
+                let outcome = gossip::bootstrap(&cluster, &http).await;
+                let joined = outcome.joined;
+                record_bootstrap(&cluster, outcome);
+                if joined > 0 {
+                    log::info!(
+                        "[cluster] startup bootstrap joined {joined} peer(s) \
+                         on attempt #{attempt} after {elapsed:?}"
+                    );
+                    break 'startup;
+                }
+                if elapsed >= max_wait {
+                    log::warn!(
+                        "[cluster] startup bootstrap: no peer joined within {max_wait:?} \
+                         ({attempt} attempts) — entering standalone; gossip will keep \
+                         retrying every {}s",
+                        cfg.bootstrap_retry_interval_secs,
+                    );
+                    break 'startup;
+                }
+            }
+        }
+    }
 
     let mut tick_no: u64 = 0;
     let interval = Duration::from_secs(cfg.gossip_interval_secs.max(1));

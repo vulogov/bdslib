@@ -119,6 +119,8 @@ fn defaults_block() -> JsonValue {
             "max_fingerprints_per_peer":     100_000,
             "floating_bootstrap":            true,
             "bootstrap_retry_interval_secs": 60,
+            "startup_bootstrap_max_wait_secs":       30,
+            "startup_bootstrap_retry_interval_secs": 2,
             "scheduler_dedup_window_secs":   300,
             "session_ttl_secs":              8 * 3600,
             "auth_rate_limit_per_minute":    10,
