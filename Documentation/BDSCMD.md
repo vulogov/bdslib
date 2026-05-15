@@ -242,12 +242,14 @@ Ingest a single telemetry document. The document may be passed as an inline JSON
 string or read from stdin.
 
 ```
-bdscmd add [DOC]
+bdscmd add [DOC] [--source <name>] [--sync]
 ```
 
-| Argument | Description |
+| Argument / flag | Description |
 |---|---|
 | `DOC` | JSON object. Omit or pass `-` to read from stdin. |
+| `--source <name>` | Explicit data-origin override. Beats every other resolution step (top-level `source`/`origin`/`host`, `data.*` keys, deployment default). See [`Documentation/SOURCE.md`](SOURCE.md). |
+| `--sync` | Wait until the record is durably stored; response carries the assigned UUID. |
 
 The document must be a valid telemetry record with at least `key` and `data`
 fields (see `v2/add` API docs for the full schema).
@@ -255,14 +257,17 @@ fields (see `v2/add` API docs for the full schema).
 **Examples:**
 
 ```bash
-# inline document
-bdscmd add '{"key":"cpu.usage","data":0.73,"timestamp":1745600000}'
+# inline document — no --source, doc carries `host: "web-01"` → metadata.source = "web-01"
+bdscmd add '{"key":"cpu.usage","data":{"value":0.73,"host":"web-01"},"timestamp":1745600000}'
+
+# explicit source overrides every other signal
+bdscmd add --source pipeline-a '{"key":"cpu.usage","data":0.73,"timestamp":1745600000}'
 
 # from stdin
-echo '{"key":"mem.used","data":4294967296}' | bdscmd add
+echo '{"key":"mem.used","data":4294967296}' | bdscmd add --source manual-import
 
-# heredoc
-bdscmd add <<'EOF'
+# heredoc + sync round-trip
+bdscmd add --sync --source ops-runbook <<'EOF'
 {
   "key": "disk.io",
   "data": {"read_mbps": 120, "write_mbps": 45},
@@ -275,7 +280,8 @@ EOF
 
 ```json
 {
-  "queued": 1
+  "queued": 1,
+  "source": "pipeline-a"
 }
 ```
 
@@ -287,24 +293,26 @@ Ingest multiple documents in a single request. Accepts either a JSON array or an
 NDJSON stream (one document per line).
 
 ```
-bdscmd add-batch [SOURCE]
+bdscmd add-batch [INPUT] [--source <name>] [--sync]
 ```
 
-| Argument | Description |
+| Argument / flag | Description |
 |---|---|
-| `SOURCE` | Path to a JSON array or NDJSON file, or `-` / omitted for stdin |
+| `INPUT` | Path to a JSON array or NDJSON file, or `-` / omitted for stdin.  (Renamed from `SOURCE` in earlier docs to avoid colliding with the new `--source` flag.) |
+| `--source <name>` | Explicit data-origin override applied uniformly to EVERY doc in the batch.  Absent → per-doc resolution (so a mixed batch with per-record `host` fields gets per-record sources). |
+| `--sync` | Wait until every record is durably stored; response carries the assigned UUIDs. |
 
 **Examples:**
 
 ```bash
-# JSON array from stdin
+# JSON array from stdin — per-doc resolution (each doc's data.host wins)
 printf '[{"key":"a","data":1},{"key":"b","data":2}]' | bdscmd add-batch
 
-# NDJSON file
-bdscmd add-batch /tmp/events.ndjson
+# NDJSON file with one source for the whole batch
+bdscmd add-batch /tmp/events.ndjson --source backfill-2026-q1
 
-# NDJSON from another tool
-bdscli generate log -n 500 | bdscmd add-batch
+# NDJSON from another tool, sync mode
+bdscli generate log -n 500 | bdscmd add-batch --source synth --sync
 ```
 
 **Output:**
@@ -323,12 +331,13 @@ Queue an NDJSON file for background ingestion. The path must be accessible from
 the server's filesystem (not the client's).
 
 ```
-bdscmd add-file <PATH>
+bdscmd add-file <PATH> [--source <name>]
 ```
 
-| Argument | Description |
+| Argument / flag | Description |
 |---|---|
 | `PATH` | Absolute path to the NDJSON file on the server's filesystem |
+| `--source <name>` | Explicit data-origin override applied to every record parsed from the file. Absent → per-record resolution (typically lands the deployment default since NDJSON records rarely carry their own host tag). |
 
 The file is validated (exists, is a regular file, non-empty, readable) before
 being queued. Use `bdscmd status` to monitor the `file_queue` and `file_name`
@@ -337,7 +346,7 @@ fields until ingestion completes.
 **Example:**
 
 ```bash
-bdscmd add-file /data/logs/events-2026-04-26.ndjson
+bdscmd add-file /data/logs/events-2026-04-26.ndjson --source backfill
 
 # monitor until done
 while [[ "$(bdscmd --raw status | jq '.file_queue')" -gt 0 ]]; do
@@ -350,7 +359,8 @@ echo "ingestion complete"
 
 ```json
 {
-  "queued": "/data/logs/events-2026-04-26.ndjson"
+  "queued": "/data/logs/events-2026-04-26.ndjson",
+  "source": "backfill"
 }
 ```
 
@@ -362,22 +372,26 @@ Queue an RFC 3164 syslog file for background ingestion. Each syslog line is
 parsed and converted to a structured telemetry document before storage.
 
 ```
-bdscmd add-file-syslog <PATH>
+bdscmd add-file-syslog <PATH> [--source <name>]
 ```
 
-| Argument | Description |
+| Argument / flag | Description |
 |---|---|
 | `PATH` | Absolute path to the syslog file on the server's filesystem |
+| `--source <name>` | Explicit data-origin override applied to every syslog record parsed from the file. Absent → per-line resolution promotes the parsed RFC 3164 `host` to `source` (natural per-host grouping). Pass an explicit value (e.g. `"rsyslog-shipper-a"`) to override the host and assign every record from this file to one logical pipeline source. |
 
 Monitor the `syslog_file_queue` and `syslog_file_name` fields in `v2/status`
 to track progress.
 
-**Example:**
+**Examples:**
 
 ```bash
-# submit a syslog file generated by bdscli
+# Per-host grouping (default) — each line tagged with its parsed RFC 3164 host
 bdscli generate syslog -n 1000 > /tmp/test.syslog
 bdscmd add-file-syslog /tmp/test.syslog
+
+# Explicit pipeline override — every record gets source = "rsyslog-shipper-a"
+bdscmd add-file-syslog /var/log/syslog --source rsyslog-shipper-a
 
 # poll until the syslog queue drains
 until [[ "$(bdscmd --raw status | jq '.syslog_file_queue')" -eq 0 ]]; do
@@ -392,9 +406,13 @@ bdscmd fulltext -q kernel -d 1h
 
 ```json
 {
-  "queued": "/tmp/test.syslog"
+  "queued": "/tmp/test.syslog",
+  "source": null
 }
 ```
+
+`source: null` confirms the caller did not pass `--source` — per-line
+resolution will tag each record with its parsed RFC 3164 host.
 
 ---
 

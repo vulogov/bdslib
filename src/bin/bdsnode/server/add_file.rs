@@ -133,9 +133,11 @@ fn run(
             recv(ingest_rx) -> msg => {
                 match msg {
                     Ok(path_val) => {
-                        if let Some(path) = path_val.as_str() {
+                        let (path_opt, source) = parse_ingest_msg(&path_val);
+                        if let Some(path) = path_opt {
                             process_file(
-                                path,
+                                &path,
+                                source.as_deref(),
                                 batch_size,
                                 &mut batch,
                                 &mut total_records,
@@ -143,7 +145,7 @@ fn run(
                                 &current_file,
                             );
                         } else {
-                            log::warn!("[add_file] received non-string value on ingest_file channel, skipping");
+                            log::warn!("[add_file] received unparseable value on ingest_file channel, skipping: {path_val}");
                         }
                     }
                     Err(_) => break,
@@ -152,9 +154,11 @@ fn run(
             recv(shutdown_rx) -> _ => {
                 // Drain every file path still in the channel before exiting.
                 while let Ok(path_val) = ingest_rx.try_recv() {
-                    if let Some(path) = path_val.as_str() {
+                    let (path_opt, source) = parse_ingest_msg(&path_val);
+                    if let Some(path) = path_opt {
                         process_file(
-                            path,
+                            &path,
+                            source.as_deref(),
                             batch_size,
                             &mut batch,
                             &mut total_records,
@@ -191,8 +195,23 @@ fn run(
 /// document, and append to `batch`.  Flushes the batch whenever it reaches
 /// `batch_size`.  Sets `current_file` to `Some(path)` for the duration of
 /// processing and resets it to `None` before returning.
+/// Same wire-format dispatcher used by `add_file_syslog`'s worker —
+/// accepts the legacy bare-string and the new `{path, source}` object.
+fn parse_ingest_msg(v: &JsonValue) -> (Option<String>, Option<String>) {
+    if let Some(s) = v.as_str() {
+        return (Some(s.to_owned()), None);
+    }
+    if let Some(obj) = v.as_object() {
+        let path = obj.get("path").and_then(|p| p.as_str()).map(str::to_owned);
+        let source = obj.get("source").and_then(|s| s.as_str()).map(str::to_owned);
+        return (path, source);
+    }
+    (None, None)
+}
+
 fn process_file(
     path:         &str,
+    source:       Option<&str>,
     batch_size:   usize,
     batch:        &mut Vec<JsonValue>,
     total_records: &mut u64,
@@ -225,6 +244,17 @@ fn process_file(
         "[add_file] parsed {} records from {path:?}",
         file_docs.len()
     );
+
+    // Pre-inject explicit source on every parsed doc, mirroring the
+    // syslog worker.  Absent source → per-doc resolution still runs
+    // at flush time (top-level fields → data.* → default).
+    if let Some(s) = source {
+        let cfg = bdslib::common::source::get();
+        let validated = bdslib::common::source::validate(s, cfg);
+        for d in file_docs.iter_mut() {
+            bdslib::common::source::inject(d, &validated);
+        }
+    }
 
     for doc in file_docs {
         batch.push(doc);

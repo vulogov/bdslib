@@ -6,6 +6,22 @@ use serde_json::Value;
 pub struct Cmd {
     /// JSON document to ingest (reads from stdin if omitted)
     doc: Option<String>,
+
+    /// Explicit source override (e.g. host name, pipeline label).
+    /// Beats every other resolution step (top-level keys in the doc,
+    /// `data.*` keys, deployment default).  When omitted, the doc
+    /// falls through to the resolution chain — typically lands the
+    /// `"global"` default unless the doc carries a `source`,
+    /// `origin`, or `host` key (top-level or nested under `data`).
+    #[arg(long)]
+    source: Option<String>,
+
+    /// When `true`, bypass the ingest queue and wait until the
+    /// record is durably stored.  The response carries the
+    /// assigned UUID instead of a queue ack.  Forwarded to
+    /// `v2/add`'s `sync` param.
+    #[arg(long)]
+    sync: bool,
 }
 
 pub fn run(url: &str, _session: &str, args: Cmd) -> Result<Value> {
@@ -19,5 +35,13 @@ pub fn run(url: &str, _session: &str, args: Cmd) -> Result<Value> {
         }
     };
     let doc: Value = serde_json::from_str(raw.trim()).context("invalid JSON document")?;
-    crate::client::call(url, "v2/add", serde_json::json!({ "doc": doc }))
+    let mut params = serde_json::Map::new();
+    params.insert("doc".into(), doc);
+    if args.sync {
+        params.insert("sync".into(), Value::Bool(true));
+    }
+    if let Some(s) = args.source {
+        params.insert("source".into(), Value::String(s));
+    }
+    crate::client::call(url, "v2/add", Value::Object(params))
 }

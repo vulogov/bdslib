@@ -18,13 +18,14 @@ Enqueues a single JSON telemetry document for persistence.  Two modes:
 |---|---|---|---|---|
 | `doc` | object | yes | — | The JSON telemetry document to ingest. Must contain `"timestamp"` (Unix seconds), `"key"` (string), and `"data"` (any JSON value). An optional `"id"` field (UUIDv7 string) may be supplied; one is generated if absent. All other fields are stored as metadata. |
 | `sync` | bool | no | `false` | When `true`, run synchronously and return the assigned UUID. |
+| `source` | string | no | resolved from doc | Explicit data-origin override. Beats every other resolution step (top-level `source`/`origin`/`host`, `data.*` keys, deployment default). Stored at `metadata.source` and projected to a top-level `source` field on every read. See [`Documentation/SOURCE.md`](../SOURCE.md) for the full resolution chain. |
 
 ## Response
 
 **Async mode** (default):
 
 ```json
-{ "queued": 1 }
+{ "queued": 1, "source": "global" }
 ```
 
 **Sync mode** (`sync: true`):
@@ -39,6 +40,7 @@ Enqueues a single JSON telemetry document for persistence.  Two modes:
 | Field | Type | Description |
 |---|---|---|
 | `queued` | integer | Async only — always `1`, confirms channel acceptance. |
+| `source` | string | Async only — the resolved source value parked on the queued doc (operator's confirmation before the flusher writes it). |
 | `id` | string | Sync only — the UUIDv7 of the stored record. |
 | `synced` | bool | Sync only — always `true`, distinguishes the response shape. |
 
@@ -118,3 +120,6 @@ curl -s -X POST http://127.0.0.1:9000 \
   For bulk ingest, use [`v2/add.batch`](v2_add_batch.md) instead.
 - Use [`v2/add.batch`](v2_add_batch.md) to enqueue multiple documents
   in a single request.
+- See [`Documentation/SOURCE.md`](../SOURCE.md) for the full source
+  resolution chain, the auto-graph-node behaviour, and the `data:`
+  configuration block in `bds.hjson`.

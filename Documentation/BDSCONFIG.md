@@ -349,6 +349,48 @@ Reported in `v2/status` (`jsoncache_pct`, `jsoncache_len`,
 `jsoncache_capacity`) and on the bdsweb Dashboard.  TTL eviction
 runs lazily on access + via a background sweeper every 60 s.
 
+### 2.8 Data-origin (`source`) resolution
+
+```hjson
+data: {
+  default_source:                   "global"
+  source_keys:                      ["source", "origin", "host"]
+  source_max_length:                256
+  auto_create_source_graph_node:    true
+}
+```
+
+| Field                              | Type           | Default                            | Required |
+|------------------------------------|----------------|------------------------------------|----------|
+| `default_source`                   | string         | `"global"`                         | no       |
+| `source_keys`                      | array<string\> | `["source","origin","host"]`       | no       |
+| `source_max_length`                | integer        | `256`                              | no       |
+| `auto_create_source_graph_node`    | bool           | `true`                             | no       |
+
+Every primary record ingested through `v2/add` / `v2/add.batch` /
+`v2/add.file` / `v2/add.file.syslog` (and the corresponding `v3/*`
+fan-outs, the Rust `ShardsManager::add*` API, hint replay, and
+anti-entropy) carries a `source` tag — the deployment-meaningful
+name for *where it originated*.  Stored at `metadata.source`;
+projected to a top-level `"source"` field on every read.
+
+Resolution priority (highest wins):
+
+1. Explicit API parameter (`--source` flag, `source` JSON-RPC param,
+   `add_with_source(doc, Some(...))`).
+2. `source_keys` walked in order, top-level then `data.*` per key.
+3. `default_source`.
+
+`auto_create_source_graph_node = true` means the data path
+auto-creates a `Source:<name>` graph node the first time this
+process observes each value (deterministic UUIDv5 — converges
+across cluster peers without coordination).  Set `false` for
+deployments that manage their graph manually.
+
+Full chain, worked examples, LLM-prompt-anchor integration, and the
+backwards-compatibility matrix in
+[`Documentation/SOURCE.md`](SOURCE.md).
+
 ---
 
 ## 3. Ingest tuning

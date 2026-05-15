@@ -427,6 +427,63 @@ impl ShardsManager {
     /// (e.g. the document has no `"data"` field) are non-fatal and do not
     /// prevent the document from being stored.
     pub fn add(&self, doc: JsonValue) -> Result<Uuid> {
+        self.add_with_source(doc, None)
+    }
+
+    /// Same as [`add`](Self::add), but with an explicit source override.
+    ///
+    /// `source = None` falls through to the resolution chain in
+    /// [`crate::common::source::resolve`] — operators picking up the
+    /// pre-existing `add()` API keep the auto-extraction behaviour
+    /// (top-level / `data.*` keys → default `"global"`).  Pass
+    /// `Some("…")` to override every other signal — the
+    /// `bdsnode --source` flag, `v2/add` RPC param, and `bdscmd
+    /// add --source` all funnel through this path.
+    ///
+    /// Resolution writes the chosen value into the doc as
+    /// `doc["source"] = …`; `ObservabilityStorage::build_metadata`
+    /// then folds it into `metadata.source` (the canonical query /
+    /// LLM-prompt-anchor location).  When
+    /// `data.auto_create_source_graph_node = true`, the first time
+    /// this process sees a new source value the matching
+    /// `Source:<name>` graph node is also created (idempotent —
+    /// memoised in `common::source::try_mark_seen`).
+    pub fn add_with_source(&self, mut doc: JsonValue, source: Option<&str>) -> Result<Uuid> {
+        let cfg = crate::common::source::get();
+        let resolved = crate::common::source::resolve(source, &doc, cfg);
+        crate::common::source::inject(&mut doc, &resolved);
+        let id = self.add_inner(doc)?;
+        self.ensure_source_graph_node(&resolved, cfg);
+        Ok(id)
+    }
+
+    /// First-observation auto-creation of the `Source:<name>` graph
+    /// node.  Idempotent + memoised so per-record ingest doesn't fire
+    /// a graph write per row.  Logged at DEBUG on success, WARN on
+    /// failure — a graph hiccup doesn't break the data path.
+    fn ensure_source_graph_node(
+        &self,
+        source: &str,
+        cfg: &crate::common::source::SourceConfig,
+    ) {
+        if !cfg.auto_create_source_graph_node { return; }
+        if !crate::common::source::try_mark_seen(source) { return; }
+        let nref = crate::graphstorage::NodeRef::new("Source", source.to_owned());
+        let attrs = serde_json::json!({});
+        match self.graph_add_node(&nref, attrs) {
+            Ok(node_id) => log::debug!(
+                "[source] auto-created graph node Source:{source} → {node_id}"
+            ),
+            Err(e) => log::warn!(
+                "[source] failed to auto-create graph node Source:{source}: {e} \
+                 (ingest continues; rerun graph add manually if needed)"
+            ),
+        }
+    }
+
+    /// Internal — the original `add` body, kept private so the public
+    /// `add` / `add_with_source` entry points share one implementation.
+    fn add_inner(&self, doc: JsonValue) -> Result<Uuid> {
         let maybe_cluster_id: Option<usize> = if let Some(drain) = &self.drain {
             if let Ok(mut parser) = drain.lock() {
                 let result = parser.parse_json_with_callback(&doc, |meta, body| {
@@ -485,6 +542,40 @@ impl ShardsManager {
     ///
     /// Returns UUIDs in the same order as the input documents.
     pub fn add_batch(&self, docs: Vec<JsonValue>) -> Result<Vec<Uuid>> {
+        self.add_batch_with_source(docs, None)
+    }
+
+    /// Batched sibling of [`add_with_source`](Self::add_with_source).
+    /// One `source` override applies to every record in `docs`; absent
+    /// override falls through to per-doc resolution (so a mixed batch
+    /// with different `host` values still gets per-record sources).
+    pub fn add_batch_with_source(
+        &self,
+        mut docs: Vec<JsonValue>,
+        source: Option<&str>,
+    ) -> Result<Vec<Uuid>> {
+        if docs.is_empty() {
+            return Ok(vec![]);
+        }
+        let cfg = crate::common::source::get();
+        // Distinct sources observed in this batch — used after the
+        // write succeeds to fire one graph-node create per new source
+        // rather than per record.
+        let mut distinct: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for d in docs.iter_mut() {
+            let resolved = crate::common::source::resolve(source, d, cfg);
+            crate::common::source::inject(d, &resolved);
+            distinct.insert(resolved);
+        }
+        let ids = self.add_batch_inner(docs)?;
+        for s in &distinct {
+            self.ensure_source_graph_node(s, cfg);
+        }
+        Ok(ids)
+    }
+
+    /// Internal — the original `add_batch` body.
+    fn add_batch_inner(&self, docs: Vec<JsonValue>) -> Result<Vec<Uuid>> {
         if docs.is_empty() {
             return Ok(vec![]);
         }

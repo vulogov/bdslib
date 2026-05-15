@@ -183,6 +183,7 @@ Contexts are evicted after a configurable idle timeout (default 300 s).
 |----------|-------------|
 | [BDSCONFIG.md](BDSCONFIG.md) | **`bds.hjson` reference** — every config key consumed by bdsnode / bdsweb / bdslib, with type, default, required/optional, tuning advice, warnings, cross-key relationships, and a per-binary matrix |
 | [BDSNODE_TUNING_GUIDE.md](BDSNODE_TUNING_GUIDE.md) | **One-stop tuning guide** — goal-oriented (performance / reliability / functionality): which knob to turn for which symptom, why every default is what it is, how the knobs interact, three ready-to-use profiles, and a fully-annotated `bds.hjson` |
+| [SOURCE.md](SOURCE.md) | **`source` — the data-origin axis** — how every ingested record gets tagged with a canonical origin, the resolution chain (explicit param → `source_keys` walked top-level then `data.*` → default `"global"`), storage layout (`metadata.source`), graph alignment (auto-created `Source:<name>` nodes), LLM-prompt anchoring, the `data:` config block, full backwards-compatibility matrix |
 | [DATABASE.md](DATABASE.md) | **Full storage architecture overview** — every store, what role it plays, on-disk layout, what gets written when, threading and pooling, operational notes |
 | [STORAGEENGINE.md](STORAGEENGINE.md) | `StorageEngine` — DuckDB core with R2D2 connection pool |
 | [SHARD.md](SHARD.md) | `Shard` — single time-partition: telemetry, FTS, vector |

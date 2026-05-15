@@ -134,9 +134,11 @@ fn run(
             recv(ingest_rx) -> msg => {
                 match msg {
                     Ok(path_val) => {
-                        if let Some(path) = path_val.as_str() {
+                        let (path_opt, source) = parse_ingest_msg(&path_val);
+                        if let Some(path) = path_opt {
                             process_file(
-                                path,
+                                &path,
+                                source.as_deref(),
                                 batch_size,
                                 &mut batch,
                                 &mut total_records,
@@ -144,7 +146,7 @@ fn run(
                                 &current_syslog_file,
                             );
                         } else {
-                            log::warn!("[add_file_syslog] received non-string value on ingest_file_syslog channel, skipping");
+                            log::warn!("[add_file_syslog] received unparseable value on ingest_file_syslog channel, skipping: {path_val}");
                         }
                     }
                     Err(_) => break,
@@ -153,9 +155,11 @@ fn run(
             recv(shutdown_rx) -> _ => {
                 // Drain every file path still in the channel before exiting.
                 while let Ok(path_val) = ingest_rx.try_recv() {
-                    if let Some(path) = path_val.as_str() {
+                    let (path_opt, source) = parse_ingest_msg(&path_val);
+                    if let Some(path) = path_opt {
                         process_file(
-                            path,
+                            &path,
+                            source.as_deref(),
                             batch_size,
                             &mut batch,
                             &mut total_records,
@@ -194,8 +198,32 @@ fn run(
 /// whenever it reaches `batch_size`.  Sets `current_syslog_file` to
 /// `Some(path)` for the duration of processing and resets it to `None` before
 /// returning.
+/// Decode the pipe message into `(Option<path>, Option<source>)`.
+///
+/// Accepts both wire formats so any caller bypassing the RPC handler
+/// (tests, internal helpers) still works:
+///
+/// - `JsonValue::String(path)` — legacy bare-path message.  No source
+///   override; per-record resolution falls through to the parsed
+///   syslog `host`.
+/// - `JsonValue::Object({"path": "...", "source": "..."?})` — current
+///   shape emitted by `v2/add.file.syslog`.  An absent / null
+///   `source` field behaves like the legacy bare-path case.
+fn parse_ingest_msg(v: &JsonValue) -> (Option<String>, Option<String>) {
+    if let Some(s) = v.as_str() {
+        return (Some(s.to_owned()), None);
+    }
+    if let Some(obj) = v.as_object() {
+        let path = obj.get("path").and_then(|p| p.as_str()).map(str::to_owned);
+        let source = obj.get("source").and_then(|s| s.as_str()).map(str::to_owned);
+        return (path, source);
+    }
+    (None, None)
+}
+
 fn process_file(
     path:                &str,
+    source:              Option<&str>,
     batch_size:          usize,
     batch:               &mut Vec<JsonValue>,
     total_records:       &mut u64,
@@ -223,6 +251,19 @@ fn process_file(
         "[add_file_syslog] parsed {} records from {path:?}",
         file_docs.len()
     );
+
+    // When the operator supplied an explicit source for the file,
+    // pre-inject it into every parsed doc so the flusher's resolution
+    // chain picks the operator's choice over the per-record syslog
+    // `host` field.  Absent source → leave docs unmodified so each
+    // record falls through to its own `data.host` via `source_keys`.
+    if let Some(s) = source {
+        let cfg = bdslib::common::source::get();
+        let validated = bdslib::common::source::validate(s, cfg);
+        for d in file_docs.iter_mut() {
+            bdslib::common::source::inject(d, &validated);
+        }
+    }
 
     for doc in file_docs {
         batch.push(doc);

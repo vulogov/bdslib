@@ -19,6 +19,7 @@ runtime into a single cohesive system backed by DuckDB.
 | **Time-series shards** | DuckDB partitioned by configurable time windows; LRU shard cache; R2D2 connection pool |
 | **Shard retention** | Optional online time-based eviction — drops shards whose `end_ts` is older than `retention.duration`.  Per-node, opt-in; tokio sweeper + manual `v2/retention.sweep` RPC; cache invalidation (`JsonCache::drop_window`) + drain re-seed after each sweep.  Cluster-wide policy auditing via `v3/cluster.retention.status` surfaces drift between peers.  Phase 3 quorum (`retention.quorum_check_enabled`, opt-in) refuses to evict shards whose interval isn't held by enough other peers.  See [`Documentation/RETENTION.md`](Documentation/RETENTION.md). |
 | **Observability records** | Primary / secondary record model with redb-backed deduplication fingerprinting |
+| **Data-origin (`source`) axis** | Every ingested record gets a canonical `source` tag stored at `metadata.source` and projected back to a top-level `source` field on every read.  Resolution chain: explicit API param → walked `source_keys` (top-level then `data.*`, default `["source","origin","host"]`) → deployment default `"global"`.  First observation of each value auto-creates a `Source:<name>` graph node (deterministic UUIDv5, converges across cluster peers).  Per-record on `v2/add`, `v2/add.batch`, `v2/add.file`; per-line auto-promote from the parsed RFC 3164 host on `v2/add.file.syslog` (or override with `--source`).  Configurable via the `data:` hjson block.  See [`Documentation/SOURCE.md`](Documentation/SOURCE.md). |
 | **Document knowledge base** | Metadata (JSON) + raw content (BLOB) + per-document HNSW vector index; chunked file ingestion |
 | **Frequency tracking** | `(timestamp, id)` observation store for event-rate analysis over time |
 | **Signal store** | Named severity signals with arbitrary metadata and semantic search |
@@ -262,11 +263,16 @@ bdscmd status
 # Single record
 bdscmd add --key cpu.usage --data '{"value": 0.72}'
 
-# Batch from NDJSON file
-bdscmd add-file /path/to/records.ndjson
+# Single record with explicit data-origin tag (metadata.source = "api-01")
+bdscmd add --source api-01 '{"key": "cpu.usage", "data": {"value": 0.72}, "timestamp": 1700000000}'
 
-# Syslog file
+# Batch from NDJSON file — every record tagged with one source
+bdscmd add-file /path/to/records.ndjson --source backfill-2026-q1
+
+# Syslog file — without --source, every line auto-tags with its parsed host
 bdscmd add-file-syslog /var/log/syslog
+# Syslog file with explicit override (every record gets source = "rsyslog-shipper-a")
+bdscmd add-file-syslog /var/log/syslog --source rsyslog-shipper-a
 ```
 
 **5. Search and summarise**

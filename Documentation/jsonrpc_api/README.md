@@ -138,10 +138,10 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | `v3/signals`, `v3/signals_query` | Cluster-wide signal queries; UUID dedup with score average for semantic search. |
 | `v3/tpl.list`, `v3/tpl.search`, `v3/tpl.get`, `v3/tpl.template_by_id`, `v3/tpl.templates_recent`, `v3/tpl.templates_by_timestamp` | Cluster-wide template-store reads; UUID dedup with first-non-null-peer-wins for single-record fetches. |
 | `v3/search.get` | Cluster-wide semantic vector search returning full documents. UUID dedup + score average. |
-| [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence |
-| [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence |
-| [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion |
-| [`v2/add.file.syslog`](v2_add_file_syslog.md) | Validate and enqueue an RFC 3164 syslog file for async background ingestion; each line is parsed and converted to a structured telemetry document |
+| [`v2/add`](v2_add.md) | Enqueue a single telemetry document for async persistence (optional `source` param for data-origin tag — see [SOURCE.md](../SOURCE.md)) |
+| [`v2/add.batch`](v2_add_batch.md) | Enqueue a list of telemetry documents for async persistence (optional `source` applied to every doc) |
+| [`v2/add.file`](v2_add_file.md) | Validate and enqueue a file of newline-delimited JSON telemetry documents for async background ingestion (optional `source` applied to every record) |
+| [`v2/add.file.syslog`](v2_add_file_syslog.md) | Validate and enqueue an RFC 3164 syslog file for async background ingestion; each line is parsed and converted to a structured telemetry document.  Without `source`, per-line resolution auto-promotes the parsed RFC 3164 host to `metadata.source` (natural per-host grouping). |
 | [`v2/timeline`](v2_timeline.md) | Earliest and latest event timestamps across all shards |
 | [`v2/count`](v2_count.md) | Total number of telemetry records, optionally filtered by time window |
 | [`v2/shards`](v2_shards.md) | List of shards with time boundaries, path, and primary/secondary counts |

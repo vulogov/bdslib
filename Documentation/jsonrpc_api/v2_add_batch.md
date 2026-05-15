@@ -12,6 +12,7 @@ The call returns as soon as all documents are accepted by the channel.
 |---|---|---|---|
 | `docs` | array of objects | yes | The JSON telemetry documents to ingest. Each must contain `"timestamp"` (Unix seconds), `"key"` (string), and `"data"` (any JSON value). An optional `"id"` (UUID v7) may be supplied; one is generated if absent. All other fields are stored as metadata. |
 | `sync` | bool | no (default `false`) | When `true`, bypass the ingest queue and call `ShardsManager::add_batch` directly on a blocking thread. The response carries the assigned UUIDv7s instead of the bare queue acknowledgement. Used by [`v3/add.batch`](v3_add_batch.md) fan-out so the coordinator can distinguish success from failure on the receiver. |
+| `source` | string | no | Explicit data-origin override applied uniformly to EVERY doc in `docs`. Beats per-doc resolution from top-level `source`/`origin`/`host` and `data.*` keys. Absent → each doc resolves independently, so a mixed batch (e.g. NDJSON with per-record `host` fields) still gets per-record sources. See [`Documentation/SOURCE.md`](../SOURCE.md). |
 
 ## Response
 
@@ -79,3 +80,4 @@ curl -s -X POST http://127.0.0.1:9000 \
 - Documents are forwarded to the batch thread; the thread combines them with records from concurrent `v2/add` calls into the same DuckDB transaction (subject to `pipe_batch_size`, default 500, and `pipe_timeout_ms`, default 500).
 - Persistence is asynchronous — a successful response means all documents are queued, not yet written to disk. The background sync task (default cadence 60 s — see `sync_interval_secs`) bounds how long writes can sit in the WAL before checkpoint.
 - For single-document ingestion use [`v2/add`](v2_add.md). For sync ingest with a UUID round-trip in the same call, use `v2/add` with `"sync": true`.
+- The optional `source` param tags every doc in the batch with one data-origin label. Absent → per-doc resolution applies (top-level / `data.*` keys → deployment default). Full chain in [`Documentation/SOURCE.md`](../SOURCE.md).

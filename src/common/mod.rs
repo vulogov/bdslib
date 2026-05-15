@@ -9,6 +9,7 @@ pub mod logparser;
 pub mod math;
 pub mod pipe;
 pub mod realistic;
+pub mod source;
 pub mod sql;
 pub mod time;
 pub mod timerange;

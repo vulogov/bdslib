@@ -10,6 +10,7 @@ The call returns immediately after validation — the file is ingested asynchron
 |---|---|---|---|
 | `session` | string | yes | UUID v7 session identifier. Reserved for future result caching; accepted and logged but not currently used. |
 | `path` | string | yes | Absolute path to the file to ingest. The server checks that the path refers to a regular file, that the file is non-empty, and that it is readable before queuing it. |
+| `source` | string | no | Explicit data-origin override applied to every record parsed from the file. Absent → per-record resolution runs (top-level `source`/`origin`/`host` and `data.*` keys → deployment default). NDJSON records rarely carry a host tag on their own, so the typical effect of omitting `source` is that every line lands the deployment default (`"global"`). See [`Documentation/SOURCE.md`](../SOURCE.md). |
 
 ## File format
 
@@ -31,12 +32,13 @@ Lines that fail JSON parsing or fail validation are silently skipped by the back
 ## Response
 
 ```json
-{ "queued": "/var/log/telemetry/batch_001.jsonl" }
+{ "queued": "/var/log/telemetry/batch_001.jsonl", "source": "backfill" }
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `queued` | string | The path that was accepted and enqueued for ingestion. |
+| `source` | string \| null | Echo of the resolved `source` param (operator confirmation).  `null` when the caller didn't pass `source` — the per-record resolution chain handles it at the worker. |
 
 ## Example
 
@@ -76,3 +78,4 @@ curl -s -X POST http://127.0.0.1:9000 \
 - The background thread processes files in the order they are received. Batch size and flush timeout are controlled by `file_batch_size` and `file_timeout_ms` in the hjson config (defaults: 100 records, 5000 ms).
 - The `"ingest_file"` channel is bounded by `ingest_channel_capacity` (default 100000). Set the config to `0` to revert to the legacy unbounded behaviour.
 - For single-record or low-volume ingestion use [`v2/add`](v2_add.md) or [`v2/add.batch`](v2_add_batch.md) instead.
+- The internal pipe wire format on `"ingest_file"` is `{path, source?}`. The bare-string legacy shape is still accepted by the worker for any caller that bypasses this handler. See [`Documentation/SOURCE.md`](../SOURCE.md) for the source resolution chain.

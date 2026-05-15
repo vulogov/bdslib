@@ -107,6 +107,59 @@ fn raise_nofile_limit(limit: u64) {
     }
 }
 
+/// Read the optional `data:` block from `bds.hjson` and install the
+/// resulting [`bdslib::common::source::SourceConfig`].
+///
+/// Every key in the block is optional — missing block / missing key
+/// / invalid value all keep the library defaults (default_source
+/// "global", source_keys ["source","origin","host"], max_length 256,
+/// auto_create_source_graph_node true).
+fn apply_data_config(config_path: Option<&str>) {
+    use bdslib::common::source::{configure, SourceConfig};
+    let Some(path) = config_path else {
+        configure(SourceConfig::default());
+        return;
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        configure(SourceConfig::default());
+        return;
+    };
+    let Ok(val) = serde_hjson::from_str::<serde_hjson::Value>(&raw) else {
+        configure(SourceConfig::default());
+        return;
+    };
+    let block = val.as_object()
+        .and_then(|o| o.get("data"))
+        .and_then(|d| d.as_object());
+
+    let mut cfg = SourceConfig::default();
+    if let Some(b) = block {
+        if let Some(s) = b.get("default_source").and_then(|v| v.as_str()) {
+            cfg.default_source = s.to_owned();
+        }
+        if let Some(arr) = b.get("source_keys").and_then(|v| v.as_array()) {
+            cfg.source_keys = arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            if cfg.source_keys.is_empty() {
+                cfg.source_keys = SourceConfig::default().source_keys;
+            }
+        }
+        if let Some(n) = b.get("source_max_length").and_then(|v| v.as_f64()) {
+            cfg.source_max_length = (n as usize).max(1);
+        }
+        if let Some(b_flag) = b.get("auto_create_source_graph_node").and_then(|v| v.as_bool()) {
+            cfg.auto_create_source_graph_node = b_flag;
+        }
+    }
+    log::info!(
+        "[source] default={:?} keys={:?} max_length={} auto_graph_node={}",
+        cfg.default_source, cfg.source_keys, cfg.source_max_length,
+        cfg.auto_create_source_graph_node,
+    );
+    configure(cfg);
+}
+
 #[derive(Parser)]
 #[command(name = "bdsnode", about = "BDS JSON-RPC 2.0 server")]
 struct Cli {
@@ -199,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
     // per-site instrumentation.  Default kicks in (500 ms) when no
     // hjson key is present.
     apply_slow_query_threshold(cli.config.as_deref());
+    apply_data_config(cli.config.as_deref());
 
     jsonrpc::chat_ollama::init(cli.config.as_deref())
         .context("failed to initialise Ollama config")?;

@@ -4,12 +4,25 @@ use serde_json::Value;
 
 #[derive(Args)]
 pub struct Cmd {
-    /// JSON array of documents, or NDJSON file path (reads from stdin if omitted)
+    /// JSON array of documents, or NDJSON file path.  `-` or omitted
+    /// reads from stdin.  (Renamed from `source` to `input` so the
+    /// new `--source` flag doesn't collide with the positional.)
+    input: Option<String>,
+
+    /// Explicit source override applied to EVERY doc in the batch.
+    /// Beats per-doc resolution from top-level / `data.*` keys.
+    #[arg(long)]
     source: Option<String>,
+
+    /// When `true`, bypass the ingest queue and wait until every
+    /// record is durably stored.  Forwarded to `v2/add.batch`'s
+    /// `sync` param.
+    #[arg(long)]
+    sync: bool,
 }
 
 pub fn run(url: &str, _session: &str, args: Cmd) -> Result<Value> {
-    let raw = match args.source {
+    let raw = match args.input {
         Some(ref path) if path != "-" => {
             std::fs::read_to_string(path).with_context(|| format!("cannot read {path}"))?
         }
@@ -33,5 +46,13 @@ pub fn run(url: &str, _session: &str, args: Cmd) -> Result<Value> {
             .collect::<Result<Vec<_>>>()?
     };
 
-    crate::client::call(url, "v2/add.batch", serde_json::json!({ "docs": docs }))
+    let mut params = serde_json::Map::new();
+    params.insert("docs".into(), Value::Array(docs));
+    if args.sync {
+        params.insert("sync".into(), Value::Bool(true));
+    }
+    if let Some(s) = args.source {
+        params.insert("source".into(), Value::String(s));
+    }
+    crate::client::call(url, "v2/add.batch", Value::Object(params))
 }

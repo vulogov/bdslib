@@ -10,6 +10,7 @@ The call returns immediately after validation — the file is ingested asynchron
 |---|---|---|---|
 | `session` | string | yes | UUID v7 session identifier. Accepted and logged but not used for routing. |
 | `path` | string | yes | Absolute path to the syslog file. The server checks that the path refers to a regular file, that the file is non-empty, and that it is readable before queuing it. |
+| `source` | string | no | Explicit data-origin override applied to every syslog record parsed from the file. Absent → per-record resolution falls back to the parsed RFC 3164 `host` field (auto-promoted from `data.host` via the `source_keys` chain), then to the deployment default. Pass an explicit value (e.g. `"rsyslog-shipper-a"`) when you want every line from this file to share one source even though the hostnames vary. See [`Documentation/SOURCE.md`](../SOURCE.md). |
 
 ## File format
 
@@ -33,12 +34,13 @@ Lines that cannot be parsed are silently skipped by the background thread.
 ## Response
 
 ```json
-{ "queued": "/var/log/syslog" }
+{ "queued": "/var/log/syslog", "source": null }
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `queued` | string | The path that was accepted and enqueued for ingestion. |
+| `source` | string \| null | Echo of the resolved `source` param. `null` when the caller didn't pass `source` — the worker falls through to the per-line parsed RFC 3164 host for each record. |
 
 ## Example
 
@@ -67,7 +69,11 @@ curl -s -X POST http://127.0.0.1:9000 \
 ## bdscmd
 
 ```bash
+# Per-record source falls back to the parsed RFC 3164 host on each line
 bdscmd add-file-syslog --path /var/log/syslog
+
+# Explicit override — every line in the file gets the same source
+bdscmd add-file-syslog --path /var/log/syslog --source rsyslog-shipper-a
 ```
 
 ## Error responses
@@ -84,3 +90,4 @@ bdscmd add-file-syslog --path /var/log/syslog
 - The `"ingest_file_syslog"` channel is bounded by `ingest_channel_capacity` (default 100000). Set the config to `0` to revert to the legacy unbounded behaviour.
 - For JSON telemetry files use [`v2/add.file`](v2_add_file.md) instead.
 - For single records or low-volume ingestion use [`v2/add`](v2_add.md) or [`v2/add.batch`](v2_add_batch.md).
+- The internal pipe wire format on `"ingest_file_syslog"` is `{path, source?}`. The bare-string legacy shape is still accepted by the worker for any caller that bypasses this handler.  Per-line resolution (when `source` is absent) auto-promotes the parsed `data.host` to `source` via the `source_keys` chain — see [`Documentation/SOURCE.md`](../SOURCE.md) for the full priority list.
