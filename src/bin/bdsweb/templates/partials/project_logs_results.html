@@ -1,0 +1,73 @@
+<!-- Mode badge -->
+<div class="flex justify-end mb-2">
+  <span class="text-xs {{ mode_badge.class }}" title="{{ mode_badge.tooltip }}"
+        style="padding: 0.15rem 0.6rem; border-radius: 9999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);">
+    via {{ mode_badge.label }}{{ mode_badge.extra }}
+  </span>
+</div>
+
+<!-- Stat tiles -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+  <div class="card rounded-lg p-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Training input</div>
+    <div class="text-2xl font-semibold text-slate-200">{{ n_unique_inputs }}</div>
+    <div class="text-xs text-slate-600">unique · {{ duration_back }} window</div>
+  </div>
+  <div class="card rounded-lg p-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Records seen</div>
+    <div class="text-2xl font-semibold text-slate-200">{{ n_raw_inputs }}</div>
+    <div class="text-xs text-slate-600">across cluster (pre-dedup)</div>
+  </div>
+  <div class="card rounded-lg p-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Projected events</div>
+    <div class="text-2xl font-semibold {% if n_projected > 0 %}text-emerald-300{% else %}text-slate-300{% endif %}">{{ n_projected }}</div>
+    <div class="text-xs text-slate-600">over next {{ duration_forward }}</div>
+  </div>
+  <div class="card rounded-lg p-3">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Bin granularity</div>
+    <div class="text-2xl font-semibold text-slate-200">{% if n_projected > 0 %}{{ events.len() }}{% else %}—{% endif %}</div>
+    <div class="text-xs text-slate-600">rows after consensus cut</div>
+  </div>
+</div>
+
+{% if is_empty %}
+<div class="card rounded-lg p-6 text-center text-slate-500 text-sm">
+  No projection produced.<br>
+  <span class="text-xs text-slate-600 mt-1 block">
+    Common causes: training window has too few records (try widening
+    <span class="text-slate-300 font-medium">{{ duration_back }}</span>),
+    or the consensus threshold rejected every bin (try lowering it).
+    Cluster-mode projections need at least one peer ingesting primary
+    records inside the window.
+  </span>
+</div>
+{% else %}
+<div class="card rounded-lg overflow-hidden">
+  <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+    <span class="text-sm font-medium text-slate-200">Projected events</span>
+    <span class="text-xs text-slate-600">offsets relative to now · ordered by time</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th class="text-right">#</th>
+        <th class="text-right">+offset</th>
+        <th class="text-right">Consensus</th>
+        <th>State (drain3 template)</th>
+        <th>Exemplar</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td class="text-right text-slate-500 font-mono">{{ loop.index }}</td>
+        <td class="text-right text-slate-300 font-mono">+{{ "{:.0}"|format(e.offset_secs) }}s</td>
+        <td class="text-right font-mono {{ e.consensus_class }}">{{ "{:.2}"|format(e.transition_prob) }}</td>
+        <td class="font-mono text-blue-300 text-xs" style="max-width: 28rem; word-break: break-all;">{{ e.source_state }}</td>
+        <td class="font-mono text-slate-300 text-xs" style="max-width: 38rem; word-break: break-all;">{{ e.text }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}

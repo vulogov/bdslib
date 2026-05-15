@@ -115,6 +115,8 @@ struct WebConfig {
     perf_analyze:                      state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Administration → Configuration → "Analyze this!".
     configuration_analyze:             state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Analysis → Project Logs → "Analyze this!".
+    project_logs_analyze:              state::AnalyzeTargetConfig,
 }
 
 /// True when `host` is a loopback bind — a loopback IP (`127.0.0.0/8`,
@@ -155,6 +157,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         rca_templates_analyze:             state::AnalyzeTargetConfig::rca_templates_default(),
         perf_analyze:                      state::AnalyzeTargetConfig::perf_default(),
         configuration_analyze:             state::AnalyzeTargetConfig::configuration_default(),
+        project_logs_analyze:              state::AnalyzeTargetConfig::project_logs_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -254,6 +257,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     let rca_templates_analyze             = parse_target("rca_templates",             state::AnalyzeTargetConfig::rca_templates_default());
     let perf_analyze                      = parse_target("perf",                      state::AnalyzeTargetConfig::perf_default());
     let configuration_analyze             = parse_target("configuration",             state::AnalyzeTargetConfig::configuration_default());
+    let project_logs_analyze              = parse_target("project_logs",              state::AnalyzeTargetConfig::project_logs_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -287,6 +291,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         rca_templates_analyze,
         perf_analyze,
         configuration_analyze,
+        project_logs_analyze,
     }
 }
 
@@ -518,6 +523,12 @@ async fn main() {
         cfg.configuration_analyze.max_rows,
         cfg.configuration_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.project_logs: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.project_logs_analyze.timeout_secs,
+        cfg.project_logs_analyze.max_rows,
+        cfg.project_logs_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -540,6 +551,7 @@ async fn main() {
         cfg.rca_templates_analyze,
         cfg.perf_analyze,
         cfg.configuration_analyze,
+        cfg.project_logs_analyze,
     );
 
     // Background pollers, each kept alive by `supervise`: a panic in a
@@ -610,6 +622,9 @@ async fn main() {
         .route("/anomaly_recent",         get(routes::anomaly_recent::page))
         .route("/anomaly_recent/results", get(routes::anomaly_recent::results))
         .route("/anomaly_recent/analyze", post(routes::anomaly_recent::analyze))
+        .route("/project_logs",           get(routes::project_logs::page))
+        .route("/project_logs/results",   get(routes::project_logs::results))
+        .route("/project_logs/analyze",   post(routes::project_logs::analyze))
         .route("/denoise_recent",         get(routes::denoise_recent::page))
         .route("/denoise_recent/results", get(routes::denoise_recent::results))
         .route("/denoise_recent/analyze", post(routes::denoise_recent::analyze))

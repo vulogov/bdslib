@@ -17,6 +17,7 @@ pub mod logs;
 pub mod perf;
 pub mod primary_lsa_query_summary;
 pub mod primary_lsa_summary;
+pub mod project_logs;
 pub mod primary_query_summary;
 pub mod primary_summary;
 pub mod rca;

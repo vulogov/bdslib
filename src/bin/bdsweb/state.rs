@@ -1014,6 +1014,74 @@ pub const DEFAULT_CONFIGURATION_ANALYZE_PROMPT: &str =
      move on rather than padding.  Do not invent knobs that are not in \
      the supplied data.";
 
+/// Default prompt for `web.analyze.project_logs` — output of
+/// `v?/project_logs`, a semi-Markov projection of likely future log /
+/// event arrivals.  The supplied payload is one `_kind=projection_meta`
+/// row (training window, projection window, n_unique_inputs, model
+/// config) followed by N `_kind=projected_event` rows with
+/// `offset_secs`, `text`, `source_state` (drain3 template), and
+/// `transition_prob` (Monte Carlo consensus, `[0, 1]`).
+///
+/// The model's job: read the projection as an early-warning trace,
+/// not as a literal prediction.  A high-consensus path of error /
+/// fail / timeout / panic states is the actionable signal; a diverse
+/// low-consensus mix is the normal-operation signal.
+pub const DEFAULT_PROJECT_LOGS_ANALYZE_PROMPT: &str =
+    "You are reviewing a semi-Markov projection of likely future log / event \
+     arrivals on a system, built from the records observed in the past \
+     `duration_back` window.  The projection covers the next `duration_forward` \
+     and is the *consensus* across many Monte Carlo rollouts — each event's \
+     `transition_prob` is the share of rollouts that placed that state in that \
+     time bin (1.0 = unanimous, 0.10 = bare-minimum-consensus, anything between \
+     is partial agreement across the rollouts).\n\
+     \n\
+     The payload contains one `_kind=projection_meta` row describing the \
+     window + model config, then one `_kind=projected_event` row per emitted \
+     event with `offset_secs` (seconds from `now`), `source_state` (the drain3 \
+     template the state represents, e.g. `kernel: NMI received on CPU <*>`), \
+     `text` (a concrete exemplar line from training), and `transition_prob`.\n\
+     \n\
+     Read the projection as an *early-warning trace*, not a literal forecast — \
+     it tells you what kind of activity the chain currently believes is most \
+     likely, given recent operational patterns.  Produce a concise analysis \
+     covering:\n\
+     \n\
+     1. **Headline verdict** — one line: does the projected future look like \
+        steady-state healthy operation, an in-progress incident extrapolated \
+        forward, an oncoming failure cascade, or just noise?  Anchor it to \
+        the dominant projected state(s).\n\
+     2. **High-consensus signals** — projected events with `transition_prob ≥ \
+        0.5` are what the chain agreed on across most rollouts.  List them \
+        verbatim (template + first time-bin), grouped by theme.  These are the \
+        events most likely to actually occur.\n\
+     3. **Failure-flavoured states** — call out any state whose template \
+        contains `error`, `fail`, `timeout`, `panic`, `denied`, `unauthorized`, \
+        `oom`, `refused`, non-2xx HTTP, or similar trouble vocabulary.  Spell \
+        out the implication if it lands in the projection window.\n\
+     4. **Concerning patterns / sequences** — when two or more high-consensus \
+        states together imply one condition (e.g. `auth fail` followed by \
+        `sshd disconnect` is a brute-force pattern; `disk full` followed by \
+        `nginx restart` is a known operational cascade).  This is the value of \
+        higher-order Markov over single-event spotting.\n\
+     5. **Low-consensus diversity** — if most events have `transition_prob ≤ \
+        0.20`, the chain has no strong opinion and the projection is essentially \
+        \"more of the same noise\".  Say so honestly — that's a *positive* \
+        signal of normal operation.\n\
+     6. **One concrete next step** — given the projection, what should the \
+        operator do RIGHT NOW (before the projected events have a chance to \
+        occur)?  Examples: pre-scale a queue, run a runbook step, drain a \
+        node, alert a team, or simply continue monitoring.  Prefer one \
+        specific action over a list of options.\n\
+     \n\
+     Quote `source_state` templates verbatim when citing evidence so the \
+     operator can grep the live log stream.  Be terse; bullet points are \
+     fine.  If the projection is dominated by a single high-consensus state \
+     (e.g. >80% of bins) say so plainly — that often means the chain is \
+     stuck in a loop because the recent window WAS dominated by that one \
+     pattern, which is itself the operational signal.  If `n_unique_inputs` \
+     is small (<20) or the input window is short, flag the projection as \
+     low-confidence rather than over-interpreting noise.";
+
 impl AnalyzeTargetConfig {
     /// Default settings for `web.analyze.logs`.
     pub fn logs_default() -> Self {
@@ -1209,6 +1277,19 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_CONFIGURATION_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.project_logs`.  Payload is one
+    /// metadata stats row + one row per projected event; the projection
+    /// is itself capped at `MarkovProjectionConfig::max_events` so this
+    /// budget rarely bites.  Same 10-minute timeout as the rest of the
+    /// analyze surface.
+    pub fn project_logs_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        100,
+            prompt_template: DEFAULT_PROJECT_LOGS_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1310,6 +1391,9 @@ pub struct AppState {
     /// Operator-configurable knobs for the "Analyze this!" button on
     /// the Administration → Configuration page (`web.analyze.configuration.*`).
     pub configuration_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Analysis → Project Logs page (`web.analyze.project_logs.*`).
+    pub project_logs_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -1335,6 +1419,7 @@ impl AppState {
         rca_templates_analyze:             AnalyzeTargetConfig,
         perf_analyze:                      AnalyzeTargetConfig,
         configuration_analyze:             AnalyzeTargetConfig,
+        project_logs_analyze:              AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -1370,6 +1455,7 @@ impl AppState {
             rca_templates_analyze:             Arc::new(rca_templates_analyze),
             perf_analyze:                      Arc::new(perf_analyze),
             configuration_analyze:             Arc::new(configuration_analyze),
+            project_logs_analyze:              Arc::new(project_logs_analyze),
         }
     }
 }

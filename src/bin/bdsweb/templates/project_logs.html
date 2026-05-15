@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}Project logs · bdsnode{% endblock %}
+{% block nav_project_logs %}active{% endblock %}
+
+{% block head %}
+<style>
+/* ── "Analyze this!" floating pane (mirror of /anomaly_recent) ────────────── */
+#analysis-panel {
+  position: fixed;
+  top: 57px;
+  left: 0;
+  bottom: 0;
+  width: min(640px, 100vw);
+  background: #0e1520;
+  border-right: 1px solid #1e2535;
+  box-shadow: 6px 0 32px rgba(0,0,0,0.5);
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease-in-out;
+  overflow: hidden;
+}
+#analysis-panel.open { transform: translateX(0); }
+#analysis-spinner { display: none; font-size: 0.75rem; color: #60a5fa; }
+#analysis-spinner.htmx-request,
+.htmx-request#analysis-spinner { display: inline; }
+.btn-analyze {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.45rem 0.8rem; font-size: 0.78rem; font-weight: 600;
+  color: #c7d2fe;
+  background: linear-gradient(180deg, #2937a2 0%, #1f2774 100%);
+  border: 1px solid #3b46c9; border-radius: 0.35rem;
+  cursor: pointer; transition: filter 0.15s;
+}
+.btn-analyze:hover { filter: brightness(1.15); }
+.btn-analyze:disabled { filter: grayscale(0.6); cursor: not-allowed; opacity: 0.5; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <h1 class="text-xl font-semibold text-slate-200">Project logs / events</h1>
+    <p class="text-xs text-slate-500 mt-0.5">
+      Semi-Markov projection of likely future events, trained on recent primary
+      records.  Drain3-bucketed states, Monte&nbsp;Carlo consensus across N rollouts.
+    </p>
+  </div>
+  <div class="flex items-center gap-3">
+    <span class="text-xs {{ mode_badge.class }}" title="{{ mode_badge.tooltip }}"
+          style="padding: 0.15rem 0.6rem; border-radius: 9999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);">
+      via {{ mode_badge.label }}{{ mode_badge.extra }}
+    </span>
+    <span class="text-xs text-slate-600 font-mono">project_logs</span>
+  </div>
+</div>
+
+<!-- Form -->
+<div class="card rounded-lg p-5 mb-4">
+  <form id="project-form"
+        hx-get="/project_logs/results"
+        hx-target="#project-result"
+        hx-swap="innerHTML"
+        hx-indicator="#spinner"
+        class="flex flex-wrap gap-3 items-end">
+
+    <div class="w-36">
+      <label class="block text-xs text-slate-500 mb-1">Training window</label>
+      <select name="duration_back" class="w-full rounded px-3 py-2 text-sm">
+        <option value="15min" {% if duration_back == "15min" %}selected{% endif %}>15 min</option>
+        <option value="30min" {% if duration_back == "30min" %}selected{% endif %}>30 min</option>
+        <option value="1h"    {% if duration_back == "1h"    %}selected{% endif %}>1 h</option>
+        <option value="2h"    {% if duration_back == "2h"    %}selected{% endif %}>2 h</option>
+        <option value="4h"    {% if duration_back == "4h"    %}selected{% endif %}>4 h</option>
+        <option value="6h"    {% if duration_back == "6h"    %}selected{% endif %}>6 h</option>
+        <option value="12h"   {% if duration_back == "12h"   %}selected{% endif %}>12 h</option>
+        <option value="24h"   {% if duration_back == "24h"   %}selected{% endif %}>24 h</option>
+      </select>
+    </div>
+
+    <div class="w-36">
+      <label class="block text-xs text-slate-500 mb-1">Project forward</label>
+      <select name="duration_forward" class="w-full rounded px-3 py-2 text-sm">
+        <option value="5min"  {% if duration_forward == "5min"  %}selected{% endif %}>5 min</option>
+        <option value="15min" {% if duration_forward == "15min" %}selected{% endif %}>15 min</option>
+        <option value="30min" {% if duration_forward == "30min" %}selected{% endif %}>30 min</option>
+        <option value="1h"    {% if duration_forward == "1h"    %}selected{% endif %}>1 h</option>
+        <option value="2h"    {% if duration_forward == "2h"    %}selected{% endif %}>2 h</option>
+        <option value="4h"    {% if duration_forward == "4h"    %}selected{% endif %}>4 h</option>
+      </select>
+    </div>
+
+    <div class="w-28">
+      <label class="block text-xs text-slate-500 mb-1">Order K</label>
+      <select name="order" class="w-full rounded px-3 py-2 text-sm">
+        <option value="1" {% if order == 1 %}selected{% endif %}>1</option>
+        <option value="2" {% if order == 2 %}selected{% endif %}>2</option>
+        <option value="3" {% if order == 3 %}selected{% endif %}>3</option>
+        <option value="4" {% if order == 4 %}selected{% endif %}>4</option>
+      </select>
+    </div>
+
+    <div class="w-32">
+      <label class="block text-xs text-slate-500 mb-1">Samples</label>
+      <select name="n_samples" class="w-full rounded px-3 py-2 text-sm">
+        <option value="20"  {% if n_samples == 20  %}selected{% endif %}>20</option>
+        <option value="50"  {% if n_samples == 50  %}selected{% endif %}>50</option>
+        <option value="100" {% if n_samples == 100 %}selected{% endif %}>100</option>
+        <option value="200" {% if n_samples == 200 %}selected{% endif %}>200</option>
+      </select>
+    </div>
+
+    <div class="w-32">
+      <label class="block text-xs text-slate-500 mb-1">Time bins</label>
+      <select name="time_bins" class="w-full rounded px-3 py-2 text-sm">
+        <option value="10" {% if time_bins == 10 %}selected{% endif %}>10</option>
+        <option value="20" {% if time_bins == 20 %}selected{% endif %}>20</option>
+        <option value="40" {% if time_bins == 40 %}selected{% endif %}>40</option>
+        <option value="60" {% if time_bins == 60 %}selected{% endif %}>60</option>
+      </select>
+    </div>
+
+    <div class="w-36">
+      <label class="block text-xs text-slate-500 mb-1">Min consensus</label>
+      <input type="number" name="min_consensus" step="0.05" min="0" max="1"
+             value="{{ min_consensus }}"
+             class="w-full rounded px-3 py-2 text-sm font-mono">
+    </div>
+
+    <button type="submit" class="btn btn-primary">Project</button>
+    <span id="spinner" class="htmx-indicator text-blue-400 text-sm self-center">Projecting…</span>
+
+    <button id="analyze-btn"
+            type="button"
+            class="btn-analyze self-center"
+            hx-post="/project_logs/analyze"
+            hx-include="[name=duration_back],[name=duration_forward],[name=order],[name=n_samples],[name=time_bins],[name=min_consensus]"
+            hx-target="#analysis-body"
+            hx-swap="innerHTML"
+            hx-indicator="#analysis-spinner"
+            hx-disabled-elt="this"
+            onclick="onAnalyzeClick()"
+            title="Ask the LLM what story this projection tells">
+      <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      Analyze this!
+    </button>
+    <span id="analysis-spinner" class="self-center">Analyzing…</span>
+  </form>
+</div>
+
+<!-- Explainer -->
+<div class="card rounded-lg px-4 py-3 mb-6 text-xs text-slate-500 leading-relaxed">
+  <span class="text-slate-400 font-medium">How it works:</span>
+  Primary records in the training window are bucketed into states via
+  <code class="text-slate-400">drain3</code> templates, a higher-order
+  Markov chain is fit over the state sequence, and inter-arrival times
+  are learned from the observed gaps.  The chain is rolled out
+  <code class="text-slate-400">N samples</code> times forward; the
+  modal state per time bin (with its share-of-samples consensus) is
+  returned as the projection.  High-consensus events
+  (<span class="text-emerald-300">≥ 0.66</span>) are what the chain
+  agreed on across most rollouts; lower consensus
+  (<span class="text-amber-300">~0.33</span>) means partial agreement;
+  the rest is exploratory.
+</div>
+
+<!-- Result area -->
+<div id="project-result"
+     hx-get="/project_logs/results?duration_back={{ duration_back }}&duration_forward={{ duration_forward }}&order={{ order }}&n_samples={{ n_samples }}&time_bins={{ time_bins }}&min_consensus={{ min_consensus }}"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <div class="text-center py-12 text-slate-500 text-sm">Building projection…</div>
+</div>
+
+<!-- Floating "Analyze this!" pane ───────────────────────────────────────── -->
+<div id="analysis-panel"
+     data-analyze-provider="{{ analyze_provider }}"
+     data-analyze-model="{{ analyze_model }}">
+  <div class="flex items-center justify-between px-4 py-2.5 shrink-0"
+       style="border-bottom:1px solid #1e2535;background:#0a0f18;">
+    <div class="flex items-center gap-2 min-w-0">
+      <svg viewBox="0 0 16 16" width="14" height="14" class="text-blue-400 shrink-0" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zm-.75 4.5a.75.75 0 011.5 0v3.25H11a.75.75 0 010 1.5H7.25V4.5z"/>
+      </svg>
+      <span class="text-xs text-slate-300 uppercase tracking-wide">LLM analysis</span>
+      <span class="text-xs text-slate-600">· projection · one-shot, not chat</span>
+    </div>
+    <button onclick="closeAnalysisPanel()"
+            class="text-slate-500 hover:text-slate-200 transition-colors text-lg leading-none px-1"
+            title="Close">✕</button>
+  </div>
+  <div id="analysis-body" class="flex-1 overflow-y-auto p-4">
+    <div class="text-center text-slate-500 text-sm py-8">
+      Click <span class="text-slate-300">"Analyze this!"</span> in the form above to ask
+      {% if !analyze_provider.is_empty() %}
+        <span class="font-mono text-slate-300">{{ analyze_provider }}{% if !analyze_model.is_empty() %} ({{ analyze_model }}){% endif %}</span>
+      {% else %}
+        the default LLM
+      {% endif %}
+      to read this projection as an early-warning trace.
+    </div>
+  </div>
+</div>
+
+<script>
+function openAnalysisPanel()  { document.getElementById('analysis-panel').classList.add('open'); }
+function closeAnalysisPanel() { document.getElementById('analysis-panel').classList.remove('open'); }
+
+function onAnalyzeClick() {
+  var pane     = document.getElementById('analysis-panel');
+  var provider = (pane && pane.dataset.analyzeProvider) || '';
+  var model    = (pane && pane.dataset.analyzeModel)    || '';
+  var providerLabel = provider && model ? provider + ' (' + model + ')'
+                    : (provider || 'the default LLM');
+  var localProviders = { 'ollama': true };
+  var perfHint = localProviders[provider]
+    ? 'Local inference on a CPU is the slow path — expect 10–60s. Cached repeats return instantly.'
+    : 'Hosted providers usually return in a few seconds. Cached repeats return instantly.';
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  document.getElementById('analysis-body').innerHTML =
+    '<div class="card rounded-lg p-5 text-sm text-slate-300 flex items-center gap-3">' +
+      '<div style="width:14px;height:14px;border:2px solid #2937a2;border-top-color:#c7d2fe;' +
+            'border-radius:50%;animation:spin 0.9s linear infinite"></div>' +
+      '<div>' +
+        'Asking <span class="font-mono text-slate-200">' + esc(providerLabel) +
+        '</span> to read this projection as an early-warning trace…' +
+        '<div class="text-xs text-slate-500 mt-1">' + esc(perfHint) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+  openAnalysisPanel();
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' &&
+      document.getElementById('analysis-panel').classList.contains('open')) {
+    closeAnalysisPanel();
+  }
+});
+</script>
+{% endblock %}
