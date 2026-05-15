@@ -27,6 +27,7 @@ pub mod shardsinfo;
 pub mod shardsmanager;
 pub mod shardsmanager_aggregationsearch;
 pub mod shardsmanager_graph;
+pub mod shardsmanager_markov;
 pub mod shardsmanager_docstore;
 pub mod shardsmanager_drain;
 pub mod shardsmanager_lsa_primary_textrank;

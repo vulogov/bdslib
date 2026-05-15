@@ -1107,6 +1107,47 @@ impl ObservabilityStorage {
 
     /// Return `(id, key, data)` for all primary records whose event timestamp
     /// falls in `[start, end)`, ordered by `ts` ascending.
+    /// Same row shape as [`list_primaries_with_data_in_range`] plus the
+    /// integer `ts` (Unix seconds) column.  Used by the Markov-projection
+    /// analytics path, which models inter-arrival times empirically and
+    /// therefore needs every record's timestamp alongside its content.
+    pub fn list_primaries_with_ts_data_in_range(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> Result<Vec<(Uuid, i64, String, JsonValue)>> {
+        let s = crate::common::timerange::to_unix_secs(start)?;
+        let e = crate::common::timerange::to_unix_secs(end)?;
+        let rows = self.engine.select_all(&format!(
+            "SELECT id, ts, key, data FROM telemetry \
+             WHERE is_primary = 1 AND ts >= {s} AND ts < {e} ORDER BY ts ASC"
+        ))?;
+        rows.into_iter()
+            .map(|mut row| {
+                if row.len() < 4 {
+                    return Err(err_msg("row missing id, ts, key, or data column"));
+                }
+                let data_val = row.remove(3);
+                let key_val  = row.remove(2);
+                let ts_val   = row.remove(1);
+                let id_val   = row.remove(0);
+                let id = parse_uuid_value(id_val, "id column")?;
+                let ts = ts_val
+                    .cast_int()
+                    .map_err(|e| err_msg(format!("ts cast error: {e}")))?;
+                let key = key_val
+                    .cast_string()
+                    .map_err(|e| err_msg(format!("key cast error: {e}")))?;
+                let data_s = data_val
+                    .cast_string()
+                    .map_err(|e| err_msg(format!("data cast error: {e}")))?;
+                let data: JsonValue = serde_json::from_str(&data_s)
+                    .map_err(|e| err_msg(format!("data JSON parse error: {e}")))?;
+                Ok((id, ts, key, data))
+            })
+            .collect()
+    }
+
     pub fn list_primaries_with_data_in_range(
         &self,
         start: SystemTime,

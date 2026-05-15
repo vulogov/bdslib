@@ -290,6 +290,12 @@ enum Commands {
     /// block for keys the operator did not set.
     Configuration(cmd::configuration::Cmd),
 
+    /// Project likely future log/event arrivals (`v3/project_logs`).
+    /// Cluster-wide semi-Markov chain trained on the union of every
+    /// peer's recent primary records, with drain3-bucketed states and
+    /// `n_samples` Monte Carlo rollouts aggregated by time bin.
+    ProjectLogs(cmd::project_logs::Cmd),
+
     /// Snapshot the node's in-process latency series (`v2/perf`).
     /// Returns one entry per series (ingest.flush, ingest.lag,
     /// fanout.peer.*, replicate.method.*, …) with p50/p95/p99/min/
@@ -413,6 +419,7 @@ fn main() -> Result<()> {
         Commands::RetentionSweep(a)           => cmd::retention::sweep(&url, &session, a),
         Commands::RetentionSettings(a)        => cmd::retention::settings(&url, &session, a),
         Commands::Configuration(a)            => cmd::configuration::run(&url, &session, a),
+        Commands::ProjectLogs(a)              => cmd::project_logs::run(&url, &session, a),
         Commands::Perf(a)                     => cmd::perf::run(&url, &session, a),
         Commands::PerfSlow(a)                 => cmd::perf_slow::run(&url, &session, a),
         Commands::Health(a)                   => cmd::health::run(&url, &session, a),

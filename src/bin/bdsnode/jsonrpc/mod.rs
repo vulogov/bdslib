@@ -129,6 +129,9 @@ mod v4_llm;
 mod v2_graph;
 mod v5_graph;
 mod v2_configuration;
+mod fingerprints_recent_timed;
+mod v2_project_logs;
+mod v3_project_logs;
 
 use jsonrpsee::RpcModule;
 
@@ -259,6 +262,9 @@ pub fn build_module() -> RpcModule<()> {
     v3_user::register(&mut module);
     status::register(&mut module);
     v2_configuration::register(&mut module);
+    fingerprints_recent_timed::register(&mut module);
+    v2_project_logs::register(&mut module);
+    v3_project_logs::register(&mut module);
     topics::register(&mut module);
     topics_all::register(&mut module);
     trends::register(&mut module);
