@@ -154,7 +154,10 @@ impl Cluster {
         let network_dir = persistence::ensure_network_dir(dbpath)?;
         let node_id     = persistence::load_or_init_node_id(&network_dir)?;
         let persisted   = persistence::load_peers(&network_dir).unwrap_or_default();
-        let peers       = gossip::build_initial_table(node_id, persisted);
+        // `bind_url` is passed so the table can drop "ghost self"
+        // entries — a stale identity at our own URL, left in
+        // `peers.json` from a run before `--new` reset the node_id.
+        let peers       = gossip::build_initial_table(node_id, config.bind_url.clone(), persisted);
         let hints       = hints::HintStorage::open(&network_dir)?;
         let tombstones  = tombstones::TombstoneStorage::open(&network_dir)?;
         let scheduler_log = scheduler_log::SchedulerLog::open(&network_dir)?;

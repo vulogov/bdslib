@@ -323,8 +323,17 @@ pub async fn probe_recovery(
 }
 
 /// Re-exported helper so `mod.rs` can call this from `Cluster::init`.
-pub fn build_initial_table(self_id: Uuid, persisted: Vec<Peer>) -> SharedPeerTable {
-    let mut t = PeerTable::new(self_id);
+///
+/// `self_url` is this node's own `bind_url`.  Persisted peers are run
+/// through `upsert`, which drops any "ghost self" entry whose URL
+/// matches ours — a stale identity left in `peers.json` from a run
+/// before a `--new` reset the node_id.
+pub fn build_initial_table(
+    self_id:   Uuid,
+    self_url:  String,
+    persisted: Vec<Peer>,
+) -> SharedPeerTable {
+    let mut t = PeerTable::new(self_id, self_url);
     for mut p in persisted {
         // Persisted peers come back in whatever state we last saw them in.
         // Reset the miss counter so we don't immediately demote them again.

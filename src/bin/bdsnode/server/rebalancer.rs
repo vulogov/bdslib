@@ -12,7 +12,7 @@
 //! and operator guide.
 
 use bdslib::cluster::fanout;
-use bdslib::cluster::replication::call_peer_v2;
+use bdslib::cluster::replication::call_peer_v2_with_timeout;
 use bdslib::cluster::Cluster;
 use bdslib::rebalancer::{
     pick_peers_to_push, record_run, RebalancerConfig, ScanReport,
@@ -306,6 +306,16 @@ async fn process_batch(
     }
 
     // ── 2. for each record, decide who to push to ─────────────────────
+    //
+    // `v2/cluster.replicate_record` makes the receiver store the record,
+    // which can require opening a *cold* (possibly historical) shard —
+    // a DuckDB pool checkout plus Tantivy/HNSW init.  That work does not
+    // fit the gossip-ping budget (`peer_rpc_timeout`, default 2 s), so
+    // the push gets a deliberately generous deadline; a genuine timeout
+    // still just retries on the next tick.
+    let write_timeout = std::time::Duration::from_secs(
+        cluster.config.peer_rpc_timeout_secs.saturating_mul(5).max(15),
+    );
     let mut n_replicated: u64 = 0;
     for &record_id in chunk {
         let have = have_map.get(&record_id).cloned().unwrap_or_default();
@@ -344,7 +354,9 @@ async fn process_batch(
 
             let started = std::time::Instant::now();
             let params = json!({ "record": doc.clone() });
-            match call_peer_v2(cluster, &url, "v2/cluster.replicate_record", &params).await {
+            match call_peer_v2_with_timeout(
+                cluster, &url, "v2/cluster.replicate_record", &params, write_timeout,
+            ).await {
                 Ok(resp) => {
                     let was_new = resp.get("was_new").and_then(|x| x.as_bool()).unwrap_or(false);
                     if was_new {

@@ -33,8 +33,16 @@ pub fn pick_random_alive(cluster: &Arc<Cluster>, k: usize) -> Vec<Peer> {
     alive
 }
 
-/// Issue an unauthenticated v2/* JSON-RPC call against `peer`.  Used by the
-/// replication coordinator and by the hint replay task.
+/// Issue an unauthenticated v2/* JSON-RPC call against `peer`, bounded
+/// by the gossip-ping budget (`cluster.peer_rpc_timeout`, default 2 s).
+///
+/// Appropriate for cheap, fast peer calls.  **Write-class** RPCs whose
+/// receiver may open a cold shard — rebalancer record replication,
+/// hint replay of `v2/add` / `v2/doc.add` — should call
+/// [`call_peer_v2_with_timeout`] with a more generous deadline: a cold
+/// shard open (DuckDB pool checkout + Tantivy/HNSW init) does not fit
+/// the gossip-ping budget, and a timeout there shows up as a spurious
+/// "operation timed out" even though the write would have succeeded.
 pub async fn call_peer_v2(
     cluster: &Arc<Cluster>,
     peer_url: &str,
@@ -42,6 +50,19 @@ pub async fn call_peer_v2(
     params:   &JsonValue,
 ) -> Result<JsonValue> {
     let timeout = Duration::from_secs(cluster.config.peer_rpc_timeout_secs);
+    call_peer_v2_with_timeout(cluster, peer_url, method, params, timeout).await
+}
+
+/// [`call_peer_v2`] with an explicit per-request `timeout`, overriding
+/// the gossip-ping budget.  Use a larger budget for write RPCs that can
+/// trigger a cold shard open on the receiver.
+pub async fn call_peer_v2_with_timeout(
+    cluster:  &Arc<Cluster>,
+    peer_url: &str,
+    method:   &str,
+    params:   &JsonValue,
+    timeout:  Duration,
+) -> Result<JsonValue> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method":  method,

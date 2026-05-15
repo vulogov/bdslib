@@ -64,13 +64,16 @@ impl Peer {
 
 #[derive(Debug)]
 pub struct PeerTable {
-    self_id: Uuid,
-    peers:   HashMap<Uuid, Peer>,
+    self_id:  Uuid,
+    /// This node's own `bind_url`.  Used to reject "ghost self" entries
+    /// — see [`upsert`](PeerTable::upsert).
+    self_url: String,
+    peers:    HashMap<Uuid, Peer>,
 }
 
 impl PeerTable {
-    pub fn new(self_id: Uuid) -> Self {
-        Self { self_id, peers: HashMap::new() }
+    pub fn new(self_id: Uuid, self_url: impl Into<String>) -> Self {
+        Self { self_id, self_url: self_url.into(), peers: HashMap::new() }
     }
 
     pub fn self_id(&self) -> Uuid { self.self_id }
@@ -80,8 +83,19 @@ impl PeerTable {
     /// Insert a freshly-discovered peer (or update its url+capabilities).
     /// Returns `true` if the peer was new to the table.
     pub fn upsert(&mut self, peer: Peer) -> bool {
-        if peer.node_id == self.self_id {
-            return false;  // never store ourselves
+        // Never store ourselves — checked by `node_id` AND by `url`.
+        // The URL check matters after a `--new`: the node comes back
+        // with a fresh `node_id` but the same `bind_url`, while peers
+        // keep gossiping its *old* identity at that URL.  A
+        // node_id-only check would admit that "ghost self" — and a
+        // peer entry pointing at our own URL makes background tasks
+        // (rebalancer record-replication, read fan-out) call
+        // *ourselves*, which manifests as RPC timeouts and minutes-long
+        // rebalancer ticks.
+        if peer.node_id == self.self_id
+            || peer.url.trim_end_matches('/') == self.self_url.trim_end_matches('/')
+        {
+            return false;
         }
         match self.peers.get_mut(&peer.node_id) {
             Some(existing) => {
@@ -230,7 +244,7 @@ mod tests {
     #[test]
     fn upsert_skips_self() {
         let me = Uuid::now_v7();
-        let mut t = PeerTable::new(me);
+        let mut t = PeerTable::new(me, "http://self");
         let mut self_peer = p("http://x");
         self_peer.node_id = me;
         assert!(!t.upsert(self_peer));
@@ -238,8 +252,21 @@ mod tests {
     }
 
     #[test]
+    fn upsert_skips_ghost_self_by_url() {
+        // A peer with a *different* node_id but our own bind_url — the
+        // "ghost self" left behind after a `--new`.  Must be rejected.
+        let mut t = PeerTable::new(Uuid::now_v7(), "http://127.0.0.1:9711");
+        let ghost = p("http://127.0.0.1:9711/"); // note trailing slash — still rejected
+        assert!(!t.upsert(ghost));
+        assert_eq!(t.len(), 0);
+        // A genuinely different URL is still accepted.
+        assert!(t.upsert(p("http://127.0.0.1:9712")));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
     fn alive_filtering() {
-        let mut t = PeerTable::new(Uuid::now_v7());
+        let mut t = PeerTable::new(Uuid::now_v7(), "http://self");
         let mut p1 = p("http://1"); p1.state = PeerState::Alive;
         let mut p2 = p("http://2"); p2.state = PeerState::Suspect;
         let mut p3 = p("http://3"); p3.state = PeerState::Dead;
@@ -251,7 +278,7 @@ mod tests {
 
     #[test]
     fn sweep_promotes_suspect_then_dead() {
-        let mut t = PeerTable::new(Uuid::now_v7());
+        let mut t = PeerTable::new(Uuid::now_v7(), "http://self");
         let mut peer = p("http://x");
         peer.last_seen = now_secs() - 500;
         t.upsert(peer);
@@ -262,7 +289,7 @@ mod tests {
 
     #[test]
     fn record_alive_resets_miss_count() {
-        let mut t = PeerTable::new(Uuid::now_v7());
+        let mut t = PeerTable::new(Uuid::now_v7(), "http://self");
         let peer = p("http://x");
         let id   = peer.node_id;
         t.upsert(peer);
