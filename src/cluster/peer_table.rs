@@ -83,20 +83,46 @@ impl PeerTable {
     /// Insert a freshly-discovered peer (or update its url+capabilities).
     /// Returns `true` if the peer was new to the table.
     pub fn upsert(&mut self, peer: Peer) -> bool {
-        // Never store ourselves — checked by `node_id` AND by `url`.
-        // The URL check matters after a `--new`: the node comes back
-        // with a fresh `node_id` but the same `bind_url`, while peers
-        // keep gossiping its *old* identity at that URL.  A
-        // node_id-only check would admit that "ghost self" — and a
-        // peer entry pointing at our own URL makes background tasks
-        // (rebalancer record-replication, read fan-out) call
-        // *ourselves*, which manifests as RPC timeouts and minutes-long
-        // rebalancer ticks.
-        if peer.node_id == self.self_id
-            || peer.url.trim_end_matches('/') == self.self_url.trim_end_matches('/')
-        {
+        // 1. Never store ourselves — by `node_id` AND by `url`.  The URL
+        //    check matters after a `--new`: the node comes back with a
+        //    fresh `node_id` but the same `bind_url`, while peers keep
+        //    gossiping its *old* identity at that URL.  A node_id-only
+        //    check would admit that "ghost self".
+        if peer.node_id == self.self_id || same_url(&peer.url, &self.self_url) {
             return false;
         }
+
+        // 2. One identity per URL.  A peer that was `--new`'d comes back
+        //    with a fresh `node_id` at the same `bind_url`; gossip then
+        //    carries BOTH identities around, and — because the URL
+        //    still answers pings — the stale one is `record_alive`'d
+        //    every tick and never goes Dead.  The table accumulates
+        //    multiple "alive" entries for one real node, so the
+        //    rebalancer / fan-out treat them as distinct peers and do
+        //    N× redundant work against the same URL.
+        //
+        //    Collapse same-URL entries to the most-recently-*started*
+        //    process: a newer `started_at` is the live node, an older
+        //    one at the same URL is a dead identity.  Skipped when the
+        //    incoming `started_at` is still 0 (not yet handshaked) so an
+        //    uninitialised entry can't evict a known-good one.
+        if peer.started_at != 0 {
+            let siblings: Vec<(Uuid, u64)> = self
+                .peers
+                .iter()
+                .filter(|(id, p)| **id != peer.node_id && same_url(&p.url, &peer.url))
+                .map(|(id, p)| (*id, p.started_at))
+                .collect();
+            if siblings.iter().any(|&(_, started)| started > peer.started_at) {
+                // A strictly-newer identity for this URL already exists
+                // — `peer` is the stale one.
+                return false;
+            }
+            for (stale_id, _) in siblings {
+                self.peers.remove(&stale_id);
+            }
+        }
+
         match self.peers.get_mut(&peer.node_id) {
             Some(existing) => {
                 if peer.last_seen >= existing.last_seen {
@@ -124,6 +150,32 @@ impl PeerTable {
             p.last_seen  = now_secs();
             p.miss_count = 0;
         }
+    }
+
+    /// Reconcile a successful ping: the node at the pinged URL answered
+    /// as `actual_id`.
+    ///
+    /// - When `actual_id == pinged_id`, this is just normal alive
+    ///   bookkeeping ([`record_alive`](Self::record_alive)).
+    /// - When they differ, the node was `--new`'d — the entry we
+    ///   pinged is a **dead identity at a still-live URL**, the exact
+    ///   thing the [`upsert`](Self::upsert) URL-collapse also targets,
+    ///   but caught here *immediately* on direct contact rather than
+    ///   waiting for a gossip-merge round.  The stale entry is reaped;
+    ///   the actually-responding identity, if already in the table, is
+    ///   marked alive (otherwise gossip/hello will add it shortly).
+    ///
+    /// Returns `true` when a stale entry was reaped.
+    pub fn reconcile_ping(&mut self, pinged_id: Uuid, actual_id: Uuid) -> bool {
+        if pinged_id == actual_id {
+            self.record_alive(pinged_id);
+            return false;
+        }
+        let reaped = self.peers.remove(&pinged_id).is_some();
+        if self.peers.contains_key(&actual_id) {
+            self.record_alive(actual_id);
+        }
+        reaped
     }
 
     /// Bump miss_count after a failed ping.  Caller decides whether to
@@ -229,6 +281,13 @@ pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// Two peer URLs refer to the same endpoint.  Trailing-slash-tolerant
+/// — `bind_url` propagates verbatim through gossip, but a stray `/`
+/// shouldn't defeat the self / same-URL identity checks.
+fn same_url(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +321,59 @@ mod tests {
         // A genuinely different URL is still accepted.
         assert!(t.upsert(p("http://127.0.0.1:9712")));
         assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn upsert_collapses_stale_identities_by_url() {
+        // A peer `--new`'d several times: multiple node_ids at one URL,
+        // distinguished only by `started_at`.  The table must keep just
+        // the most-recently-started identity — the live process.
+        let mut t = PeerTable::new(Uuid::now_v7(), "http://self");
+        let mut ghost1 = p("http://127.0.0.1:9712"); ghost1.started_at = 1_000;
+        let mut ghost2 = p("http://127.0.0.1:9712"); ghost2.started_at = 2_000;
+        let mut fresh  = p("http://127.0.0.1:9712"); fresh.started_at  = 9_000;
+
+        assert!(t.upsert(ghost1));
+        assert!(t.upsert(ghost2)); // newer → evicts ghost1
+        assert_eq!(t.len(), 1);
+        assert!(t.upsert(fresh));  // newest → evicts ghost2
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.snapshot()[0].started_at, 9_000);
+
+        // A late-arriving STALE identity for that URL is rejected.
+        let mut late_ghost = p("http://127.0.0.1:9712"); late_ghost.started_at = 500;
+        assert!(!t.upsert(late_ghost));
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.snapshot()[0].started_at, 9_000);
+
+        // A different URL is untouched by the collapse.
+        let mut other = p("http://127.0.0.1:9713"); other.started_at = 1;
+        assert!(t.upsert(other));
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn reconcile_ping_reaps_stale_identity() {
+        let mut t = PeerTable::new(Uuid::now_v7(), "http://self");
+
+        // We hold a stale identity for a URL; the URL now answers as a
+        // different node_id (the peer was `--new`'d).
+        let ghost    = p("http://127.0.0.1:9712");
+        let ghost_id = ghost.node_id;
+        let real_id  = Uuid::now_v7();
+        t.upsert(ghost);
+        assert_eq!(t.len(), 1);
+
+        assert!(t.reconcile_ping(ghost_id, real_id)); // mismatch → ghost reaped
+        assert_eq!(t.len(), 0);
+
+        // Matching identity → no reap, just alive bookkeeping.
+        let keep    = p("http://127.0.0.1:9713");
+        let keep_id = keep.node_id;
+        t.upsert(keep);
+        assert!(!t.reconcile_ping(keep_id, keep_id));
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.snapshot()[0].state, PeerState::Alive);
     }
 
     #[test]

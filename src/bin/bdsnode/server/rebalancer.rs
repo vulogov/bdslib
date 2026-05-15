@@ -1,9 +1,14 @@
 //! Background tokio task — data rebalancer for sharded telemetry.
 //!
 //! Mirrors the structure of [`server::retention`] (tick loop + oneshot
-//! shutdown + `spawn_blocking` for DuckDB).  Each tick performs at
-//! most one scan pass; cancellation is checked after every atomic
-//! write to a peer so a long sweep can be interrupted cleanly.
+//! shutdown + `spawn_blocking` for DuckDB), with one difference: a
+//! rebalance pass is *ephemeral*.  The sweep future is raced against
+//! the shutdown signal, so a node going down mid-sweep drops the pass
+//! immediately — cancelling any in-flight peer push — instead of
+//! blocking shutdown until the sweep finishes.  The sweep is
+//! idempotent (every tick re-scans the whole catalog and only pushes
+//! under-replicated records), so unfinished work simply resumes on the
+//! next start.
 //!
 //! Disabled-by-default (see `RebalancerConfig::disabled`).  Operators
 //! opt in by setting `rebalancer.enabled = true` in `bds.hjson`.
@@ -89,22 +94,39 @@ async fn run(
         (cfg.interval.as_secs().saturating_mul(3)).max(60),
     );
     loop {
+        // Phase 1 — wait out the interval, but bail immediately if
+        // shutdown arrives between ticks.
         tokio::select! {
             biased;
             _ = &mut shutdown_rx => {
-                log::debug!("[rebalancer] shutdown signal received — stopping");
+                log::debug!("[rebalancer] shutdown signal received between ticks — stopping");
                 break;
             }
-            _ = tokio::time::sleep(cfg.interval) => {
-                bdslib::health::heartbeat("rebalancer");
-                // Panic-isolate the sweep (reliability #3) — a panic
-                // in scan_pass / process_batch must not kill the
-                // rebalancer loop.  Caught + logged; next tick runs.
-                crate::server::supervise::tick(
-                    "rebalancer",
-                    run_one_tick(&cfg, &cluster),
-                ).await;
+            _ = tokio::time::sleep(cfg.interval) => {}
+        }
+
+        bdslib::health::heartbeat("rebalancer");
+
+        // Phase 2 — run one sweep, raced against the shutdown signal.
+        // A rebalance pass is *ephemeral*: if the node is going down
+        // mid-sweep we drop the in-flight future right here, which
+        // cancels any in-flight peer push instead of blocking shutdown
+        // until the sweep (and its generous per-push timeout) finishes.
+        // The sweep is idempotent, so whatever was left is simply
+        // re-scanned on the next start.
+        //
+        // `supervise::tick` panic-isolates the sweep — a panic in
+        // scan_pass / process_batch must not kill the rebalancer loop.
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => {
+                log::info!(
+                    "[rebalancer] shutdown during sweep — aborted in-flight rebalance; \
+                     unfinished shards will be re-scanned on next start"
+                );
+                break;
             }
+            _ = crate::server::supervise::tick("rebalancer", run_one_tick(&cfg, &cluster)) => {}
         }
     }
 }

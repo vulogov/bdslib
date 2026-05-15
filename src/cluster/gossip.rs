@@ -153,9 +153,30 @@ pub async fn ping_all_alive(
             Err(e) => { log::warn!("[cluster] ping task panicked: {e}"); continue; }
         };
         match outcome {
-            Ok(_resp) => {
-                table.write().record_alive(node_id);
+            Ok(resp) => {
                 succeeded += 1;
+                // The ping reply carries the responder's *actual*
+                // node_id.  If it differs from the entry we pinged,
+                // that entry is a stale `--new` ghost at a still-live
+                // URL — reap it now instead of leaving it `alive`
+                // forever (a successful ping would otherwise refresh
+                // the wrong identity every tick).
+                match Uuid::parse_str(&resp.node_id) {
+                    Ok(actual_id) => {
+                        if table.write().reconcile_ping(node_id, actual_id) {
+                            log::info!(
+                                "[cluster] ping {url}: identity changed \
+                                 (pinged {node_id}, answered {actual_id}) — \
+                                 reaped stale peer entry",
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        // Unparseable responder id — fall back to plain
+                        // alive bookkeeping for the entry we pinged.
+                        table.write().record_alive(node_id);
+                    }
+                }
                 last_ok_url = Some(url);
             }
             Err(e) => {

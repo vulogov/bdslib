@@ -43,7 +43,7 @@ use crate::cluster::{fanout, Cluster};
 use crate::common::error::{err_msg, Result};
 use crate::shardsmanager::ShardsManager;
 use crate::vm::workers::submit_script_with_id;
-use chrono::{Duration, Local, Timelike};
+use chrono::{Duration, Timelike, Utc};
 use croner::Cron;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,7 +88,11 @@ impl Scheduler {
     /// Errors fetching individual scripts or parsing individual cron strings
     /// are logged and skipped — one bad entry never aborts the whole tick.
     pub fn run(&self) -> Result<usize> {
-        let now = Local::now();
+        // Cron schedules are evaluated against UTC wall-clock, consistent
+        // with shard boundaries, telemetry timestamps, and every other
+        // time surface in the system.  A pattern like `0 9 * * *` fires
+        // at 09:00 UTC regardless of the host's local timezone.
+        let now = Utc::now();
         let minute_start = now
             .with_nanosecond(0)
             .and_then(|t| t.with_second(0))

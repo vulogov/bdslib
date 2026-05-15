@@ -154,6 +154,11 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
         shards.push(ShardRow { label, primary_count: p, secondary_count: sec });
     }
 
+    // v2/shards is ordered start_ts ASC, so the `recent` slice runs
+    // oldest→newest.  The bar chart wants that (time flows left→right),
+    // but the "5 Most Recent" table should lead with the newest row.
+    shards.reverse();
+
     // ── BUND runtime stats from v2/status ──────────────────────────────────
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
