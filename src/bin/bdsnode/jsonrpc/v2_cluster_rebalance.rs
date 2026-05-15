@@ -31,6 +31,14 @@ struct ReplicateRecordParams {
     record: JsonValue,
 }
 
+#[derive(serde::Deserialize)]
+struct ShardWarmParams {
+    /// Unix-second timestamps; each one resolves to (and opens) the
+    /// shard covering it.  The list usually has 1–2 entries — the
+    /// shards a rebalancer batch is about to push records into.
+    timestamps: Vec<i64>,
+}
+
 pub fn register(module: &mut RpcModule<()>) {
     // ── v2/cluster.has_records ────────────────────────────────────────
     module
@@ -77,6 +85,47 @@ pub fn register(module: &mut RpcModule<()>) {
             .await
             .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?;
             bdslib::perf::record_us("rebalancer.replicate_record_recv",
+                started.elapsed().as_micros() as u64);
+            result
+        })
+        .unwrap();
+
+    // ── v2/cluster.shard_warm ─────────────────────────────────────────
+    //
+    // Pre-warm hint from the rebalancer: open the receiver-side shards
+    // that the next batch of `replicate_record` calls is about to
+    // target.  Opening a cold shard (DuckDB pool checkout + Tantivy /
+    // HNSW init) is the dominant per-batch cost on the receiver; doing
+    // it once up-front (concurrently with the rebalancer's local
+    // fetch_record_local pass) takes that cost off the push critical
+    // path.  Fire-and-forget on the caller side — a failed warm
+    // never blocks the eventual `replicate_record`, it just means the
+    // first push pays the cold-open cost itself.
+    module
+        .register_async_method("v2/cluster.shard_warm", |params, _ctx, _| async move {
+            let p: ShardWarmParams = params.parse()?;
+            let started = std::time::Instant::now();
+            let result = tokio::task::spawn_blocking(move || {
+                let db = bdslib::get_db().map_err(|e| rpc_err(-32001, e))?;
+                let cache = db.cache();
+                let mut warmed: Vec<i64> = Vec::with_capacity(p.timestamps.len());
+                let mut errors: Vec<String> = Vec::new();
+                for ts in p.timestamps {
+                    if ts < 0 { continue; }
+                    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64);
+                    match cache.shard(t) {
+                        Ok(_)  => warmed.push(ts),
+                        Err(e) => errors.push(format!("ts={ts}: {e}")),
+                    }
+                }
+                Ok::<JsonValue, ErrorObject>(serde_json::json!({
+                    "warmed": warmed.len(),
+                    "errors": errors,
+                }))
+            })
+            .await
+            .map_err(|e| rpc_err(-32000, format!("task panicked: {e}")))?;
+            bdslib::perf::record_us("rebalancer.shard_warm_recv",
                 started.elapsed().as_micros() as u64);
             result
         })

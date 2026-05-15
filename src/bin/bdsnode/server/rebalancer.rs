@@ -16,7 +16,6 @@
 //! See `Documentation/REBALANCER.md` for the architectural overview
 //! and operator guide.
 
-use bdslib::cluster::fanout;
 use bdslib::cluster::replication::call_peer_v2_with_timeout;
 use bdslib::cluster::Cluster;
 use bdslib::rebalancer::{
@@ -71,11 +70,22 @@ pub fn start(cfg: RebalancerConfig) -> Handle {
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(run(cfg.clone(), cluster, shutdown_rx));
+    // Apply cache tuning to the process-wide have-cache.  Idempotent
+    // — restarting the rebalancer with new cfg picks up cleanly.
+    crate::server::rebalancer_state::configure(
+        cfg.have_cache_capacity,
+        std::time::Duration::from_secs(cfg.have_cache_ttl_secs),
+    );
     log::info!(
         "[rebalancer] started — interval={:?} batch_size={} max_per_run={} \
-         min_rf={:?} pause_lag={}ms",
+         min_rf={:?} pause_lag={}ms pause_flush={}ms \
+         have_cache={}/{}s slow_peer_skip_after={} push_concurrency={}",
         cfg.interval, cfg.batch_size, cfg.max_per_run,
-        cfg.min_replication_factor, cfg.pause_if_ingest_lag_p95_ms,
+        cfg.min_replication_factor,
+        cfg.pause_if_ingest_lag_p95_ms,
+        cfg.pause_if_ingest_flush_p95_ms,
+        cfg.have_cache_capacity, cfg.have_cache_ttl_secs,
+        cfg.slow_peer_skip_after, cfg.push_concurrency,
     );
     Handle {
         shutdown_tx: Some(shutdown_tx),
@@ -137,25 +147,36 @@ async fn run_one_tick(cfg: &RebalancerConfig, cluster: &Arc<Cluster>) {
 
     // Throttle: skip the tick when ingest is visibly backed up.
     // Reads p95 from the perf registry; falls back to "run anyway"
-    // when fewer than 20 samples have accumulated (cold start).
-    if cfg.pause_if_ingest_lag_p95_ms > 0 {
-        if let Some(p95_us) = bdslib::perf::registry().p95_us("ingest.lag", 20) {
-            let p95_ms = p95_us / 1_000;
-            if p95_ms > cfg.pause_if_ingest_lag_p95_ms {
-                log::info!(
-                    "[rebalancer] skipping tick — ingest.lag p95 = {p95_ms}ms \
-                     > pause_if_ingest_lag_p95_ms = {}ms",
-                    cfg.pause_if_ingest_lag_p95_ms
-                );
-                let report = ScanReport {
-                    paused_for_lag: true,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    ..Default::default()
-                };
-                record_run(&report);
-                return;
-            }
-        }
+    // when fewer than 20 samples have accumulated (cold start).  Two
+    // independent signals — either can pause:
+    //   - ingest.lag p95   — queue wait time
+    //   - ingest.flush p95 — actual write time
+    // Flush matters even when lag is fine: it means DuckDB/Tantivy/
+    // HNSW are saturated, and the rebalancer's writes go through the
+    // same engines on the receiver — competing with live ingest is
+    // the worst possible thing we can do in that state.
+    let perf = bdslib::perf::registry();
+    let pause_check = |series: &str, threshold_ms: u64| -> Option<u64> {
+        if threshold_ms == 0 { return None; }
+        let p95_us = perf.p95_us(series, 20)?;
+        let p95_ms = p95_us / 1_000;
+        if p95_ms > threshold_ms { Some(p95_ms) } else { None }
+    };
+    let pause_reason = pause_check("ingest.lag",   cfg.pause_if_ingest_lag_p95_ms)
+        .map(|p95| ("ingest.lag",   p95, cfg.pause_if_ingest_lag_p95_ms))
+        .or_else(|| pause_check("ingest.flush", cfg.pause_if_ingest_flush_p95_ms)
+            .map(|p95| ("ingest.flush", p95, cfg.pause_if_ingest_flush_p95_ms)));
+    if let Some((series, p95_ms, threshold_ms)) = pause_reason {
+        log::info!(
+            "[rebalancer] skipping tick — {series} p95 = {p95_ms}ms > {threshold_ms}ms"
+        );
+        let report = ScanReport {
+            paused_for_lag: true,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            ..Default::default()
+        };
+        record_run(&report);
+        return;
     }
 
     match scan_pass(cfg, cluster).await {
@@ -220,6 +241,16 @@ async fn scan_pass(
     let mut report = ScanReport::default();
     let mut budget_remaining = cfg.max_per_run;
 
+    // Per-sweep state — slow-peer skip list.  Reset between sweeps so
+    // a peer that recovered isn't stuck on the skip list indefinitely.
+    let mut sweep_state = crate::server::rebalancer_state::SweepState::new(
+        cfg.slow_peer_skip_after,
+    );
+
+    // Drop expired entries from the process-wide have-cache once per
+    // sweep — amortises the cost across all batches.
+    crate::server::rebalancer_state::cache().evict_expired();
+
     'shards: for info in shard_infos {
         if budget_remaining == 0 { break 'shards; }
 
@@ -247,7 +278,8 @@ async fn scan_pass(
             // ── one scan batch ────────────────────────────────────────
             let started = std::time::Instant::now();
             let batch_outcome = process_batch(
-                cluster, &alive_peer_ids, self_id, min_rf, chunk
+                cfg, cluster, &alive_peer_ids, self_id, min_rf,
+                chunk, &mut sweep_state,
             ).await;
             bdslib::perf::record_us("rebalancer.scan_batch",
                 started.elapsed().as_micros() as u64);
@@ -262,6 +294,16 @@ async fn scan_pass(
                 }
             }
         }
+    }
+
+    if sweep_state.skipped_count() > 0 {
+        log::info!(
+            "[rebalancer] sweep finished — {} slow peer(s) skipped after \
+             {} probe timeout(s); have_cache entries: {}",
+            sweep_state.skipped_count(),
+            cfg.slow_peer_skip_after,
+            crate::server::rebalancer_state::cache().len(),
+        );
     }
 
     Ok(report)
@@ -284,75 +326,197 @@ async fn list_ids_blocking(
 }
 
 /// One batch's work:
-/// 1. fan_out_v2 `v2/cluster.has_records` to every Alive peer
-/// 2. union the returned ID sets per record
-/// 3. for each under-replicated record, push to picked peers
+/// 1. consult the cross-sweep have-cache for known `(peer, record)`
+///    answers; only probe peers we don't yet have a fresh answer from.
+/// 2. probe `v2/cluster.has_records` (write-class deadline) against
+///    every non-slow peer; spawn fast-p95 peers first so their
+///    responses arrive first and quorum-based early-cancel skips
+///    waiting on stragglers.
+/// 3. for each under-replicated record, fetch + push to picked peers
+///    in bounded-concurrency parallel (`cfg.push_concurrency`).
 ///
 /// Returns the number of successful per-record pushes.  Per-push
-/// failures are logged at WARN and counted as errors at the caller
-/// level (caller increments `report.errors` per failed batch).
+/// failures are logged at DEBUG (they retry next tick); peer-skip
+/// transitions are logged once-per-peer at INFO via [`SweepState`].
 async fn process_batch(
+    cfg:            &RebalancerConfig,
     cluster:        &Arc<Cluster>,
     alive_peer_ids: &[Uuid],
     self_id:        Uuid,
     min_rf:         usize,
     chunk:          &[Uuid],
+    sweep:          &mut crate::server::rebalancer_state::SweepState,
 ) -> anyhow::Result<u64> {
     if chunk.is_empty() {
         return Ok(0);
     }
 
-    // ── 1. probe peers ────────────────────────────────────────────────
-    let id_strings: Vec<String> = chunk.iter().map(|u| u.to_string()).collect();
-    let fanout_res = fanout::fan_out_v2(
-        cluster, "v2/cluster.has_records", json!({ "ids": id_strings })
-    ).await;
-
-    // Build per-record "who has it" set from successful peer responses.
-    // Map: record_id → set of peer node_ids that reported present.
-    let mut have_map: std::collections::HashMap<Uuid, HashSet<Uuid>> =
-        chunk.iter().map(|id| (*id, HashSet::new())).collect();
-    for peer_res in &fanout_res.responses {
-        let Ok(v) = &peer_res.result else { continue };
-        let Some(arr) = v.get("present").and_then(|x| x.as_array()) else { continue };
-        let peer_id = peer_res.peer.node_id;
-        for s in arr {
-            if let Some(s) = s.as_str() {
-                if let Ok(uuid) = Uuid::parse_str(s) {
-                    if let Some(set) = have_map.get_mut(&uuid) {
-                        set.insert(peer_id);
-                    }
-                }
-            }
-        }
-    }
-
-    // ── 2. for each record, decide who to push to ─────────────────────
-    //
-    // `v2/cluster.replicate_record` makes the receiver store the record,
-    // which can require opening a *cold* (possibly historical) shard —
-    // a DuckDB pool checkout plus Tantivy/HNSW init.  That work does not
-    // fit the gossip-ping budget (`peer_rpc_timeout`, default 2 s), so
-    // the push gets a deliberately generous deadline; a genuine timeout
-    // still just retries on the next tick.
+    // Shared write-class deadline — same envelope used for replicate.
+    // Default `peer_rpc_timeout=2s` × 5 → 10s, floored 15s.
     let write_timeout = std::time::Duration::from_secs(
         cluster.config.peer_rpc_timeout_secs.saturating_mul(5).max(15),
     );
-    let mut n_replicated: u64 = 0;
+
+    let cache = crate::server::rebalancer_state::cache();
+
+    // Map: record_id → set of peer node_ids known to hold the record.
+    // Seeded from the cache so subsequent probes only have to fill the
+    // gaps.  `self_id` is implicit (the rebalancer always scans local).
+    let mut have_map: std::collections::HashMap<Uuid, HashSet<Uuid>> =
+        chunk.iter().map(|id| (*id, HashSet::new())).collect();
+
+    // Resolve peer URLs + drop slow-skipped peers.  Slow peers contribute
+    // nothing to `have_map` for this sweep — pick_peers_to_push will
+    // therefore treat them as targets if they're alive_peer_ids members,
+    // which is fine: a genuine replicate to a recovered peer will succeed
+    // and re-warm the cache.
+    let peers_full: Vec<(Uuid, String)> = {
+        let pt = cluster.peers.read();
+        pt.alive().into_iter()
+            .filter(|p| alive_peer_ids.contains(&p.node_id) && !sweep.is_slow(p.node_id))
+            .map(|p| (p.node_id, p.url))
+            .collect()
+    };
+
+    // ── 1. cache consultation: build per-peer "unknown" probe lists ───
+    //
+    // For each peer, partition `chunk` into "already known from cache"
+    // (seeded into have_map for positives, dropped silently for known-
+    // absent) and "unknown" (the only IDs we actually probe).  A peer
+    // whose unknown set is empty doesn't get probed at all this batch.
+    let perf = bdslib::perf::registry();
+    let mut per_peer_probes: Vec<(Uuid, String, Vec<String>, u64)> = Vec::with_capacity(peers_full.len());
+    for (peer_id, url) in &peers_full {
+        let mut unknown_strs: Vec<String> = Vec::with_capacity(chunk.len());
+        for &id in chunk {
+            match cache.get(*peer_id, id) {
+                Some(true)  => { have_map.get_mut(&id).map(|s| s.insert(*peer_id)); }
+                Some(false) => { /* known-absent — don't include in unknown */ }
+                None        => unknown_strs.push(id.to_string()),
+            }
+        }
+        if unknown_strs.is_empty() {
+            // Whole batch served from cache for this peer — no probe.
+            continue;
+        }
+        // Per-peer p95 for fast-first spawn ordering.  Missing series
+        // (peer never probed) sorts to 0 = scheduled first.
+        let p95 = perf.p95_us(&format!("fanout.peer.{peer_id}"), 20).unwrap_or(0);
+        per_peer_probes.push((*peer_id, url.clone(), unknown_strs, p95));
+    }
+    // Fast peers first — JoinSet still surfaces responses in
+    // arrival order, but spawning fast peers first reduces the chance
+    // we end up waiting on a slow peer when quorum is reachable from
+    // the fast ones alone.
+    per_peer_probes.sort_by_key(|(_, _, _, p95)| *p95);
+
+    // ── 2. probe with quorum-based early exit ────────────────────────
+    //
+    // Targets per record can only DECREASE as we probe more peers; once
+    // `pick_peers_to_push` returns empty for every chunk record, more
+    // probes are wasted work.  Abort the JoinSet at that point.
+    let mut probe_set: tokio::task::JoinSet<(
+        Uuid,             // peer_id
+        Vec<String>,      // probed IDs (so we can update the cache below)
+        Result<JsonValue, String>,
+    )> = tokio::task::JoinSet::new();
+    for (peer_id, url, ids, _p95) in per_peer_probes {
+        let cluster = cluster.clone();
+        let to      = write_timeout;
+        let params  = json!({ "ids": ids.clone() });
+        probe_set.spawn(async move {
+            let started = std::time::Instant::now();
+            let res = call_peer_v2_with_timeout(
+                &cluster, &url, "v2/cluster.has_records", &params, to,
+            ).await;
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            bdslib::perf::record_us("fanout.method.v2/cluster.has_records", elapsed_us);
+            bdslib::perf::record_us(&format!("fanout.peer.{peer_id}"),       elapsed_us);
+            (peer_id, ids, res.map_err(|e| e.to_string()))
+        });
+    }
+
+    while let Some(jr) = probe_set.join_next().await {
+        let (peer_id, probed_ids, res) = match jr {
+            Ok(t)  => t,
+            Err(e) => {
+                log::warn!("[rebalancer] has_records probe task panicked: {e:?}");
+                continue;
+            }
+        };
+        let v = match res {
+            Ok(v)  => v,
+            Err(_) => {
+                if sweep.note_timeout(peer_id) {
+                    log::info!(
+                        "[rebalancer] peer {peer_id} skipped for rest of sweep \
+                         after {} probe timeout(s)",
+                        cfg.slow_peer_skip_after,
+                    );
+                }
+                continue;
+            }
+        };
+        // Parse present IDs into a set so we can compute the absent
+        // complement for cache-update purposes in O(probed × 1).
+        let present_set: HashSet<Uuid> = v.get("present")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter()
+                .filter_map(|s| s.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                .collect())
+            .unwrap_or_default();
+        for sid in &probed_ids {
+            let Ok(uuid) = Uuid::parse_str(sid) else { continue };
+            let has = present_set.contains(&uuid);
+            cache.insert(peer_id, uuid, has);
+            if has {
+                if let Some(set) = have_map.get_mut(&uuid) {
+                    set.insert(peer_id);
+                }
+            }
+        }
+        // Early-cancel: are all records at min_rf or higher?  `self_id`
+        // is always a holder (we just read this record locally), hence
+        // the `+ 1`.
+        let all_at_quorum = chunk.iter().all(|id| {
+            have_map.get(id).map(|s| s.len() + 1).unwrap_or(1) >= min_rf
+        });
+        if all_at_quorum {
+            probe_set.abort_all();
+            break;
+        }
+    }
+
+    // ── 3. push under-replicated records to picked peers ─────────────
+    //
+    // Build a flat push plan first so we can dispatch with bounded
+    // concurrency.  Local fetches stay serial (DuckDB pool friendly);
+    // the network pushes run via a Semaphore-bounded JoinSet.
+    //
+    // `pick_peers_to_push` is deterministic — sorting `alive_peer_ids`
+    // up-front keeps the per-record target set stable across batches
+    // so re-probes hit the cache.
+    use tokio::sync::Semaphore;
+
+    struct Push {
+        record_id: Uuid,
+        target_id: Uuid,
+        url:       String,
+        doc:       JsonValue,
+    }
+
+    let mut plan: Vec<Push> = Vec::new();
     for &record_id in chunk {
         let have = have_map.get(&record_id).cloned().unwrap_or_default();
         let targets = pick_peers_to_push(&have, alive_peer_ids, self_id, min_rf);
         if targets.is_empty() {
             continue;
         }
-
-        // Fetch the record locally — we need the full body to push.
         let doc = match fetch_record_local(record_id).await {
             Ok(Some(d)) => d,
             Ok(None) => {
                 // Race: the catalog said the shard had this ID but the
-                // observability layer doesn't.  Could be a concurrent
-                // delete.  Skip and move on.
+                // observability layer doesn't.  Concurrent delete; skip.
                 log::debug!("[rebalancer] {record_id} no longer present locally; skipping");
                 continue;
             }
@@ -361,38 +525,121 @@ async fn process_batch(
                 continue;
             }
         };
-
-        // ── 3. push to each target peer ─────────────────────────────
+        let alive_now = cluster.peers.read().alive();
         for target_id in targets {
-            // Resolve the URL — peer may have transitioned to Dead
-            // between the alive snapshot and now; skip cleanly.
-            let url = match cluster.peers.read().alive()
-                .iter().find(|p| p.node_id == target_id)
-                .map(|p| p.url.clone())
-            {
+            // Resolve the URL — peer may have gone Dead between the
+            // snapshot and now, OR slipped onto the slow-skip list
+            // during this sweep.  Both cases are clean skips: AE
+            // will reconcile what we missed.
+            if sweep.is_slow(target_id) { continue; }
+            let url = match alive_now.iter().find(|p| p.node_id == target_id).map(|p| p.url.clone()) {
                 Some(u) => u,
                 None    => continue,
             };
+            plan.push(Push { record_id, target_id, url, doc: doc.clone() });
+        }
+    }
 
-            let started = std::time::Instant::now();
-            let params = json!({ "record": doc.clone() });
-            match call_peer_v2_with_timeout(
-                cluster, &url, "v2/cluster.replicate_record", &params, write_timeout,
-            ).await {
-                Ok(resp) => {
-                    let was_new = resp.get("was_new").and_then(|x| x.as_bool()).unwrap_or(false);
-                    if was_new {
-                        n_replicated += 1;
-                    }
-                    bdslib::perf::record_us("rebalancer.replicate_one",
-                        started.elapsed().as_micros() as u64);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "[rebalancer] replicate {record_id} → {url}: {e} (will retry next tick)"
+    if plan.is_empty() {
+        return Ok(0);
+    }
+
+    // Tier-3 (#8) — pre-warm hint.  Group the plan by (target_id) and
+    // for each peer send ONE `v2/cluster.shard_warm` with the unique
+    // record timestamps the push phase is about to hit.  The receiver
+    // opens those shards (cold-shard cost: DuckDB pool checkout +
+    // Tantivy/HNSW init) once, in parallel with our push-permit
+    // acquisition — so by the time the first push lands the target
+    // shards are typically already warm.  Fire-and-forget: a failed
+    // warm never blocks the eventual replicate_record (the push
+    // still works, it just pays the cold-open cost the old way).
+    {
+        use std::collections::BTreeMap;
+        let mut by_target: BTreeMap<Uuid, (String, std::collections::BTreeSet<i64>)> =
+            BTreeMap::new();
+        for p in &plan {
+            let ts = p.doc.get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let entry = by_target
+                .entry(p.target_id)
+                .or_insert_with(|| (p.url.clone(), std::collections::BTreeSet::new()));
+            entry.1.insert(ts);
+        }
+        // Warm RPC gets the gossip-ping budget — it's a cheap "open the
+        // shard" call; a slow one means the shard would have been slow
+        // for the push anyway and we shouldn't double-pay the wait.
+        let warm_timeout = std::time::Duration::from_secs(
+            cluster.config.peer_rpc_timeout_secs.max(2),
+        );
+        for (target_id, (url, ts_set)) in by_target {
+            let timestamps: Vec<i64> = ts_set.into_iter().collect();
+            let params = json!({ "timestamps": timestamps });
+            let cluster = cluster.clone();
+            let url = url.clone();
+            tokio::spawn(async move {
+                let started = std::time::Instant::now();
+                let res = call_peer_v2_with_timeout(
+                    &cluster, &url, "v2/cluster.shard_warm", &params, warm_timeout,
+                ).await;
+                let elapsed_us = started.elapsed().as_micros() as u64;
+                bdslib::perf::record_us("rebalancer.shard_warm", elapsed_us);
+                bdslib::perf::record_us(
+                    &format!("rebalancer.shard_warm.peer.{target_id}"), elapsed_us);
+                if let Err(e) = res {
+                    log::debug!(
+                        "[rebalancer] shard_warm → {url}: {e} (push will pay cold-open)"
                     );
                 }
+            });
+        }
+    }
+
+    // Bounded-concurrency push.  `push_concurrency=1` reproduces the
+    // pre-Tier-2 serial behaviour; default 4 overlaps cold-shard-open
+    // cost across receivers.
+    let semaphore = Arc::new(Semaphore::new(cfg.push_concurrency.max(1)));
+    let cluster_arc = cluster.clone();
+    let cache_ref = cache; // 'static reference, cheap to capture
+    let mut push_set: tokio::task::JoinSet<bool> = tokio::task::JoinSet::new();
+    for push in plan {
+        let sem = semaphore.clone();
+        let cl  = cluster_arc.clone();
+        push_set.spawn(async move {
+            let _permit = match sem.acquire_owned().await {
+                Ok(p)  => p,
+                Err(_) => return false, // semaphore closed (shouldn't happen)
+            };
+            let started = std::time::Instant::now();
+            let params  = json!({ "record": push.doc });
+            let res = call_peer_v2_with_timeout(
+                &cl, &push.url, "v2/cluster.replicate_record", &params, write_timeout,
+            ).await;
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            bdslib::perf::record_us("rebalancer.replicate_one", elapsed_us);
+            match res {
+                Ok(resp) => {
+                    // We just confirmed (or pushed) this record to the target.
+                    cache_ref.insert(push.target_id, push.record_id, true);
+                    resp.get("was_new").and_then(|x| x.as_bool()).unwrap_or(false)
+                }
+                Err(e) => {
+                    log::debug!(
+                        "[rebalancer] replicate {} → {}: {e} (will retry next tick)",
+                        push.record_id, push.url,
+                    );
+                    false
+                }
             }
+        });
+    }
+
+    let mut n_replicated: u64 = 0;
+    while let Some(jr) = push_set.join_next().await {
+        match jr {
+            Ok(true)  => n_replicated += 1,
+            Ok(false) => {}
+            Err(e)    => log::warn!("[rebalancer] push task panicked: {e:?}"),
         }
     }
 

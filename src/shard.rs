@@ -59,6 +59,14 @@ pub struct Shard {
     vector: VectorEngine,
     /// Template store for this shard's time interval; lives at `{path}/tplstorage`.
     pub(crate) tplstorage: DocumentStorage,
+    /// Per-shard bloom on record ids.  Lets `has_records_present` skip
+    /// the DuckDB lookup on shards that definitely don't contain any
+    /// of the queried ids — the dominant receiver cost of the
+    /// rebalancer's per-batch probe.  Wrapped in `Arc` so `Shard`
+    /// clones share one bloom (`IdBloom` itself uses `RwLock` for
+    /// concurrent insert / lookup).  Populated lazily on shard open;
+    /// fail-open semantics on any load error.
+    id_bloom: Arc<crate::idbloom::IdBloom>,
 }
 
 impl Shard {
@@ -112,11 +120,32 @@ impl Shard {
         vector.probe()
             .map_err(|e| err_msg(format!("shard '{path}': vector index unusable: {e}")))?;
 
+        // Populate the per-shard id bloom from the existing observability
+        // rows.  Fail-open: a load error leaves an empty bloom (every
+        // lookup falls through to DuckDB), so we never serve a false
+        // negative.  Logged so operators can see the warmup cost on
+        // hot shards.
+        let id_bloom = Arc::new(crate::idbloom::IdBloom::new());
+        match observability.list_all_ids() {
+            Ok(ids) => {
+                let n = ids.len();
+                if n > 0 {
+                    id_bloom.insert_many(&ids);
+                    log::debug!("[shard {path}] id-bloom populated with {n} ids");
+                }
+            }
+            Err(e) => log::warn!(
+                "[shard {path}] id-bloom load failed: {e}; falling through to DuckDB \
+                 for has_records (no correctness impact)"
+            ),
+        }
+
         Ok(Self {
             observability,
             fts: Arc::new(fts),
             vector,
             tplstorage,
+            id_bloom,
         })
     }
 
@@ -155,6 +184,9 @@ impl Shard {
     pub fn add(&self, doc: JsonValue) -> Result<Uuid> {
         let fingerprint = json_fingerprint(&doc);
         let (id, is_primary, opt_emb) = self.observability.add(doc.clone())?;
+        // Mirror the new id into the per-shard bloom so subsequent
+        // has_records probes see it without a DuckDB roundtrip.
+        self.id_bloom.insert(id);
         if is_primary {
             self.fts.add_document_with_id(id, &fingerprint)?;
             // `observability.add` guarantees `Some` embedding for a
@@ -199,6 +231,12 @@ impl Shard {
                 vector_batch.push((id.to_string(), emb, Some(docs[i].clone())));
             }
         }
+
+        // Bulk-insert into the per-shard id bloom under a single lock
+        // acquisition.  Cheaper than per-record inserts on the
+        // add_batch hot path; keeps the bloom in lockstep with the
+        // DuckDB transaction that just completed.
+        self.id_bloom.insert_many(&ids);
 
         // One vector-store mutex acquisition + one Tantivy commit per
         // batch (instead of one per primary). This is the largest single
@@ -386,7 +424,26 @@ impl Shard {
         // One Tantivy commit + one HNSW upsert pass for the whole shard.
         self.fts.add_documents_batch(&fts_batch)?;
         self.vector.store_vectors_batch(vector_batch)?;
+
+        // Repopulate the id bloom from the live observability state.
+        // The rebuild path may have added new rows since shard open,
+        // so reset_with the complete set rather than incremental insert.
+        // Failure is fail-open (existing bloom retained).
+        if let Ok(all_ids) = self.observability.list_all_ids() {
+            self.id_bloom.reset_with(&all_ids);
+        }
+
         Ok(n)
+    }
+
+    /// Partition `ids` into `(maybe_present, definitely_absent)` using
+    /// the per-shard bloom.  Caller can skip the DuckDB `get_by_ids`
+    /// entirely when `maybe_present` is empty.  False-positive rate is
+    /// well under 1% at the design load (≤ 800 K records per shard);
+    /// false negatives are impossible because every successful insert
+    /// updates the bloom.
+    pub fn bloom_partition_ids(&self, ids: &[Uuid]) -> (Vec<Uuid>, Vec<Uuid>) {
+        self.id_bloom.partition(ids)
     }
 
     // ── passthrough accessors ─────────────────────────────────────────────────

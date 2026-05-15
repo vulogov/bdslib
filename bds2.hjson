@@ -38,7 +38,7 @@
     // Full mode at 2 alive peers — see bds1.hjson for the rationale
     // (a 3-node cluster tops out at 2 alive peers per node).
     full_mode_threshold:     2
-    replication_factor:      3
+    replication_factor:      2
 
     full_replication_stores: ["docs", "signals", "scripts", "users", "llm_cache", "graph"]
 
@@ -97,9 +97,9 @@ retention: {
 // ── Data rebalancer — repairs under-replicated sharded telemetry ──
 rebalancer: {
   enabled:                     true
-  interval:                    "2m"
+  interval:                    "5m"
   batch_size:                  50
-  max_per_run:                 500
+  max_per_run:                 100
   min_replication_factor:      null       // inherit cluster.replication_factor
   pause_if_ingest_lag_p95_ms:  1000
 }

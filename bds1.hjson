@@ -60,7 +60,7 @@
     // goes down.  (A threshold of 3 could never be met here:
     // alive-peer count tops out at 2.)
     full_mode_threshold:     2
-    replication_factor:      3
+    replication_factor:      2
 
     // Fully-replicated stores swept by anti-entropy.  This config
     // overrides the library default entirely, so every replicated
@@ -186,9 +186,9 @@ retention: {
 // stores.  See BDSCONFIG.md § 5.6.
 rebalancer: {
   enabled:                     true
-  interval:                    "2m"       // doc default 10m; faster here for test feedback
+  interval:                    "5m"       // doc default 10m; faster here for test feedback
   batch_size:                  50         // record IDs per has_records probe; clamped [1, 1000]
-  max_per_run:                 500        // records examined per tick — the rest waits
+  max_per_run:                 100        // records examined per tick — the rest waits
   min_replication_factor:      null       // null = inherit cluster.replication_factor
   pause_if_ingest_lag_p95_ms:  1000       // skip the tick when ingest is backed up; 0 = never pause
 }

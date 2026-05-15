@@ -1,0 +1,266 @@
+{% if has_error %}
+<div class="rounded border border-red-800 bg-red-950 px-4 py-3 mb-4 text-sm text-red-300">
+  {{ error_msg }}
+</div>
+{% endif %}
+
+{% if dev_data_enabled %}
+<!-- Synthetic-data warning — same red banner as the regular Dashboard. -->
+<div class="rounded-lg p-4 mb-6"
+     style="background:linear-gradient(90deg,#7f1d1d 0%,#9f1239 50%,#7f1d1d 100%);
+            border:2px solid #f87171;
+            box-shadow:0 0 0 1px rgba(248,113,113,0.4),0 4px 16px rgba(248,113,113,0.2);">
+  <div class="flex items-start gap-3">
+    <div style="font-size:1.6rem;line-height:1;padding-top:0.1rem;">⚠</div>
+    <div class="flex-1">
+      <div class="text-base font-semibold text-white mb-1" style="letter-spacing:0.04em;">
+        SYNTHETIC DATA &mdash; THIS NODE IS RUNNING IN DEMO MODE
+      </div>
+      <div class="text-sm text-red-100">
+        <code class="text-amber-200">generate_realistic_data</code> is armed.
+        {{ dev_data_batches_emitted }} batch{% if dev_data_batches_emitted != 1 %}es{% endif %}
+        emitted, {{ dev_data_records_lifetime }} records total.  Disable in
+        <code class="text-amber-200">bds.hjson</code> before treating any view
+        on this node as real operational telemetry.
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Identity strip ─────────────────────────────────────────────────────── -->
+<section class="card rounded-lg p-4 mb-6" style="border:1px solid #1e2535;background:#0e1520;">
+  <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 text-sm">
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Node ID</div>
+      <div class="font-mono text-blue-300" title="{{ node_id }}">{{ short_node_id }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Hostname</div>
+      <div class="font-mono text-slate-200 truncate" title="{{ hostname }}">{{ hostname }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Version</div>
+      <div class="font-mono text-slate-200">{{ version }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Uptime</div>
+      <div class="font-mono text-slate-200">{{ uptime }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Embedding</div>
+      <div class="font-mono text-slate-200 truncate" title="{{ embedding_model }}">{{ embedding_model }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Health</div>
+      <div class="font-mono {{ health_status_class }}">{{ health_status }}</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-1">Server time</div>
+      <div class="font-mono text-slate-400 text-xs">{{ timestamp }}</div>
+    </div>
+  </div>
+  {% if !health_reason.is_empty() %}
+  <div class="mt-3 text-xs text-slate-400">
+    <span class="text-slate-500">health.reason:</span>
+    <span class="font-mono">{{ health_reason }}</span>
+    <span class="ml-3 text-slate-500">{{ health_n_sources }} sources · {{ health_n_failed }} failed · {{ health_n_degraded }} degraded</span>
+  </div>
+  {% endif %}
+</section>
+
+<!-- ── Two-column main grid ───────────────────────────────────────────────── -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+
+  <!-- Cluster -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">Cluster</h2>
+    {% if cluster_present %}
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">Mode</div>            <div class="font-mono {{ cluster_mode_class }}">{{ cluster_mode }}</div></div>
+      <div><div class="text-xs text-slate-500">Bind URL</div>        <div class="font-mono text-slate-200 break-all">{{ cluster_bind_url }}</div></div>
+      <div><div class="text-xs text-slate-500">Alive</div>           <div class="font-mono text-emerald-300">{{ cluster_alive }}</div></div>
+      <div><div class="text-xs text-slate-500">Suspect</div>         <div class="font-mono text-amber-300">{{ cluster_suspect }}</div></div>
+      <div><div class="text-xs text-slate-500">Dead</div>            <div class="font-mono text-red-300">{{ cluster_dead }}</div></div>
+      <div><div class="text-xs text-slate-500">Hint backlog</div>    <div class="font-mono text-slate-200">{{ cluster_hint_backlog }}</div></div>
+      <div><div class="text-xs text-slate-500">Replication factor</div><div class="font-mono text-slate-200">{{ cluster_replication_factor }}</div></div>
+      <div><div class="text-xs text-slate-500">Full-mode threshold</div><div class="font-mono text-slate-200">{{ cluster_full_mode_threshold }}</div></div>
+      <div class="col-span-2"><div class="text-xs text-slate-500">Cluster Node ID</div><div class="font-mono text-blue-300" title="{{ cluster_node_id }}">{{ cluster_short_node_id }}</div></div>
+    </div>
+    {% else %}
+    <div class="text-sm text-slate-500">Cluster mode disabled (<code>cluster.enabled = false</code>).</div>
+    {% endif %}
+  </section>
+
+  <!-- Ingest -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">Ingest</h2>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">logs queue</div><div class="font-mono text-slate-200">{{ logs_queue }}</div></div>
+      <div><div class="text-xs text-slate-500">JSON-file queue</div><div class="font-mono text-slate-200">{{ json_file_queue }}</div></div>
+      <div class="col-span-2"><div class="text-xs text-slate-500">JSON file in progress</div>
+        <div class="font-mono text-slate-300 break-all">{% if json_file_name.is_empty() %}<span class="text-slate-600">—</span>{% else %}{{ json_file_name }}{% endif %}</div>
+      </div>
+      <div><div class="text-xs text-slate-500">syslog-file queue</div><div class="font-mono text-slate-200">{{ syslog_file_queue }}</div></div>
+      <div class="col-span-2"><div class="text-xs text-slate-500">syslog file in progress</div>
+        <div class="font-mono text-slate-300 break-all">{% if syslog_file_name.is_empty() %}<span class="text-slate-600">—</span>{% else %}{{ syslog_file_name }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="mt-3 pt-3 border-t border-slate-800 grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">flushers alive</div><div class="font-mono {{ flushers_class }}">{{ flushers_alive }} / {{ flushers_configured }}</div></div>
+      <div><div class="text-xs text-slate-500">flushers restarts</div><div class="font-mono text-slate-200">{{ flushers_restarts }}</div></div>
+      <div><div class="text-xs text-slate-500">records dropped</div><div class="font-mono {{ flushers_class }}">{{ flushers_dropped }}</div></div>
+      <div><div class="text-xs text-slate-500">pool checkout timeouts</div><div class="font-mono {{ pool_class }}">{{ pool_checkout_timeouts }}</div></div>
+    </div>
+  </section>
+
+  <!-- Performance -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">Performance</h2>
+    {% if perf_has_samples %}
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">ingest.flush p50</div><div class="font-mono text-slate-200">{{ perf_ingest_flush_p50_ms }} ms</div></div>
+      <div><div class="text-xs text-slate-500">ingest.flush p95</div><div class="font-mono text-slate-200">{{ perf_ingest_flush_p95_ms }} ms</div></div>
+      <div><div class="text-xs text-slate-500">ingest.flush p99</div><div class="font-mono text-slate-200">{{ perf_ingest_flush_p99_ms }} ms</div></div>
+      <div><div class="text-xs text-slate-500">ingest.flush total</div><div class="font-mono text-slate-200">{{ perf_ingest_flush_n }}</div></div>
+      <div><div class="text-xs text-slate-500">ingest.lag p50</div><div class="font-mono text-slate-200">{{ perf_ingest_lag_p50_ms }} ms</div></div>
+      <div><div class="text-xs text-slate-500">ingest.lag p95</div><div class="font-mono text-slate-200">{{ perf_ingest_lag_p95_ms }} ms</div></div>
+      <div><div class="text-xs text-slate-500">fanout.method.* p95 (max)</div><div class="font-mono text-slate-200">{{ perf_fanout_p95_ms }} ms</div></div>
+      <div><div class="text-xs text-slate-500">replicate.method.* p95 (max)</div><div class="font-mono text-slate-200">{{ perf_replicate_p95_ms }} ms</div></div>
+    </div>
+    {% else %}
+    <div class="text-sm text-slate-500">No ingest flush samples yet — drive some traffic through the node first.</div>
+    {% endif %}
+  </section>
+
+  <!-- JSON cache -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">JSON cache</h2>
+    <div class="grid grid-cols-3 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">Utilisation</div><div class="font-mono text-slate-200">{{ jsoncache_pct }}%</div></div>
+      <div><div class="text-xs text-slate-500">Entries</div><div class="font-mono text-slate-200">{{ jsoncache_len }}</div></div>
+      <div><div class="text-xs text-slate-500">Capacity</div><div class="font-mono text-slate-200">{{ jsoncache_capacity }}</div></div>
+    </div>
+    <div class="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-500">
+      Recently-ingested JSON records kept in-memory for vector / FTS rewrites without re-reading DuckDB.
+    </div>
+  </section>
+
+  <!-- Rebalancer -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">Rebalancer</h2>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">records replicated (lifetime)</div><div class="font-mono text-slate-200">{{ reb_records_replicated_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">records replicated (last run)</div><div class="font-mono text-slate-200">{{ reb_records_replicated_last_run }}</div></div>
+      <div><div class="text-xs text-slate-500">records examined (lifetime)</div><div class="font-mono text-slate-200">{{ reb_records_examined_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">records examined (last run)</div><div class="font-mono text-slate-200">{{ reb_records_examined_last_run }}</div></div>
+      <div><div class="text-xs text-slate-500">batches examined (lifetime)</div><div class="font-mono text-slate-200">{{ reb_batches_examined_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">batches examined (last run)</div><div class="font-mono text-slate-200">{{ reb_batches_examined_last_run }}</div></div>
+      <div><div class="text-xs text-slate-500">paused for ingest lag</div><div class="font-mono text-slate-200">{{ reb_paused_for_lag_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">errors (lifetime)</div><div class="font-mono text-slate-200">{{ reb_errors_lifetime }}</div></div>
+      <div class="col-span-2 pt-2 border-t border-slate-800"><div class="text-xs text-slate-500">last run</div><div class="font-mono text-slate-300">{{ reb_last_run }} <span class="text-slate-500">· {{ reb_last_run_ms }} ms</span></div></div>
+    </div>
+  </section>
+
+  <!-- Retention -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">Retention</h2>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">evicted (lifetime)</div><div class="font-mono text-slate-200">{{ ret_evicted_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">evicted (last run)</div><div class="font-mono text-slate-200">{{ ret_evicted_last_run }}</div></div>
+      <div><div class="text-xs text-slate-500">freed (lifetime)</div><div class="font-mono text-slate-200">{{ ret_freed_lifetime_bytes }}</div></div>
+      <div><div class="text-xs text-slate-500">freed (last run)</div><div class="font-mono text-slate-200">{{ ret_freed_last_run_bytes }}</div></div>
+      <div><div class="text-xs text-slate-500">errors (lifetime)</div><div class="font-mono text-slate-200">{{ ret_errors_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">quorum skipped (lifetime)</div><div class="font-mono text-slate-200">{{ ret_quorum_skipped_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">quorum skipped (last run)</div><div class="font-mono text-slate-200">{{ ret_quorum_skipped_last_run }}</div></div>
+      <div class="col-span-2 pt-2 border-t border-slate-800"><div class="text-xs text-slate-500">last run</div><div class="font-mono text-slate-300">{{ ret_last_run }} <span class="text-slate-500">· {{ ret_last_run_ms }} ms</span></div></div>
+    </div>
+  </section>
+
+  <!-- Self-healing -->
+  <section class="card rounded-lg p-4" style="border:1px solid #1e2535;background:#0e1520;">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">Self-healing</h2>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">quarantined now</div><div class="font-mono {{ sh_class }}">{{ sh_quarantined_now }}</div></div>
+      <div><div class="text-xs text-slate-500">quarantines (lifetime)</div><div class="font-mono text-slate-200">{{ sh_quarantines_total }}</div></div>
+      <div><div class="text-xs text-slate-500">heals (lifetime)</div><div class="font-mono text-emerald-300">{{ sh_heals_total }}</div></div>
+      <div><div class="text-xs text-slate-500">unhealable (lifetime)</div><div class="font-mono text-amber-300">{{ sh_unhealable_total }}</div></div>
+      <div><div class="text-xs text-slate-500">recreations (lifetime)</div><div class="font-mono text-slate-200">{{ sh_recreations_total }}</div></div>
+      <div><div class="text-xs text-slate-500">breaker trips (lifetime)</div><div class="font-mono text-amber-300">{{ sh_breaker_trips_total }}</div></div>
+    </div>
+  </section>
+
+  <!-- Dev data -->
+  <section class="card rounded-lg p-4"
+           style="border:1px solid {% if dev_data_enabled %}#7f1d1d{% else %}#1e2535{% endif %};background:#0e1520;">
+    <h2 class="text-sm font-semibold {% if dev_data_enabled %}text-red-300{% else %}text-slate-200{% endif %} uppercase tracking-wide mb-3">
+      Synthetic data generator
+    </h2>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div><div class="text-xs text-slate-500">armed</div><div class="font-mono">{% if dev_data_enabled %}<span class="text-red-300">yes</span>{% else %}<span class="text-emerald-300">no</span>{% endif %}</div></div>
+      <div><div class="text-xs text-slate-500">configured</div><div class="font-mono text-slate-200">{% if dev_data_config_enabled %}yes{% else %}no{% endif %}</div></div>
+      <div><div class="text-xs text-slate-500">records (lifetime)</div><div class="font-mono text-slate-200">{{ dev_data_records_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">records (last batch)</div><div class="font-mono text-slate-200">{{ dev_data_records_last_batch }}</div></div>
+      <div><div class="text-xs text-slate-500">batches emitted</div><div class="font-mono text-slate-200">{{ dev_data_batches_emitted }}</div></div>
+      <div><div class="text-xs text-slate-500">errors (lifetime)</div><div class="font-mono text-slate-200">{{ dev_data_errors_lifetime }}</div></div>
+      <div><div class="text-xs text-slate-500">interval</div><div class="font-mono text-slate-200">{{ dev_data_interval_secs }} s</div></div>
+      <div><div class="text-xs text-slate-500">duration window</div><div class="font-mono text-slate-200">{{ dev_data_duration }}</div></div>
+      <div><div class="text-xs text-slate-500">target / batch</div><div class="font-mono text-slate-200">{{ dev_data_total_per_batch }}</div></div>
+      <div><div class="text-xs text-slate-500">scenarios</div><div class="font-mono text-slate-200">{{ dev_data_scenarios }}</div></div>
+      <div><div class="text-xs text-slate-500">noise ratio</div><div class="font-mono text-slate-200">{{ dev_data_noise_ratio }}</div></div>
+      <div><div class="text-xs text-slate-500">anomaly ratio</div><div class="font-mono text-slate-200">{{ dev_data_anomaly_ratio }}</div></div>
+      <div><div class="text-xs text-slate-500">seed</div><div class="font-mono text-slate-200">{{ dev_data_seed }}</div></div>
+      <div class="col-span-2 pt-2 border-t border-slate-800"><div class="text-xs text-slate-500">last run</div><div class="font-mono text-slate-300">{{ dev_data_last_run }} <span class="text-slate-500">· {{ dev_data_last_run_ms }} ms</span></div></div>
+    </div>
+  </section>
+</div>
+
+<!-- ── BUND runtime ───────────────────────────────────────────────────────── -->
+<section class="card rounded-lg p-4 mb-6" style="border:1px solid #1e2535;background:#0e1520;">
+  <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wide mb-3">BUND runtime</h2>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-3">
+    <div><div class="text-xs text-slate-500">result queues</div><div class="font-mono text-slate-200">{{ n_results }}</div></div>
+    <div><div class="text-xs text-slate-500">named contexts</div><div class="font-mono text-slate-200">{{ n_bunds }}</div></div>
+    <div><div class="text-xs text-slate-500">recent submissions</div><div class="font-mono text-slate-200">{{ n_recent }}</div></div>
+    <div><div class="text-xs text-slate-500">running scripts</div><div class="font-mono text-slate-200">{{ n_running }}</div></div>
+  </div>
+  {% if n_recent > 0 || n_running > 0 %}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+    {% if n_running > 0 %}
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Running</div>
+      <table class="w-full">
+        <thead><tr class="text-left text-slate-500"><th class="pr-3">Worker</th><th>Script</th></tr></thead>
+        <tbody>
+          {% for r in running_scripts %}
+          <tr><td class="font-mono text-slate-200 pr-3">{{ r.worker }}</td><td class="font-mono text-blue-300" title="{{ r.id }}">{{ r.short_id }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% if n_recent > 0 %}
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Recent submissions</div>
+      <table class="w-full">
+        <thead><tr class="text-left text-slate-500"><th class="pr-3">Script</th><th>Submitted</th></tr></thead>
+        <tbody>
+          {% for r in recent_scripts %}
+          <tr><td class="font-mono text-blue-300 pr-3" title="{{ r.id }}">{{ r.short_id }}</td><td class="font-mono text-slate-300">{{ r.submitted_at }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<!-- ── Raw JSON (collapsible) ─────────────────────────────────────────────── -->
+<details class="card rounded-lg overflow-hidden" style="border:1px solid #1e2535;background:#0e1520;">
+  <summary class="px-4 py-3 cursor-pointer text-sm font-semibold text-slate-200 uppercase tracking-wide select-none">
+    Raw v2/status response
+  </summary>
+  <pre class="px-4 py-3 text-xs text-slate-300 font-mono overflow-x-auto leading-relaxed"
+       style="white-space: pre; background:#070b12;">{{ raw_json }}</pre>
+</details>

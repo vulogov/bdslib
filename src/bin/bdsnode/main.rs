@@ -159,6 +159,21 @@ async fn main() -> anyhow::Result<()> {
     status::init(node_id);
 
     bdslib::setloglevel::setloglevel(cli.debug);
+
+    // Propagate `--config <path>` into `BDS_CONFIG` so subsystems that
+    // re-resolve the path from the env var (sync, scheduler, llm_jobs,
+    // dev_data, shard_healer, results_sweeper, add*, the v2/configuration
+    // handler) work uniformly whether the path arrived via flag or env.
+    if let Some(p) = cli.config.as_deref() {
+        // SAFETY: set_var is invoked before any background threads spawn —
+        // we're still in the synchronous prologue of `main`.
+        // SAFETY-1.87+: `set_var` is `unsafe` because concurrent reads from
+        // other threads are undefined; we're single-threaded here so it's
+        // safe.  Keeping it inside `unsafe { }` makes the toolchain bump
+        // explicit when we eventually upgrade.
+        unsafe { std::env::set_var("BDS_CONFIG", p); }
+    }
+
     raise_nofile_limit(nofile_limit_from_config(cli.config.as_deref()));
 
     if cli.new {

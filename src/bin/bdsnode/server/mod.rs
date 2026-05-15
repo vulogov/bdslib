@@ -7,6 +7,7 @@ pub mod dev_data;
 pub mod llm_jobs;
 pub mod results_sweeper;
 pub mod rebalancer;
+pub mod rebalancer_state;
 pub mod retention;
 pub mod shard_healer;
 pub mod supervise;

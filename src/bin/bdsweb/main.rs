@@ -113,6 +113,8 @@ struct WebConfig {
     rca_templates_analyze:             state::AnalyzeTargetConfig,
     /// Operator-tunable knobs for Administration → Performance → "Analyze this!".
     perf_analyze:                      state::AnalyzeTargetConfig,
+    /// Operator-tunable knobs for Administration → Configuration → "Analyze this!".
+    configuration_analyze:             state::AnalyzeTargetConfig,
 }
 
 /// True when `host` is a loopback bind — a loopback IP (`127.0.0.0/8`,
@@ -152,6 +154,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         rca_analyze:                       state::AnalyzeTargetConfig::rca_default(),
         rca_templates_analyze:             state::AnalyzeTargetConfig::rca_templates_default(),
         perf_analyze:                      state::AnalyzeTargetConfig::perf_default(),
+        configuration_analyze:             state::AnalyzeTargetConfig::configuration_default(),
     };
     let path = match config_path {
         Some(p) => p,
@@ -250,6 +253,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
     let rca_analyze                       = parse_target("rca",                       state::AnalyzeTargetConfig::rca_default());
     let rca_templates_analyze             = parse_target("rca_templates",             state::AnalyzeTargetConfig::rca_templates_default());
     let perf_analyze                      = parse_target("perf",                      state::AnalyzeTargetConfig::perf_default());
+    let configuration_analyze             = parse_target("configuration",             state::AnalyzeTargetConfig::configuration_default());
 
     WebConfig {
         dashboard_refresh_secs: obj.get("dashboard_refresh_secs")
@@ -282,6 +286,7 @@ fn load_config(config_path: Option<&str>) -> WebConfig {
         rca_analyze,
         rca_templates_analyze,
         perf_analyze,
+        configuration_analyze,
     }
 }
 
@@ -507,6 +512,12 @@ async fn main() {
         cfg.perf_analyze.max_rows,
         cfg.perf_analyze.prompt_template.len(),
     );
+    log::info!(
+        "web.analyze.configuration: timeout={}s, max_rows={}, prompt_chars={}",
+        cfg.configuration_analyze.timeout_secs,
+        cfg.configuration_analyze.max_rows,
+        cfg.configuration_analyze.prompt_template.len(),
+    );
     let state = AppState::new(
         args.node.clone(),
         cfg.dashboard_refresh_secs,
@@ -528,6 +539,7 @@ async fn main() {
         cfg.rca_analyze,
         cfg.rca_templates_analyze,
         cfg.perf_analyze,
+        cfg.configuration_analyze,
     );
 
     // Background pollers, each kept alive by `supervise`: a panic in a
@@ -639,6 +651,14 @@ async fn main() {
         // ── Administration → LLM ─────────────────────────────────────
         .route("/admin/llm",       get(routes::admin_llm::page_with_banners))
         .route("/admin/llm/purge", post(routes::admin_llm::purge))
+
+        // ── Administration → Configuration ──────────────────────────
+        .route("/admin/configuration",         get(routes::admin_configuration::page))
+        .route("/admin/configuration/analyze", post(routes::admin_configuration::analyze))
+
+        // ── Administration → Status ─────────────────────────────────
+        .route("/admin/status",      get(routes::admin_status::page))
+        .route("/admin/status/data", get(routes::admin_status::data))
         .route("/help",            get(routes::help::page))
         .route("/help/query",      post(routes::help::query))
 

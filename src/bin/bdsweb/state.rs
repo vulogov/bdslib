@@ -890,6 +890,130 @@ pub const DEFAULT_PERF_ANALYZE_PROMPT: &str =
      (most series have n_recent < 20) say so plainly — percentiles below \
      that threshold are noise.";
 
+/// Default prompt for `web.analyze.configuration` — single payload row
+/// carrying `{config_path, exists, config: <parsed bds.hjson>, defaults:
+/// <library defaults block>}` produced by `v2/configuration`.  The model
+/// is asked to perform an SRE-grade review of the configuration against
+/// bdslib's documented operating envelope.
+///
+/// Authoritative reference docs the prompt is modeled after:
+/// `Documentation/BDSCONFIG.md`, `BDSNODE_TUNING_GUIDE.md`,
+/// `NODE_RELIABILITY.md`, `NODE_SELF_HEALING.md`, `RETENTION.md`,
+/// `CLUSTER.md`, `DEV_DATA.md`.
+pub const DEFAULT_CONFIGURATION_ANALYZE_PROMPT: &str =
+    "You are an SRE reviewing a bdsnode's runtime configuration. \
+     The supplied row contains the parsed `bds.hjson` (`config`) plus the \
+     library defaults (`defaults`) that fill any keys the operator did not \
+     set.  Produce a concise, evidence-anchored operational assessment.\n\
+     \n\
+     bdslib is a multifunctional data store wrapping DuckDB with full-text \
+     (Tantivy), vector (HNSW + fastembed), drain3 log-template mining, \
+     time-partitioned sharded telemetry, and an optional gossip cluster with \
+     hinted handoff + anti-entropy.  Misconfiguration shows up as data loss \
+     (over-aggressive retention, missing replication), unavailability (a \
+     shard pool that's too small, no self-healing), or security holes \
+     (open-access mode on a non-loopback bind, empty cluster.shared_secret).\n\
+     \n\
+     Review along these axes — each section short, bullets fine, quote knob \
+     names verbatim (`cluster.replication_factor`, `retention.duration`, …):\n\
+     \n\
+     1. **Headline verdict** — one line: is this a healthy single-node, a \
+        healthy cluster member, a misconfigured cluster member, a dev/demo \
+        node, or something dangerous in production?\n\
+     \n\
+     2. **Cluster mode & replication safety**\n\
+        - Is `cluster.enabled` consistent with the deployment shape?\n\
+        - `cluster.replication_factor` reasonable for the operator's peer \
+          count (3 is the canonical full-cluster value)?\n\
+        - `cluster.full_mode_threshold` should be ≤ (peer count) — a node \
+          with `replication_factor=3` and `full_mode_threshold=3` running \
+          alone never enters Full mode.\n\
+        - `cluster.full_replication_stores` should include EVERY fully \
+          replicated store the deployment uses: `docs`, `signals`, \
+          `scripts`, `users`, `llm_cache`, `graph`.  Missing entries mean \
+          that store is per-node only and silently diverges across peers.\n\
+        - `cluster.bootstrap` set (unless this IS the bootstrap node) and \
+          `cluster.shared_secret` non-empty for cluster mode.\n\
+     \n\
+     3. **Durability & data safety**\n\
+        - `sync_interval_secs` — DuckDB CHECKPOINT cadence; `0`/missing \
+          means WAL is only flushed on shard close.  Production wants this \
+          configured (typically 60s).\n\
+        - `retention.enabled` / `retention.duration` — does the window keep \
+          enough history for the operator's investigation budget?  A \
+          duration of \"1day\" on a node with `shard_duration: \"1h\"` \
+          retains only 24 shards.\n\
+        - `retention.quorum_check_enabled` — in cluster mode this MUST be \
+          true to avoid simultaneous evictions on every replica.  If \
+          enabled, `retention.quorum_min_peers` ≥ 1 is the safe floor.\n\
+        - `retention.max_evictions_per_run` — caps a one-time policy \
+          tightening from bulk-deleting the historic corpus.  `0` = no cap \
+          = dangerous when shortening retention.\n\
+     \n\
+     4. **Self-healing & rebalancer**\n\
+        - `self_healing.enabled` — Tier 1+2 are safe and recommended on; \
+          `recreate_failed_shards` (Tier 3) only makes sense in cluster \
+          mode with the rebalancer enabled (peers re-seed the empty shard).\n\
+        - `rebalancer.enabled` — required to actually heal under-replicated \
+          records.  Disabled rebalancer + recreate_failed_shards = silent \
+          data loss after a healer destroys an unrecoverable shard.\n\
+        - `rebalancer.interval` should comfortably exceed sweep latency \
+          (default 10m); aggressive sub-minute intervals hammer peers.\n\
+        - `rebalancer.pause_if_ingest_lag_p95_ms` — non-zero is the \
+          recommended back-pressure.\n\
+     \n\
+     5. **Synthetic data — production red flag**\n\
+        - `generate_realistic_data.enabled = true` injects fake telemetry \
+          on a timer.  Acceptable on dev/demo, NEVER on production.  Flag \
+          this loudly if it's on and the rest of the config looks \
+          production-grade (cluster enabled, retention long, …).\n\
+     \n\
+     6. **Resource bounds (ingest path)**\n\
+        - `pool_size` (DuckDB pool) — should comfortably exceed \
+          `n_workers + pipe_flushers` to avoid checkout timeouts.\n\
+        - `ingest_channel_capacity` — bounds the in-flight ingest queue; \
+          overflow → drops or back-pressure on writers.\n\
+        - `pipe_flushers` — concurrent flush workers; 1 is fine until \
+          `ingest.flush p95` becomes the bottleneck.\n\
+        - `max_open_shards` — LRU cap on the shard cache.  Too small \
+          + wide query window = thrashing.\n\
+        - `drain_enabled` — drain3 log-template mining; disable on pure \
+          metrics workloads to drop a chunk of ingest cost.\n\
+     \n\
+     7. **Security**\n\
+        - `cluster.shared_secret` non-empty (when cluster mode is on).\n\
+        - `cluster.session_ttl_secs` — session cookie lifetime; very long \
+          values widen the credential-theft window.\n\
+        - `cluster.auth_rate_limit_per_minute` — login rate limit; `0` \
+          disables brute-force protection.\n\
+     \n\
+     8. **Cross-knob consistency** — call out contradictions:\n\
+        - rebalancer or self_healing enabled but cluster mode off.\n\
+        - `retention.duration` shorter than `shard_duration`.\n\
+        - `antientropy_interval` >> `hint_replay_interval` (hints expire \
+          before AE notices).\n\
+        - `peer_rpc_timeout_secs` too low for any v3/* fan-out the \
+          deployment makes (cold shard opens take seconds, not the \
+          gossip-ping budget).\n\
+     \n\
+     9. **Overrides vs library defaults** — `defaults` shows what the \
+        library would pick for each section.  Highlight any operator \
+        override that materially changes the safety/perf envelope (e.g. \
+        `replication_factor` lowered to 1, `dead_timeout_secs` quintupled, \
+        `max_open_shards` lowered below the typical query window).\n\
+     \n\
+     10. **Concrete next steps** — 1–3 specific actions: \"set \
+         `retention.quorum_check_enabled = true`\", \"add `graph` to \
+         `cluster.full_replication_stores`\", \"disable \
+         `generate_realistic_data` before shipping\".  Each one cites the \
+         exact knob.\n\
+     \n\
+     Be terse; bullets are fine.  Quote knob names verbatim.  If a key is \
+     absent from `config` it inherits the value in `defaults` — say so \
+     explicitly when relevant.  If a section looks fine, say \"OK\" and \
+     move on rather than padding.  Do not invent knobs that are not in \
+     the supplied data.";
+
 impl AnalyzeTargetConfig {
     /// Default settings for `web.analyze.logs`.
     pub fn logs_default() -> Self {
@@ -1071,6 +1195,20 @@ impl AnalyzeTargetConfig {
             prompt_template: DEFAULT_PERF_ANALYZE_PROMPT.to_owned(),
         }
     }
+
+    /// Default settings for `web.analyze.configuration`.  Payload is
+    /// always one row (the entire v2/configuration response — parsed
+    /// config + defaults), so `max_rows` is nominal.  Generous timeout
+    /// because the prompt asks the model to reason across 10 distinct
+    /// configuration axes, which some hosted models take several
+    /// seconds to produce.
+    pub fn configuration_default() -> Self {
+        Self {
+            timeout_secs:    600,
+            max_rows:        50,
+            prompt_template: DEFAULT_CONFIGURATION_ANALYZE_PROMPT.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1169,6 +1307,9 @@ pub struct AppState {
     /// Operator-configurable knobs for the "Analyze this!" button on
     /// the Administration → Performance page (`web.analyze.perf.*`).
     pub perf_analyze: Arc<AnalyzeTargetConfig>,
+    /// Operator-configurable knobs for the "Analyze this!" button on
+    /// the Administration → Configuration page (`web.analyze.configuration.*`).
+    pub configuration_analyze: Arc<AnalyzeTargetConfig>,
 }
 
 impl AppState {
@@ -1193,6 +1334,7 @@ impl AppState {
         rca_analyze:                       AnalyzeTargetConfig,
         rca_templates_analyze:             AnalyzeTargetConfig,
         perf_analyze:                      AnalyzeTargetConfig,
+        configuration_analyze:             AnalyzeTargetConfig,
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -1227,6 +1369,7 @@ impl AppState {
             rca_analyze:                       Arc::new(rca_analyze),
             rca_templates_analyze:             Arc::new(rca_templates_analyze),
             perf_analyze:                      Arc::new(perf_analyze),
+            configuration_analyze:             Arc::new(configuration_analyze),
         }
     }
 }

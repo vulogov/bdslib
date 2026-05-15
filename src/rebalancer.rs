@@ -46,6 +46,41 @@ pub const DEFAULT_MAX_PER_RUN: usize = 500;
 /// (500 ms) — only fires when ingest is genuinely backed up.
 pub const DEFAULT_LAG_PAUSE_MS: u64 = 1000;
 
+/// If `v2/perf.ingest.flush.p95` is above this many ms, skip the
+/// tick.  Catches the case where the queue is draining (`ingest.lag`
+/// is fine) but the actual flush call is taking many seconds because
+/// DuckDB / Tantivy / HNSW are saturated — exactly when replicating
+/// new records to peers (which goes through the same engines on the
+/// receiver) is the worst possible thing the rebalancer can do.
+///
+/// 5 s default — well above a healthy flush (sub-second on cached
+/// shards, a few hundred ms on cold ones), low enough that a node
+/// genuinely struggling stops the rebalancer immediately.
+pub const DEFAULT_FLUSH_PAUSE_MS: u64 = 5000;
+
+/// TTL of entries in the cross-sweep `(peer, record) → has` cache.
+/// Set well above `interval` so back-to-back sweeps reuse each other's
+/// answers; the anti-entropy tick is the long-term reconciler so
+/// staleness here only delays re-probing, not correctness.
+///
+/// 30 min default.  0 disables the cache entirely.
+pub const DEFAULT_HAVE_CACHE_TTL_SECS: u64 = 1800;
+
+/// Max entries in the have-cache.  100k pairs ≈ 5 MiB at our entry
+/// shape, fits comfortably on any node.  0 disables the cache.
+pub const DEFAULT_HAVE_CACHE_CAPACITY: usize = 100_000;
+
+/// Number of consecutive probe timeouts within ONE sweep before a
+/// peer is dropped from the rest of that sweep.  Reset between
+/// sweeps.  0 disables the per-sweep peer-skip behaviour.
+pub const DEFAULT_SLOW_PEER_SKIP_AFTER: u32 = 2;
+
+/// Maximum concurrent `v2/cluster.replicate_record` pushes per batch.
+/// 4 is a good default — enough to overlap the cold-shard-open cost
+/// across peers without saturating the receiver's pool.  1 forces
+/// the old serial behaviour (useful when the receiver is fragile).
+pub const DEFAULT_PUSH_CONCURRENCY: usize = 4;
+
 /// Operator-tunable knobs.  Parse from the `rebalancer:` block of
 /// `bds.hjson` via [`RebalancerConfig::from_hjson_str`].
 #[derive(Debug, Clone)]
@@ -57,6 +92,25 @@ pub struct RebalancerConfig {
     /// `None` ⇒ inherit `cluster.replication_factor` at run time.
     pub min_replication_factor:  Option<usize>,
     pub pause_if_ingest_lag_p95_ms: u64,
+    /// Skip the tick when `ingest.flush p95` exceeds this many ms.
+    /// Sister knob to `pause_if_ingest_lag_p95_ms`; the two measure
+    /// different things — lag is queue-wait, flush is actual write
+    /// time — and either can independently signal back-pressure.
+    pub pause_if_ingest_flush_p95_ms: u64,
+    /// TTL of cross-sweep `(peer, record) → has` cache entries.  Long
+    /// enough to span typical `interval` values (so back-to-back ticks
+    /// reuse each other's answers), short enough to bound staleness on
+    /// peer restarts / record deletes.  0 disables the cache.
+    pub have_cache_ttl_secs:     u64,
+    /// Cap on entries in the have-cache.  0 disables the cache.
+    pub have_cache_capacity:     usize,
+    /// Within one sweep, a peer that fails this many probe attempts
+    /// (timeout / network / rpc error) is skipped for the remainder
+    /// of the sweep.  Reset between sweeps.  0 disables peer-skip.
+    pub slow_peer_skip_after:    u32,
+    /// Max concurrent `v2/cluster.replicate_record` pushes per batch.
+    /// 1 forces serial behaviour.
+    pub push_concurrency:        usize,
 }
 
 impl RebalancerConfig {
@@ -67,7 +121,12 @@ impl RebalancerConfig {
             batch_size:              DEFAULT_BATCH_SIZE,
             max_per_run:             DEFAULT_MAX_PER_RUN,
             min_replication_factor:  None,
-            pause_if_ingest_lag_p95_ms: DEFAULT_LAG_PAUSE_MS,
+            pause_if_ingest_lag_p95_ms:   DEFAULT_LAG_PAUSE_MS,
+            pause_if_ingest_flush_p95_ms: DEFAULT_FLUSH_PAUSE_MS,
+            have_cache_ttl_secs:          DEFAULT_HAVE_CACHE_TTL_SECS,
+            have_cache_capacity:          DEFAULT_HAVE_CACHE_CAPACITY,
+            slow_peer_skip_after:         DEFAULT_SLOW_PEER_SKIP_AFTER,
+            push_concurrency:             DEFAULT_PUSH_CONCURRENCY,
         }
     }
 
@@ -119,6 +178,32 @@ impl RebalancerConfig {
             .map(|n| n as u64)
             .unwrap_or(DEFAULT_LAG_PAUSE_MS);
 
+        let pause_if_ingest_flush_p95_ms = block.get("pause_if_ingest_flush_p95_ms")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u64)
+            .unwrap_or(DEFAULT_FLUSH_PAUSE_MS);
+
+        let have_cache_ttl_secs = block.get("have_cache_ttl_secs")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u64)
+            .unwrap_or(DEFAULT_HAVE_CACHE_TTL_SECS);
+
+        let have_cache_capacity = block.get("have_cache_capacity")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as usize)
+            .unwrap_or(DEFAULT_HAVE_CACHE_CAPACITY);
+
+        let slow_peer_skip_after = block.get("slow_peer_skip_after")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u32)
+            .unwrap_or(DEFAULT_SLOW_PEER_SKIP_AFTER);
+
+        let push_concurrency = block.get("push_concurrency")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as usize)
+            .unwrap_or(DEFAULT_PUSH_CONCURRENCY)
+            .max(1);
+
         Ok(Self {
             enabled: true,
             interval,
@@ -126,6 +211,11 @@ impl RebalancerConfig {
             max_per_run,
             min_replication_factor,
             pause_if_ingest_lag_p95_ms,
+            pause_if_ingest_flush_p95_ms,
+            have_cache_ttl_secs,
+            have_cache_capacity,
+            slow_peer_skip_after,
+            push_concurrency,
         })
     }
 
@@ -321,12 +411,13 @@ mod tests {
     fn config_parses_full_block() {
         let raw = r#"{
             "rebalancer": {
-                "enabled":                     true,
-                "interval":                    "30s",
-                "batch_size":                  25,
-                "max_per_run":                 100,
-                "min_replication_factor":      2,
-                "pause_if_ingest_lag_p95_ms":  500
+                "enabled":                      true,
+                "interval":                     "30s",
+                "batch_size":                   25,
+                "max_per_run":                  100,
+                "min_replication_factor":       2,
+                "pause_if_ingest_lag_p95_ms":   500,
+                "pause_if_ingest_flush_p95_ms": 3000
             }
         }"#;
         let cfg = RebalancerConfig::from_hjson_str(raw).unwrap();
@@ -336,6 +427,15 @@ mod tests {
         assert_eq!(cfg.max_per_run, 100);
         assert_eq!(cfg.min_replication_factor, Some(2));
         assert_eq!(cfg.pause_if_ingest_lag_p95_ms, 500);
+        assert_eq!(cfg.pause_if_ingest_flush_p95_ms, 3000);
+    }
+
+    #[test]
+    fn config_pause_flush_defaults_when_absent() {
+        let cfg = RebalancerConfig::from_hjson_str(
+            r#"{ "rebalancer": { "enabled": true } }"#
+        ).unwrap();
+        assert_eq!(cfg.pause_if_ingest_flush_p95_ms, DEFAULT_FLUSH_PAUSE_MS);
     }
 
     #[test]

@@ -1377,10 +1377,21 @@ impl ShardsManager {
         // its v7 timestamp, but we don't pre-compute that here — a
         // missed shard would silently report "not present" and trigger
         // unnecessary replication, which is wasteful but not incorrect.
+        //
+        // Per-shard id-bloom (Tier 3): for each shard, partition `ids`
+        // into "maybe present" (bloom hit; fall through to DuckDB) and
+        // "definitely absent" (bloom miss; skip the DuckDB query).
+        // For a typical rebalancer batch — 50 IDs that all originated
+        // from one source shard — most receiver shards return
+        // `maybe_present.is_empty()` and contribute zero DuckDB cost.
         let mut present: Vec<Uuid> = Vec::new();
         for info in self.cache.info().list_all()? {
             let shard = self.cache.shard(info.start_time)?;
-            let docs  = shard.observability().get_by_ids(ids)?;
+            let (maybe_present, _absent) = shard.bloom_partition_ids(ids);
+            if maybe_present.is_empty() {
+                continue;
+            }
+            let docs = shard.observability().get_by_ids(&maybe_present)?;
             for d in docs {
                 if let Some(id) = d.get("id").and_then(|v| v.as_str())
                     .and_then(|s| Uuid::parse_str(s).ok())

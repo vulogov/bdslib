@@ -120,6 +120,10 @@ struct DashboardData {
     /// data because their RPC failed on the last poll (M3).  The
     /// template renders it as an amber "partial data" banner.
     stale_note:              String,
+    /// JSON-RPC URL of the bdsnode this bdsweb instance is talking to.
+    /// Rendered as a small footer line at the bottom of the dashboard
+    /// so operators can tell at a glance which node they're viewing.
+    node_url:                String,
 }
 
 fn short_uuid(s: &str) -> String {
@@ -128,7 +132,11 @@ fn short_uuid(s: &str) -> String {
 
 const RECENT_SHARDS: usize = 5;
 
-fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String, AppError> {
+fn render_snapshot(
+    snap: &DashboardSnapshot,
+    refresh_secs: u64,
+    node_url: &str,
+) -> Result<String, AppError> {
     let shard_arr = snap.shards.as_array().cloned().unwrap_or_default();
     let total_shards = shard_arr.len();
 
@@ -279,6 +287,7 @@ fn render_snapshot(snap: &DashboardSnapshot, refresh_secs: u64) -> Result<String
                 snap.stale.join(", "),
             )
         },
+        node_url: node_url.to_owned(),
     };
 
     Ok(tmpl.render()?)
@@ -354,7 +363,7 @@ pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppErro
     // cloning the whole snapshot on every poll (P3).
     let guard = state.dashboard_cache.read().await;
     match &*guard {
-        Some(snap) => Ok(Html(render_snapshot(snap, state.dashboard_refresh_secs)?)),
+        Some(snap) => Ok(Html(render_snapshot(snap, state.dashboard_refresh_secs, &state.node_url)?)),
         None => {
             drop(guard);
             // L1: once we've been up a while with still-empty cache,
@@ -374,5 +383,5 @@ pub async fn data(State(state): State<AppState>) -> Result<Html<String>, AppErro
 pub async fn refresh(State(state): State<AppState>) -> Result<Html<String>, AppError> {
     let snap = collect(&state).await?;
     *state.dashboard_cache.write().await = Some(snap.clone());
-    Ok(Html(render_snapshot(&snap, state.dashboard_refresh_secs)?))
+    Ok(Html(render_snapshot(&snap, state.dashboard_refresh_secs, &state.node_url)?))
 }

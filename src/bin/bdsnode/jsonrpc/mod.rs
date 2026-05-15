@@ -128,6 +128,7 @@ mod v3_trends;
 mod v4_llm;
 mod v2_graph;
 mod v5_graph;
+mod v2_configuration;
 
 use jsonrpsee::RpcModule;
 
@@ -257,6 +258,7 @@ pub fn build_module() -> RpcModule<()> {
     v2_user::register(&mut module);
     v3_user::register(&mut module);
     status::register(&mut module);
+    v2_configuration::register(&mut module);
     topics::register(&mut module);
     topics_all::register(&mut module);
     trends::register(&mut module);

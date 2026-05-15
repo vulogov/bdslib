@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Status · bdsnode{% endblock %}
+{% block nav_admin_status %}active{% endblock %}
+
+{% block content %}
+
+<header class="mb-6 flex items-baseline justify-between">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Status</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Full <code class="text-slate-300">v2/status</code> snapshot —
+      every subsystem this node exposes through the status RPC.
+      Auto-refreshes every {{ refresh_secs }}s; the raw JSON section at
+      the bottom mirrors the response verbatim.
+    </p>
+  </div>
+  <button type="button"
+          class="btn btn-primary"
+          hx-get="/admin/status/data"
+          hx-target="#status-data"
+          hx-swap="innerHTML"
+          title="Force an immediate refresh">
+    Reload
+  </button>
+</header>
+
+<div id="status-data"
+     hx-get="/admin/status/data"
+     hx-trigger="load, every {{ refresh_secs }}s"
+     hx-swap="innerHTML">
+  <div class="flex flex-col items-center justify-center py-32 gap-5 text-slate-500">
+    <svg class="animate-spin h-10 w-10 text-blue-500"
+         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10"
+              stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+    </svg>
+    <p class="text-base font-medium text-slate-300">Loading status…</p>
+  </div>
+</div>
+
+<!-- bdsnode endpoint footer — same pattern as the Dashboard. -->
+<div class="mt-8 pt-4 border-t border-slate-800 text-center text-xs text-slate-500">
+  Connected to bdsnode at <span class="font-mono text-slate-400">{{ node_url }}</span>
+</div>
+
+{% endblock %}

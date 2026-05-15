@@ -12,6 +12,7 @@ pub mod fts;
 pub mod globals;
 pub mod graphstorage;
 pub mod health;
+pub mod idbloom;
 pub mod llm;
 pub mod dev_data;
 pub mod observability;

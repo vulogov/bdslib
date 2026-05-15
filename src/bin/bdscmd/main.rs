@@ -285,6 +285,11 @@ enum Commands {
     /// (`v2/retention.settings`).
     RetentionSettings(cmd::retention::SettingsCmd),
 
+    /// Dump the node's effective configuration (`v2/configuration`):
+    /// resolved hjson path, parsed `bds.hjson`, and a library-defaults
+    /// block for keys the operator did not set.
+    Configuration(cmd::configuration::Cmd),
+
     /// Snapshot the node's in-process latency series (`v2/perf`).
     /// Returns one entry per series (ingest.flush, ingest.lag,
     /// fanout.peer.*, replicate.method.*, …) with p50/p95/p99/min/
@@ -407,6 +412,7 @@ fn main() -> Result<()> {
         Commands::Ask(a)                      => cmd::ask::run(&url, &session, a),
         Commands::RetentionSweep(a)           => cmd::retention::sweep(&url, &session, a),
         Commands::RetentionSettings(a)        => cmd::retention::settings(&url, &session, a),
+        Commands::Configuration(a)            => cmd::configuration::run(&url, &session, a),
         Commands::Perf(a)                     => cmd::perf::run(&url, &session, a),
         Commands::PerfSlow(a)                 => cmd::perf_slow::run(&url, &session, a),
         Commands::Health(a)                   => cmd::health::run(&url, &session, a),

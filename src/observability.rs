@@ -690,6 +690,16 @@ impl ObservabilityStorage {
         parse_uuid_column(rows)
     }
 
+    /// Enumerate every record id (primary AND secondary) stored in
+    /// this shard's observability table.  Used at shard-open to
+    /// populate the per-shard [`crate::idbloom::IdBloom`] so the
+    /// rebalancer's `has_records` probe can short-circuit definitely-
+    /// absent shards without touching DuckDB.
+    pub fn list_all_ids(&self) -> Result<Vec<Uuid>> {
+        let rows = self.engine.select_all("SELECT id FROM telemetry")?;
+        parse_uuid_column(rows)
+    }
+
     /// Enumerate every **primary** record paired with the data the
     /// search indexes need to be rebuilt from scratch:
     /// `(id, fingerprint_text, embedding, reconstructed_doc)`.

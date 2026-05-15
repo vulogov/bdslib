@@ -72,6 +72,7 @@ pub mod llm;
 pub mod to_bund;
 pub mod ask;
 pub mod retention;
+pub mod configuration;
 pub mod perf;
 pub mod perf_slow;
 pub mod health;
