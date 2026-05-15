@@ -285,7 +285,15 @@ pub async fn bootstrap(cluster: &Arc<Cluster>, http: &reqwest::Client) -> Bootst
                 }
             }
             Err(e) => {
-                log::debug!("[cluster] hello {url}: {e}");
+                // Per-target hello failures are redundant with the
+                // pass-level "bootstrap complete — joined N/M" INFO
+                // log emitted just below, and they're the dominant
+                // source of debug-level noise during coordinated
+                // cluster startup (the startup-bootstrap retry loop
+                // can fire 15 of these per minute per down target).
+                // TRACE keeps them available for deep diagnosis
+                // without flooding `-d 2` debug output.
+                log::trace!("[cluster] hello {url}: {e}");
             }
         }
     }
@@ -332,14 +340,67 @@ pub async fn probe_recovery(
         Ok(_) => {
             cluster.peers.write().record_alive(target.node_id);
             log::info!("[cluster] recovery probe: {} -> Alive (was {:?})", target.url, target.state);
+            // Reset the per-peer log-throttle so the next failure
+            // (if it happens) logs at DEBUG immediately rather than
+            // being absorbed by an old timestamp.
+            clear_recovery_log_throttle(target.node_id);
             // Persist immediately so the next restart doesn't lose this transition.
             cluster.persist_peers_best_effort();
             Some(target.url)
         }
         Err(e) => {
-            log::debug!("[cluster] recovery probe: {} still unreachable: {e}", target.url);
+            // Per-peer rate-limited debug log.  Default gossip_interval
+            // is 2 s and the recovery probe fires every tick — without
+            // this throttle a peer that's down for 5 minutes produces
+            // 150 identical "still unreachable" DEBUG lines.  Operators
+            // who want them all can enable TRACE; the throttled DEBUG
+            // gives one line every 60 s per peer so the gossip layer
+            // remains observable.
+            if should_log_recovery_failure(target.node_id) {
+                log::debug!("[cluster] recovery probe: {} still unreachable: {e}", target.url);
+            } else {
+                log::trace!("[cluster] recovery probe: {} still unreachable: {e}", target.url);
+            }
             None
         }
+    }
+}
+
+// ── Per-peer log throttle for `probe_recovery` ────────────────────────────────
+//
+// Process-wide `Mutex<HashMap<Uuid, Instant>>`: the timestamp of the most
+// recent DEBUG-level log line for that peer's still-unreachable state.
+// `should_log_recovery_failure` returns `true` (and updates the timestamp)
+// when the suppression window has elapsed; otherwise returns `false` and
+// the caller demotes the message to TRACE.
+
+const RECOVERY_LOG_THROTTLE: Duration = Duration::from_secs(60);
+
+fn recovery_log_throttle()
+    -> &'static std::sync::Mutex<std::collections::HashMap<Uuid, std::time::Instant>>
+{
+    static T: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<Uuid, std::time::Instant>>
+    > = std::sync::OnceLock::new();
+    T.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn should_log_recovery_failure(peer: Uuid) -> bool {
+    let now = std::time::Instant::now();
+    let Ok(mut g) = recovery_log_throttle().lock() else { return true; };
+    let due = match g.get(&peer) {
+        Some(last) => now.duration_since(*last) >= RECOVERY_LOG_THROTTLE,
+        None       => true,
+    };
+    if due {
+        g.insert(peer, now);
+    }
+    due
+}
+
+fn clear_recovery_log_throttle(peer: Uuid) {
+    if let Ok(mut g) = recovery_log_throttle().lock() {
+        g.remove(&peer);
     }
 }
 
