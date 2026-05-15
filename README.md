@@ -58,6 +58,7 @@ runtime into a single cohesive system backed by DuckDB.
 | **Telemetry trends** | Min, max, mean, median, std-dev, S-H-ESD anomaly detection, breakout detection |
 | **Root cause analysis** | G-Forest co-occurrence clustering over non-telemetry events; causal ranking by lead time |
 | **Template RCA** | RCA on drain3 template observations — cluster template bodies by co-occurrence |
+| **Semi-Markov projection** | Stochastic forecast of likely future log/event arrivals over a configurable window.  Drain3 templates as states, higher-order Markov chain (K ≤ 4) with stupid-backoff smoothing, empirical inter-arrival learning from observed timestamps, many Monte Carlo rollouts aggregated by time bin with explicit share-of-samples consensus per emitted event.  Cluster-wide via `v3/project_logs` (union projection across every Alive peer); local via `v2/project_logs`; CLI via `bdscmd project-logs`; bdsweb surface at `Analysis → Project events` with an "Analyze this!" LLM review.  See [`Documentation/Algorithm/MARKOV.md`](Documentation/Algorithm/MARKOV.md). |
 
 ### Scripting runtime
 
@@ -292,6 +293,9 @@ bdscmd rca --key service.error --duration 1h
 
 # LDA topics for a key's corpus
 bdscmd topics --key log.app --duration 24h
+
+# Project likely future events with a semi-Markov chain
+bdscmd project-logs --duration-back 1h --duration-forward 30min
 ```
 
 **7. BUND scripting**

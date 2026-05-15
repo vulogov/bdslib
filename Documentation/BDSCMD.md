@@ -54,6 +54,7 @@ output suitable for piping into `jq`.
     - [anomaly-recent](#117-anomaly-recent)
     - [denoise-recent](#118-denoise-recent)
     - [knn](#119-knn)
+    - [project-logs](#1110-project-logs)
 12. [Commands — Template Store](#12-commands--template-store)
     - [tpl-add](#121-tpl-add)
     - [tpl-get](#122-tpl-get)
@@ -1475,6 +1476,85 @@ The `clusters` array is sorted by `size` (largest first); `members`
 within each cluster are sorted by `density` (most representative first).
 The `anomalies` array is sorted by `max_similarity` ascending so the
 most-isolated records appear first.
+
+---
+
+### 11.10 `project-logs`
+
+Semi-Markov projection of likely future log/event arrivals — drives
+`v3/project_logs` by default (cluster-wide; trains on the union of
+every Alive peer's recent primaries).  Drain3 templates as states, K-order
+backoff with α-smoothing, empirical inter-arrival learning, many
+Monte Carlo rollouts aggregated by time bin.  Algorithm reference:
+[`Documentation/Algorithm/MARKOV.md`](Algorithm/MARKOV.md).
+
+```
+bdscmd project-logs [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--duration-back` | `"1h"` | Humantime training window — how far back to read primaries. |
+| `--duration-forward` | `"30min"` | Humantime projection window. |
+| `--order` | `2` | Markov order K (clamped `[1, 4]`). |
+| `--n-samples` | `50` | Number of Monte Carlo rollouts to aggregate. |
+| `--time-bins` | `20` | Time bins to slice `duration-forward` into. |
+| `--min-consensus` | `0.10` | Minimum share-of-samples consensus before an event is emitted (`[0, 1]`). |
+| `--max-events` | `200` | Hard cap on the projected `events[]` array. |
+| `--smoothing` | `0.5` | Additive Laplace α inside the matched n-gram context. |
+| `--bucketing` | `"drain3"` | `"drain3"` (default, recommended), `"normalize"`, or `"identity"`. |
+| `--seed` | — | RNG seed for reproducible projections. |
+| `--events-per-second` | `1.0` | Fallback gap rate when no empirical observation matches. |
+
+**Examples:**
+
+```bash
+# Default — train on the last hour, project the next 30 minutes,
+# drain3 buckets, K=2, 50 rollouts.
+bdscmd project-logs
+
+# Wider training window + tighter consensus + reproducible.
+bdscmd project-logs \
+    --duration-back 4h \
+    --duration-forward 1h \
+    --min-consensus 0.30 \
+    --seed 42
+
+# Stress-test with K=3 and 200 samples on a small projection.
+bdscmd project-logs \
+    --duration-back 30min \
+    --duration-forward 5min \
+    --order 3 \
+    --n-samples 200 \
+    --time-bins 10
+```
+
+**Response (abbreviated):**
+
+```json
+{
+  "cluster_meta":     { "peers_queried": 2, "peers_answered": 2, "partial": false, ... },
+  "duration_back":    "1h",
+  "duration_forward": "30min",
+  "n":                9,
+  "n_unique_inputs":  32,
+  "n_raw_inputs":     32,
+  "events": [
+    {
+      "offset_secs":     30.0,
+      "source_state":    "sshd host: <*> message: <*> <*> for user <*>",
+      "text":            "sshd host: worker-01 message: authentication ok for user bob pid: 2175 ...",
+      "transition_prob": 0.30
+    }
+  ]
+}
+```
+
+`transition_prob` is the share of rollouts that placed the state in
+the time bin — `1.0` = unanimous, anything ≥ `min_consensus` is
+emitted.  See [`v3/project_logs`](jsonrpc_api/v3_project_logs.md) for
+the full response schema and [`Algorithm/MARKOV.md`](Algorithm/MARKOV.md)
+for what the consensus numbers mean.
 
 ---
 

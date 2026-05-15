@@ -36,6 +36,7 @@ question that doesn't require labelled training data or external models:
 | *"Strip the heartbeats — show me only the lines that say something distinctive."* | [N-gram noise removal](NGRAM_NOISE.md) | A `kept` (signal) array + a `removed` (noise) array, separated by mean n-gram commonness. |
 | *"What event keys are correlated in time, and what plausibly caused this failure?"* | [RCA Jaccard](RCA_JACCARD.md) | Co-occurrence clusters + ranked precursor candidates with mean lead-time. |
 | *"What is this stream talking about? give me keywords."* | [LDA](LDA.md) | A sorted, deduplicated keyword list per topic, distilled into one keyword string per key. |
+| *"Given the recent pattern, what is likely to happen NEXT?"* | [Semi-Markov projection](MARKOV.md) | A list of consensus future events with time offsets and share-of-samples `transition_prob`, built from a higher-order Markov chain over drain3 templates + empirical inter-arrival distribution + many Monte Carlo rollouts. |
 
 ---
 
@@ -70,13 +71,19 @@ If you're choosing between them for a new feature, the quickest filter is
 - **Need a list of *keywords* without representative inputs?** — LDA.
   The only algorithm here that produces derived terms that may not
   appear together in any single input.
+- **Need to *project the next likely events*?** — Markov projection.
+  The only algorithm here that *extrapolates* — produces a stochastic
+  forecast of which events will land in which time window over a
+  configurable look-forward horizon, with explicit per-event
+  share-of-samples consensus.
 
 A second axis is **what you're feeding it**:
 
 | Input | Best fit |
 |---|---|
 | Every incoming `(key, data, timestamp)` record | Primary / Secondary (always — runs in the data path) |
-| `&[String]` of arbitrary text | TextRank, LSA, k-NN, N-gram anomaly, N-gram noise |
+| `&[String]` of arbitrary text | TextRank, LSA, k-NN, N-gram anomaly, N-gram noise, Markov projection (untimed) |
+| `&[(i64, String)]` with timestamps | Markov projection (timed, empirical inter-arrival learning) |
 | Stored events / drain3 templates with timestamps | RCA Jaccard |
 | Stored records under one or more keys | LDA |
 
@@ -102,6 +109,11 @@ JSON-RPC layer:
   way to get a "wall of keywords" view of every active stream in the
   system — useful as the seed for an Ollama RAG prompt or a one-glance
   dashboard tile.
+- **Project, then ask the LLM.** Run Markov projection over the recent
+  primaries to get a consensus forecast trace, then hand it to the
+  LLM analyze surface (`web.analyze.project_logs`) for an SRE-style
+  early-warning narrative.  The bdsweb "Analysis → Project events"
+  page wires this end-to-end.
 
 ---
 
@@ -135,6 +147,7 @@ you can navigate them without re-orienting:
 | [NGRAM_NOISE.md](NGRAM_NOISE.md) | `bdslib::analysis::ngram::ngram_remove_noise` | N-gram noise removal: same pipeline as anomaly detection, scored by *commonness* — splits the corpus into `kept` (signal) and `removed` (noise) for downstream cleanup |
 | [RCA_JACCARD.md](RCA_JACCARD.md) | `bdslib::analysis::rca`, `bdslib::analysis::rca_templates` | Jaccard-based root-cause analysis: bucketed co-occurrence → Jaccard threshold + union-find clustering → mean-lead-time causal ranking; the *temporal* analysis algorithm of the family |
 | [LDA.md](LDA.md) | `bdslib::analysis::latentdirichletallocation` | Latent Dirichlet Allocation topic modelling: per-key corpus → `json_fingerprint`-flattened text → collapsed Gibbs sampling → deduplicated alphabetical keyword set; delegates to the external `latentdirichletallocation` crate |
+| [MARKOV.md](MARKOV.md) | `bdslib::analysis::markov` | Semi-Markov projection: drain3 bucketing → K-order n-gram counts + empirical inter-arrival distribution → N Monte Carlo rollouts → time-binned modal aggregation; stochastic forecast of likely future events with share-of-samples consensus; ~600 lines, drains3 + rand 0.8 + serde |
 
 ---
 
@@ -168,6 +181,7 @@ src/
     ├── knn.rs                        ← k-NN intelligence
     ├── latentdirichletallocation.rs  ← LDA topic modelling
     ├── lsa.rs                        ← LSA extractive summarisation
+    ├── markov.rs                     ← Semi-Markov projection
     ├── ngram.rs                      ← N-gram anomaly + noise removal (dual endpoints)
     ├── rca.rs                        ← RCA over event records
     ├── rca_templates.rs              ← RCA over drain3 templates (same algorithm)
@@ -176,10 +190,11 @@ src/
 
 Each `analysis/*` module is self-contained, depends only on `serde` +
 `std` for the text-based algorithms (LDA additionally depends on the
-`latentdirichletallocation` crate), and never panics on user-supplied
-input. `observability.rs` depends on `StorageEngine` (DuckDB) and
-`EmbeddingEngine` (fastembed) — it is the only algorithm in this set
-that touches I/O directly.
+`latentdirichletallocation` crate, Markov projection additionally on
+`rand` 0.8, `regex`, and `crate::common::drain::DrainParser`), and
+never panics on user-supplied input. `observability.rs` depends on
+`StorageEngine` (DuckDB) and `EmbeddingEngine` (fastembed) — it is the
+only algorithm in this set that touches I/O directly.
 
 ---
 

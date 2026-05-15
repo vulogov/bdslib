@@ -227,7 +227,8 @@ Full reference: [jsonrpc_api/README.md](jsonrpc_api/README.md)
 **Search** — `v2/search` · `v2/search.get` · `v2/fulltext` · `v2/fulltext.get` ·
 `v2/fulltext.recent` · `v2/aggregationsearch`
 
-**Analysis** — `v2/trends` · `v2/topics` · `v2/topics.all` · `v2/rca`
+**Analysis** — `v2/trends` · `v2/topics` · `v2/topics.all` · `v2/rca` ·
+`v2/project_logs` (semi-Markov projection) · `v3/project_logs`
 
 **Documents** — `v2/doc.add` · `v2/doc.add.file` · `v2/doc.get` · `v2/doc.get.metadata` ·
 `v2/doc.get.content` · `v2/doc.update.metadata` · `v2/doc.update.content` ·

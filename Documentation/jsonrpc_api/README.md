@@ -104,12 +104,15 @@ Several methods accept an optional time window. Exactly one of the three forms m
 | [`v3/cluster.ping`](v3_cluster_ping.md) | HMAC-authenticated lightweight liveness probe; receiver returns its `node_id` + wall-clock `ts`. |
 | [`v3/cluster.status`](v3_cluster_status.md) | HMAC-authenticated compact summary: mode, peer counts, replication factor, embedding model. |
 | [`v2/fingerprints.recent`](v2_fingerprints_recent.md) | Raw `(uuid, fingerprint)` pairs for every primary in the lookback window; input source for the v3 distributed-analytics endpoints. |
+| [`v2/fingerprints.recent_timed`](v2_fingerprints_recent_timed.md) | Timed sibling of `v2/fingerprints.recent` — adds the `ts` (Unix seconds) field per record.  Per-node primitive for `v3/project_logs`, which needs inter-arrival timestamps to learn the empirical gap distribution. |
+| [`v2/project_logs`](v2_project_logs.md) | Semi-Markov projection of likely future log/event arrivals over a configurable window, trained on this node's recent primaries.  Drain3-bucketed states + K-order backoff + N Monte Carlo rollouts aggregated by time bin.  See [`Documentation/Algorithm/MARKOV.md`](../Algorithm/MARKOV.md). |
 | [`v3/timeline`](v3_timeline.md) | Cluster-wide earliest+latest timestamps; min/max merge across local + every Alive peer's `v2/timeline`. Phase 2 of the [cluster layer](../CLUSTER.md). |
 | [`v3/count`](v3_count.md) | Cluster-wide record count; sum across local + every Alive peer's `v2/count` (with documented caveat for Phase 3 replication). |
 | [`v3/search`](v3_search.md) | Cluster-wide semantic vector search; per-peer `v2/search` results merged + UUID-deduped + score-sorted + truncated. |
 | [`v3/knn`](v3_knn.md) | Cluster-wide k-NN; per-peer `v2/fingerprints.recent` deduped by UUID; analysis runs once on the union. |
 | [`v3/anomaly.recent`](v3_anomaly_recent.md) | Cluster-wide n-gram anomaly detection; same fan-out recipe as v3/knn. |
 | [`v3/denoise.recent`](v3_denoise_recent.md) | Cluster-wide n-gram noise removal; same fan-out recipe as v3/knn. |
+| [`v3/project_logs`](v3_project_logs.md) | Cluster-wide semi-Markov projection; per-peer `v2/fingerprints.recent_timed` deduped by UUID, sorted chronologically; analysis runs once on the coordinator over the union. |
 | [`v3/add`](v3_add.md) | Replicated single-document write: local sync + fire-and-forget fan-out to RF-1 random Alive peers, with hinted-handoff retry on failure. Phase 3 of the [cluster layer](../CLUSTER.md). |
 | [`v3/add.batch`](v3_add_batch.md) | Replicated batch write: same recipe as v3/add but uses `v2/add.batch` with `sync: true` for one round-trip per peer. |
 | [`v2/doc.list_ids`](v2_doc_list_ids.md) · `v2/signal.list_ids` · `v2/script.list_ids` | Cheap UUID + `updated_at` enumeration plus a tombstone list — input source for the Phase 4 anti-entropy pull-sync. |
